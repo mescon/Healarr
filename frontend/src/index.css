@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  
+  /* Light mode colors (default) */
+  --color-bg-primary: theme(colors.slate.100);
+  --color-bg-secondary: theme(colors.white);
+  --color-bg-tertiary: theme(colors.slate.50);
+  --color-bg-card: theme(colors.white);
+  --color-bg-hover: theme(colors.slate.100);
+  --color-bg-input: theme(colors.white);
+  
+  --color-border-primary: theme(colors.slate.200);
+  --color-border-secondary: theme(colors.slate.300);
+  
+  --color-text-primary: theme(colors.slate.900);
+  --color-text-secondary: theme(colors.slate.600);
+  --color-text-muted: theme(colors.slate.500);
+  --color-text-inverted: theme(colors.white);
+  
+  --color-sidebar-bg: theme(colors.slate.50);
+  --color-sidebar-border: theme(colors.slate.200);
+}
+
+.dark {
+  /* Dark mode colors */
+  --color-bg-primary: theme(colors.slate.950);
+  --color-bg-secondary: theme(colors.slate.900);
+  --color-bg-tertiary: theme(colors.slate.800);
+  --color-bg-card: rgb(30 41 59 / 0.5); /* slate-800/50 */
+  --color-bg-hover: rgb(51 65 85 / 0.5); /* slate-700/50 */
+  --color-bg-input: theme(colors.slate.800);
+  
+  --color-border-primary: theme(colors.slate.800);
+  --color-border-secondary: theme(colors.slate.700);
+  
+  --color-text-primary: theme(colors.slate.100);
+  --color-text-secondary: theme(colors.slate.400);
+  --color-text-muted: theme(colors.slate.500);
+  --color-text-inverted: theme(colors.slate.900);
+  
+  --color-sidebar-bg: rgb(15 23 42 / 0.5); /* slate-900/50 */
+  --color-sidebar-border: theme(colors.slate.800);
+}
+
+body {
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+
+/* Initialize dark mode by default */
+:root {
+  color-scheme: dark;
+}
+
+:root.light {
+  color-scheme: light;
+}
+
+:root.dark {
+  color-scheme: dark;
+}

@@ -1,0 +1,172 @@
+package api
+
+import (
+	"database/sql"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
+
+func (s *RESTServer) getDashboardStats(c *gin.Context) {
+	var stats struct {
+		TotalCorruptions       int `json:"total_corruptions"`
+		ActiveCorruptions      int `json:"active_corruptions"`  // Deprecated: use pending_corruptions instead
+		PendingCorruptions     int `json:"pending_corruptions"` // Just CorruptionDetected state
+		ResolvedCorruptions    int `json:"resolved_corruptions"`
+		OrphanedCorruptions    int `json:"orphaned_corruptions"`
+		IgnoredCorruptions     int `json:"ignored_corruptions"`
+		InProgressCorruptions  int `json:"in_progress_corruptions"`
+		FailedCorruptions      int `json:"failed_corruptions"` // *Failed states (not MaxRetriesReached)
+		SuccessfulRemediations int `json:"successful_remediations"`
+		ActiveScans            int `json:"active_scans"`
+		TotalScans             int `json:"total_scans"`
+		FilesScannedToday      int `json:"files_scanned_today"`
+		FilesScannedWeek       int `json:"files_scanned_week"`
+		CorruptionsToday       int `json:"corruptions_today"`
+		SuccessRate            int `json:"success_rate"`
+	}
+
+	// Get corruption stats from view
+	var active, resolved, orphaned, inProgress int
+	err := s.db.QueryRow("SELECT active_corruptions, resolved_corruptions, orphaned_corruptions, in_progress FROM dashboard_stats").Scan(
+		&active, &resolved, &orphaned, &inProgress,
+	)
+	if err != nil {
+		// If view is empty, ignore error (defaults to 0)
+	}
+
+	stats.ActiveCorruptions = active
+	stats.ResolvedCorruptions = resolved
+	stats.OrphanedCorruptions = orphaned
+	stats.InProgressCorruptions = inProgress
+	// Total corruptions excludes ignored - they're not part of active remediation
+	stats.TotalCorruptions = active + resolved + orphaned
+	stats.SuccessfulRemediations = resolved
+
+	// Get pending count (just CorruptionDetected state - waiting to be processed)
+	// Excluded from CorruptionIgnored check as it's a separate state
+	s.db.QueryRow(`
+		SELECT COUNT(*) FROM corruption_status
+		WHERE current_state = 'CorruptionDetected'
+	`).Scan(&stats.PendingCorruptions)
+
+	// Get failed count (*Failed states, not MaxRetriesReached, not ignored)
+	s.db.QueryRow(`
+		SELECT COUNT(*) FROM corruption_status
+		WHERE current_state LIKE '%Failed'
+		AND current_state != 'MaxRetriesReached'
+		AND current_state != 'CorruptionIgnored'
+	`).Scan(&stats.FailedCorruptions)
+
+	// Get ignored count (separate stat for reference)
+	s.db.QueryRow(`
+		SELECT COUNT(*) FROM corruption_status
+		WHERE current_state = 'CorruptionIgnored'
+	`).Scan(&stats.IgnoredCorruptions)
+
+	// Get active scans from scans table
+	s.db.QueryRow("SELECT COUNT(*) FROM scans WHERE status = 'running'").Scan(&stats.ActiveScans)
+
+	// Get total scans
+	s.db.QueryRow("SELECT COUNT(*) FROM scans").Scan(&stats.TotalScans)
+
+	// Get files scanned today
+	s.db.QueryRow(`
+		SELECT COALESCE(SUM(files_scanned), 0) FROM scans
+		WHERE date(started_at) = date('now')
+	`).Scan(&stats.FilesScannedToday)
+
+	// Get files scanned this week
+	s.db.QueryRow(`
+		SELECT COALESCE(SUM(files_scanned), 0) FROM scans
+		WHERE started_at >= datetime('now', '-7 days')
+	`).Scan(&stats.FilesScannedWeek)
+
+	// Get corruptions detected today (excluding ones that are now ignored)
+	s.db.QueryRow(`
+		SELECT COUNT(*) FROM events e
+		WHERE e.event_type = 'CorruptionDetected'
+		AND date(e.created_at) = date('now')
+		AND NOT EXISTS (
+			SELECT 1 FROM corruption_status cs
+			WHERE cs.corruption_id = e.corruption_id
+			AND cs.current_state = 'CorruptionIgnored'
+		)
+	`).Scan(&stats.CorruptionsToday)
+
+	// Calculate success rate (excluding ignored from totals)
+	totalAttempts := resolved + orphaned
+	if totalAttempts > 0 {
+		stats.SuccessRate = (resolved * 100) / totalAttempts
+	} else {
+		stats.SuccessRate = 100 // No failures = 100% success
+	}
+
+	c.JSON(http.StatusOK, stats)
+}
+
+func (s *RESTServer) getStatsHistory(c *gin.Context) {
+	// Group by date for the last 30 days
+	rows, err := s.db.Query(`
+		SELECT date(created_at) as date, COUNT(*) as count
+		FROM events
+		WHERE event_type = 'CorruptionDetected'
+		AND created_at >= date('now', '-30 days')
+		GROUP BY date(created_at)
+		ORDER BY date(created_at) ASC
+	`)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	stats := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var date string
+		var count int
+		if err := rows.Scan(&date, &count); err != nil {
+			continue
+		}
+		stats = append(stats, map[string]interface{}{
+			"date":  date,
+			"count": count,
+		})
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
+func (s *RESTServer) getStatsTypes(c *gin.Context) {
+	// Group by corruption type
+	rows, err := s.db.Query(`
+		SELECT json_extract(event_data, '$.corruption_type') as type, COUNT(*) as count
+		FROM events
+		WHERE event_type = 'CorruptionDetected'
+		GROUP BY type
+	`)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	stats := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var corruptionType sql.NullString
+		var count int
+		if err := rows.Scan(&corruptionType, &count); err != nil {
+			continue
+		}
+
+		typeName := "Unknown"
+		if corruptionType.Valid {
+			typeName = corruptionType.String
+		}
+
+		stats = append(stats, map[string]interface{}{
+			"type":  typeName,
+			"count": count,
+		})
+	}
+	c.JSON(http.StatusOK, stats)
+}

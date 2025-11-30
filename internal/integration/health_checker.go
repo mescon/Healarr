@@ -1,0 +1,565 @@
+package integration
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+type DetectionMethod string
+
+const (
+	DetectionZeroByte  DetectionMethod = "zero_byte"
+	DetectionFFprobe   DetectionMethod = "ffprobe"
+	DetectionMediaInfo DetectionMethod = "mediainfo"
+	DetectionHandBrake DetectionMethod = "handbrake"
+)
+
+type DetectionConfig struct {
+	Method DetectionMethod
+	Args   []string
+	Mode   string // "quick" or "thorough"
+}
+
+type CmdHealthChecker struct {
+	// Paths to binaries, can be configured
+	FFprobePath   string
+	FFmpegPath    string
+	HandBrakePath string
+}
+
+func NewHealthChecker() *CmdHealthChecker {
+	return &CmdHealthChecker{
+		FFprobePath:   "ffprobe",
+		FFmpegPath:    "ffmpeg",
+		HandBrakePath: "HandBrakeCLI",
+	}
+}
+
+func (hc *CmdHealthChecker) Check(path string, mode string) (bool, *HealthCheckError) {
+	// Legacy method - use default ffprobe detection
+	return hc.CheckWithConfig(path, DetectionConfig{
+		Method: DetectionFFprobe,
+		Args:   []string{},
+		Mode:   mode,
+	})
+}
+
+func (hc *CmdHealthChecker) CheckWithConfig(path string, config DetectionConfig) (bool, *HealthCheckError) {
+	// 1. Zero byte check (if requested)
+	if config.Method == DetectionZeroByte {
+		return hc.checkZeroByte(path)
+	}
+
+	// 2. Pre-flight accessibility check (distinguishes mount/access issues from corruption)
+	if err := hc.checkAccessibility(path); err != nil {
+		return false, err
+	}
+
+	// Default to "quick" if mode not specified
+	mode := config.Mode
+	if mode == "" {
+		mode = "quick"
+	}
+
+	// 3. Run appropriate detector with mode awareness
+	switch config.Method {
+	case DetectionFFprobe:
+		err := hc.runFFprobeWithArgs(path, config.Args, mode)
+		if err != nil {
+			return false, &HealthCheckError{Type: ErrorTypeCorruptHeader, Message: err.Error()}
+		}
+	case DetectionMediaInfo:
+		err := hc.runMediaInfo(path, config.Args, mode)
+		if err != nil {
+			return false, &HealthCheckError{Type: ErrorTypeCorruptHeader, Message: err.Error()}
+		}
+	case DetectionHandBrake:
+		err := hc.runHandBrakeWithArgs(path, config.Args, mode)
+		if err != nil {
+			return false, &HealthCheckError{Type: ErrorTypeCorruptStream, Message: err.Error()}
+		}
+	default:
+		return false, &HealthCheckError{Type: ErrorTypeInvalidConfig, Message: "unknown detection method"}
+	}
+
+	return true, nil
+}
+
+// checkAccessibility performs pre-flight checks to distinguish between
+// true file corruption and transient infrastructure issues (mount lost, NAS down, etc.)
+func (hc *CmdHealthChecker) checkAccessibility(path string) *HealthCheckError {
+	// 1. Check if parent directory exists and is accessible
+	parentDir := filepath.Dir(path)
+	parentInfo, parentErr := os.Stat(parentDir)
+	if parentErr != nil {
+		// Parent directory is inaccessible - this is almost certainly a mount/NAS issue
+		return hc.classifyOSError(parentErr, parentDir, true)
+	}
+
+	// 2. Verify parent is actually a directory (not a file left over from unmount)
+	if !parentInfo.IsDir() {
+		return &HealthCheckError{
+			Type:    ErrorTypeMountLost,
+			Message: fmt.Sprintf("parent path is not a directory (possible stale mount): %s", parentDir),
+		}
+	}
+
+	// 3. Check if we can list the parent directory (verify mount is functional)
+	entries, listErr := os.ReadDir(parentDir)
+	if listErr != nil {
+		return &HealthCheckError{
+			Type:    ErrorTypeMountLost,
+			Message: fmt.Sprintf("cannot read parent directory (mount may be stale): %v", listErr),
+		}
+	}
+
+	// 4. Now check the file itself
+	fileInfo, fileErr := os.Stat(path)
+	if fileErr != nil {
+		// File doesn't exist but parent is accessible
+		// This could be legitimate (file was deleted) or a partial mount issue
+		if os.IsNotExist(fileErr) {
+			// Double-check: if parent has entries but file is missing, it might be truly gone
+			// vs if parent is empty (suspicious for a media directory)
+			if len(entries) == 0 {
+				return &HealthCheckError{
+					Type:    ErrorTypeMountLost,
+					Message: fmt.Sprintf("parent directory is empty (possible mount issue): %s", parentDir),
+				}
+			}
+			// Parent has files, so this file is legitimately missing
+			return &HealthCheckError{
+				Type:    ErrorTypePathNotFound,
+				Message: fileErr.Error(),
+			}
+		}
+		return hc.classifyOSError(fileErr, path, false)
+	}
+
+	// 5. Final sanity check: file should have non-negative size
+	if fileInfo.Size() < 0 {
+		return &HealthCheckError{
+			Type:    ErrorTypeIOError,
+			Message: "file reports negative size (filesystem corruption or stale handle)",
+		}
+	}
+
+	return nil // All checks passed
+}
+
+// classifyOSError converts an OS error into the appropriate HealthCheckError type
+func (hc *CmdHealthChecker) classifyOSError(err error, path string, isParent bool) *HealthCheckError {
+	context := "file"
+	if isParent {
+		context = "parent directory"
+	}
+
+	// Check for permission errors
+	if os.IsPermission(err) {
+		return &HealthCheckError{
+			Type:    ErrorTypeAccessDenied,
+			Message: fmt.Sprintf("%s access denied: %v", context, err),
+		}
+	}
+
+	// Check for not-exist errors
+	if os.IsNotExist(err) {
+		if isParent {
+			// Parent directory missing is almost always a mount issue
+			return &HealthCheckError{
+				Type:    ErrorTypeMountLost,
+				Message: fmt.Sprintf("parent directory not found (mount may be offline): %s", path),
+			}
+		}
+		return &HealthCheckError{
+			Type:    ErrorTypePathNotFound,
+			Message: fmt.Sprintf("file not found: %s", path),
+		}
+	}
+
+	// Check for platform-specific syscall errors (see errno_unix.go and errno_windows.go)
+	if errType, errMsg := classifySyscallError(err); errType != "" {
+		return &HealthCheckError{
+			Type:    errType,
+			Message: fmt.Sprintf("%s: %s", errMsg, path),
+		}
+	}
+
+	// Check for common mount-related error messages
+	errStr := strings.ToLower(err.Error())
+	if strings.Contains(errStr, "transport endpoint") ||
+		strings.Contains(errStr, "stale") ||
+		strings.Contains(errStr, "mount") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "no route to host") ||
+		strings.Contains(errStr, "network is unreachable") {
+		return &HealthCheckError{
+			Type:    ErrorTypeMountLost,
+			Message: fmt.Sprintf("mount/network error: %v", err),
+		}
+	}
+
+	// Default: treat as generic I/O error (recoverable)
+	return &HealthCheckError{
+		Type:    ErrorTypeIOError,
+		Message: fmt.Sprintf("filesystem error accessing %s: %v", context, err),
+	}
+}
+
+func (hc *CmdHealthChecker) checkZeroByte(path string) (bool, *HealthCheckError) {
+	// First do accessibility check
+	if err := hc.checkAccessibility(path); err != nil {
+		return false, err
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, hc.classifyOSError(err, path, false)
+	}
+	if info.Size() == 0 {
+		return false, &HealthCheckError{Type: ErrorTypeZeroByte, Message: "file is empty"}
+	}
+	return true, nil
+}
+
+func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string, mode string) error {
+	// Mode determines the type of check:
+	// - "quick": Only check container headers and stream info (fast, ~1-2 seconds) using ffprobe
+	// - "thorough": Decode entire file to detect stream corruption (slow, can take minutes) using ffmpeg
+
+	var args []string
+	var cmdPath string
+	var cmdName string
+
+	if mode == "thorough" {
+		// Thorough mode: Use ffmpeg to decode the entire file and check for stream corruption
+		// This catches issues that header-only checks miss (mid-file corruption, bad frames, etc.)
+		// -xerror makes ffmpeg exit on first decode error
+		// -f null - outputs to null device (no output file needed)
+		cmdPath = hc.FFmpegPath
+		cmdName = "ffmpeg"
+		args = []string{"-v", "error", "-xerror", "-i", path, "-f", "null", "-"}
+
+		// Insert custom args before -i (if any)
+		if len(customArgs) > 0 {
+			newArgs := []string{"-v", "error", "-xerror"}
+			newArgs = append(newArgs, customArgs...)
+			newArgs = append(newArgs, "-i", path, "-f", "null", "-")
+			args = newArgs
+		}
+	} else {
+		// Quick mode (default): Use ffprobe to check container structure and stream headers
+		// Fast and reliable for detecting obvious corruption
+		cmdPath = hc.FFprobePath
+		cmdName = "ffprobe"
+		args = []string{"-v", "error", "-show_format", "-show_streams", path}
+
+		// Insert custom args before path (if any)
+		if len(customArgs) > 0 {
+			newArgs := []string{"-v", "error", "-show_format", "-show_streams"}
+			newArgs = append(newArgs, customArgs...)
+			newArgs = append(newArgs, path)
+			args = newArgs
+		}
+	}
+
+	cmd := exec.Command(cmdPath, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	// Thorough mode needs much longer timeout since it decodes entire file
+	timeout := 30 * time.Second
+	if mode == "thorough" {
+		timeout = 10 * time.Minute // Large files can take a while to fully decode
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Run()
+	}()
+
+	select {
+	case <-time.After(timeout):
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+			cmd.Wait() // Reap the zombie process
+		}
+		return fmt.Errorf("%s timed out after %v", cmdName, timeout)
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("%s failed: %s", cmdName, stderr.String())
+		}
+	}
+
+	return nil
+}
+
+func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []string, mode string) error {
+	// Mode determines the type of check:
+	// - "quick": Basic scan of container structure
+	// - "thorough": Full stream analysis (HandBrake's default scan is already quite thorough)
+
+	var args []string
+	var timeout time.Duration
+
+	if mode == "thorough" {
+		// Thorough mode: Full scan with preview analysis
+		// --previews 10:0 generates 10 previews at different points to verify stream integrity
+		args = []string{"--scan", "--previews", "10:0", "-i", path}
+		timeout = 10 * time.Minute
+	} else {
+		// Quick mode: Basic container scan
+		args = []string{"--scan", "-i", path}
+		timeout = 2 * time.Minute
+	}
+
+	// Insert custom args before -i
+	if len(customArgs) > 0 {
+		if mode == "thorough" {
+			newArgs := []string{"--scan", "--previews", "10:0"}
+			newArgs = append(newArgs, customArgs...)
+			newArgs = append(newArgs, "-i", path)
+			args = newArgs
+		} else {
+			newArgs := []string{"--scan"}
+			newArgs = append(newArgs, customArgs...)
+			newArgs = append(newArgs, "-i", path)
+			args = newArgs
+		}
+	}
+
+	cmd := exec.Command(hc.HandBrakePath, args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Run()
+	}()
+
+	select {
+	case <-time.After(timeout):
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+			cmd.Wait() // Reap the zombie process
+		}
+		return fmt.Errorf("HandBrake scan timed out after %v", timeout)
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("HandBrake failed: %s", stderr.String())
+		}
+	}
+
+	// HandBrake returns exit code 0 even for failures, so check output for error indicators
+	combinedOutput := stdout.String() + stderr.String()
+	if strings.Contains(combinedOutput, "No title found") ||
+		strings.Contains(combinedOutput, "unrecognized file type") ||
+		strings.Contains(combinedOutput, "open ") && strings.Contains(combinedOutput, " failed") {
+		return fmt.Errorf("HandBrake scan failed: %s", combinedOutput)
+	}
+
+	return nil
+}
+
+func (hc *CmdHealthChecker) runMediaInfo(path string, customArgs []string, mode string) error {
+	// Mode determines the type of check:
+	// - "quick": Basic metadata extraction (container info)
+	// - "thorough": Full parsing with all details (deeper analysis)
+
+	var args []string
+	var timeout time.Duration
+
+	if mode == "thorough" {
+		// Thorough mode: Full details including all track info
+		args = []string{"--Output=JSON", "--Full", path}
+		timeout = 2 * time.Minute
+	} else {
+		// Quick mode: Basic JSON output
+		args = []string{"--Output=JSON", path}
+		timeout = 30 * time.Second
+	}
+
+	// Insert custom args before path
+	if len(customArgs) > 0 {
+		if mode == "thorough" {
+			newArgs := []string{"--Output=JSON", "--Full"}
+			newArgs = append(newArgs, customArgs...)
+			newArgs = append(newArgs, path)
+			args = newArgs
+		} else {
+			newArgs := []string{"--Output=JSON"}
+			newArgs = append(newArgs, customArgs...)
+			newArgs = append(newArgs, path)
+			args = newArgs
+		}
+	}
+
+	cmd := exec.Command("mediainfo", args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Run()
+	}()
+
+	select {
+	case <-time.After(timeout):
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+			cmd.Wait() // Reap the zombie process
+		}
+		return fmt.Errorf("mediainfo timed out after %v", timeout)
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("mediainfo failed: %s", stderr.String())
+		}
+	}
+
+	// Parse JSON output and verify it contains media information
+	var result map[string]interface{}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		return fmt.Errorf("mediainfo produced invalid JSON: %v", err)
+	}
+
+	// Check if media field exists and has tracks
+	media, ok := result["media"].(map[string]interface{})
+	if !ok || media == nil {
+		return fmt.Errorf("mediainfo: no media information found in file")
+	}
+
+	// Check for tracks - a valid media file should have at least one track with video or audio
+	tracks, ok := media["track"].([]interface{})
+	if !ok || len(tracks) == 0 {
+		return fmt.Errorf("mediainfo: no tracks found in file")
+	}
+
+	// Look for at least one video or audio track (not just General)
+	hasMediaTrack := false
+	for _, track := range tracks {
+		if t, ok := track.(map[string]interface{}); ok {
+			trackType, _ := t["@type"].(string)
+			if trackType == "Video" || trackType == "Audio" {
+				hasMediaTrack = true
+				break
+			}
+		}
+	}
+
+	if !hasMediaTrack {
+		return fmt.Errorf("mediainfo: no video or audio tracks found in file")
+	}
+
+	return nil
+}
+
+// GetCommandPreview returns the exact command that would be executed for a given configuration.
+// This is useful for displaying to users so they know exactly what will run.
+func (hc *CmdHealthChecker) GetCommandPreview(method DetectionMethod, mode string, customArgs []string) string {
+	if mode == "" {
+		mode = "quick"
+	}
+
+	// Placeholder for file path in preview
+	filePath := "<file>"
+
+	switch method {
+	case DetectionZeroByte:
+		return "stat <file> (checks if file size == 0)"
+
+	case DetectionFFprobe:
+		var args []string
+		if mode == "thorough" {
+			// Thorough mode uses ffmpeg (not ffprobe) to decode entire file
+			args = []string{hc.FFmpegPath, "-v", "error", "-xerror"}
+			if len(customArgs) > 0 {
+				args = append(args, customArgs...)
+			}
+			args = append(args, "-i", filePath, "-f", "null", "-")
+		} else {
+			// Quick mode uses ffprobe for header analysis
+			args = []string{hc.FFprobePath, "-v", "error", "-show_format", "-show_streams"}
+			if len(customArgs) > 0 {
+				args = append(args, customArgs...)
+			}
+			args = append(args, filePath)
+		}
+		return strings.Join(args, " ")
+
+	case DetectionMediaInfo:
+		var args []string
+		if mode == "thorough" {
+			args = []string{"mediainfo", "--Output=JSON", "--Full"}
+			if len(customArgs) > 0 {
+				args = append(args, customArgs...)
+			}
+			args = append(args, filePath)
+		} else {
+			args = []string{"mediainfo", "--Output=JSON"}
+			if len(customArgs) > 0 {
+				args = append(args, customArgs...)
+			}
+			args = append(args, filePath)
+		}
+		return strings.Join(args, " ")
+
+	case DetectionHandBrake:
+		var args []string
+		if mode == "thorough" {
+			args = []string{hc.HandBrakePath, "--scan", "--previews", "10:0"}
+			if len(customArgs) > 0 {
+				args = append(args, customArgs...)
+			}
+			args = append(args, "-i", filePath)
+		} else {
+			args = []string{hc.HandBrakePath, "--scan"}
+			if len(customArgs) > 0 {
+				args = append(args, customArgs...)
+			}
+			args = append(args, "-i", filePath)
+		}
+		return strings.Join(args, " ")
+
+	default:
+		return "unknown detection method"
+	}
+}
+
+// GetTimeoutDescription returns a human-readable description of the timeout for a given configuration.
+func (hc *CmdHealthChecker) GetTimeoutDescription(method DetectionMethod, mode string) string {
+	if mode == "" {
+		mode = "quick"
+	}
+
+	switch method {
+	case DetectionZeroByte:
+		return "instant"
+	case DetectionFFprobe:
+		if mode == "thorough" {
+			return "10 minutes (ffmpeg decodes entire file)"
+		}
+		return "30 seconds (ffprobe header check)"
+	case DetectionMediaInfo:
+		if mode == "thorough" {
+			return "2 minutes"
+		}
+		return "30 seconds"
+	case DetectionHandBrake:
+		if mode == "thorough" {
+			return "10 minutes (with preview generation)"
+		}
+		return "2 minutes"
+	default:
+		return "unknown"
+	}
+}

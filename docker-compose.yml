@@ -1,0 +1,38 @@
+# ============================================================================
+# Healarr Docker Compose
+# Health Evaluation And Library Auto-Recovery for *aRR
+# https://github.com/mescon/Healarr
+# ============================================================================
+
+services:
+  healarr:
+    image: ghcr.io/mescon/healarr:latest
+    container_name: healarr
+    restart: unless-stopped
+    ports:
+      - "3090:3090"
+    environment:
+      # Timezone (for logs and scheduled scans)
+      - TZ=Europe/London
+      
+      # Optional configuration (defaults shown):
+      # - HEALARR_PORT=3090
+      # - HEALARR_LOG_LEVEL=info
+      # - HEALARR_BASE_PATH=/healarr         # For reverse proxy subdirectory
+      # - HEALARR_VERIFICATION_TIMEOUT=72h   # How long to wait for re-download
+      # - HEALARR_DEFAULT_MAX_RETRIES=3      # Max remediation attempts
+    volumes:
+      # Persistent data (database, logs, backups)
+      - /path/to/appdata/healarr:/config
+      
+      # Media libraries - must match your *arr paths
+      # Mount as read-only (:ro) - Healarr only needs to scan files
+      - /path/to/media:/mnt/media:ro
+    
+    # Optional: connect to same network as your *arr containers
+    # networks:
+    #   - arr-network
+
+# networks:
+#   arr-network:
+#     external: true
