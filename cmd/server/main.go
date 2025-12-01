@@ -49,8 +49,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Load configuration from environment variables
-	cfg := config.Load()
+	// Load configuration from environment variables (initial load, refreshed after flags)
+	config.Load()
 
 	// Apply command-line flag overrides
 	flagOverrides := config.FlagOverrides{
@@ -74,7 +74,7 @@ func main() {
 	config.ApplyFlags(flagOverrides)
 
 	// Refresh config after applying flags
-	cfg = config.Get()
+	cfg := config.Get()
 
 	// Initialize logger with configured log directory
 	logger.Init(cfg.LogDir)
