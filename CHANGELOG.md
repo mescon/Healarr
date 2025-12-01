@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2025-12-01
+
+### Security
+- Fixed G204 command injection vulnerability in health_checker.go
+  - Replaced shell execution with direct exec.Command calls
+  - Sanitized file paths to prevent injection attacks
+
+### Fixed
+- Fixed ~90 instances of unhandled errors (G104) throughout the codebase
+- Improved error logging consistency (Errorf for failures, Debugf for non-critical)
+
+### Changed
+- Refactored `buildShoutrrrURL` function (complexity reduced from 84 to 2)
+  - Extracted URL building logic into Strategy pattern (url_builders.go)
+  - Each notification provider now has a dedicated URLBuilder implementation
+- Refactored `handleCorruptionDetected` function (complexity reduced from 24 to <10)
+  - Extracted corruption type handlers into separate functions
+
+### Added
+- Comprehensive test suite for ScannerService (coverage: 19.8% → 50.1%)
+- Performance benchmarks for critical code paths
+  - Scanner operations: IsMediaFile, IsHiddenOrTempFile, scan lifecycle
+  - URL builder benchmarks for all notification providers
+- New test files: url_builders_test.go, health_checker_test.go, arr_client_test.go
+
 ## [1.0.0] - 2025-11-28
 
 ### Added
