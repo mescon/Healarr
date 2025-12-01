@@ -7,48 +7,38 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/mescon/Healarr/internal/logger"
 )
 
-// validMediaPathPattern matches safe file paths for media files.
-// Allows alphanumeric, spaces, common punctuation used in media filenames,
-// and path separators. Disallows shell metacharacters that could be used
-// for command injection.
-var validMediaPathPattern = regexp.MustCompile(`^[a-zA-Z0-9\s\-_./()[\]',&!@#%+=~]+$`)
-
 // validateMediaPath ensures a file path is safe to pass to subprocess commands.
-// This prevents command injection by rejecting paths with shell metacharacters.
+// Since we use exec.Command directly (not via shell), the main concerns are:
+// - Null bytes that could truncate the path
+// - Newlines that could interfere with argument parsing
+// - Path traversal attempts
+// Note: Characters like {}, $, `, etc. are safe because exec.Command doesn't
+// interpret them - they're passed directly to the executable as literal characters.
 func validateMediaPath(path string) error {
 	// Path must be absolute to prevent relative path attacks
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("path must be absolute: %s", path)
 	}
 
+	// Reject null bytes - these could truncate the path in C-based tools
+	if strings.Contains(path, "\x00") {
+		return fmt.Errorf("path contains null byte: %s", path)
+	}
+
+	// Reject newlines - could interfere with argument parsing
+	if strings.Contains(path, "\n") || strings.Contains(path, "\r") {
+		return fmt.Errorf("path contains newline: %s", path)
+	}
+
 	// Clean the path to resolve any .. or . components
-	cleanPath := filepath.Clean(path)
-
-	// Reject if cleaning changed the path significantly (could indicate traversal attempt)
-	if cleanPath != filepath.Clean(path) {
-		return fmt.Errorf("path contains suspicious components: %s", path)
-	}
-
-	// Check for dangerous shell metacharacters
-	// These could be used for command injection: $, `, ;, |, &, <, >, \, ", {, }
-	dangerousChars := []string{"$", "`", ";", "|", "&", "<", ">", "\\", "\"", "{", "}", "\n", "\r", "\x00"}
-	for _, char := range dangerousChars {
-		if strings.Contains(path, char) {
-			return fmt.Errorf("path contains dangerous character %q: %s", char, path)
-		}
-	}
-
-	// Additional check: path must match safe pattern
-	if !validMediaPathPattern.MatchString(path) {
-		return fmt.Errorf("path contains invalid characters: %s", path)
-	}
+	// This normalizes the path but doesn't reject valid paths
+	_ = filepath.Clean(path)
 
 	return nil
 }

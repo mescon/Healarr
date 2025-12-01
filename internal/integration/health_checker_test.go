@@ -403,11 +403,36 @@ func TestValidateMediaPath(t *testing.T) {
 			"/data/tv/Show Name/Season 01/S01E01 - Pilot.mkv",
 			"/mnt/nas/Movies/Movie's Title [2023]/movie.mp4",
 			"/srv/media/Film #1 - The Beginning!/film.avi",
+			// Radarr/Sonarr IMDB naming convention with curly braces - MUST be allowed
+			"/media/Movies/The Avengers (2012)/The Avengers (2012) {imdb-tt0848228} [Remux-2160p].mkv",
+			"/media/Movies/Film {imdb-tt1234567} {edition-Extended}.mkv",
 		}
 
 		for _, path := range validPaths {
 			if err := validateMediaPath(path); err != nil {
 				t.Errorf("validateMediaPath(%q) = %v, want nil", path, err)
+			}
+		}
+	})
+
+	t.Run("accepts shell metacharacters since exec.Command does not interpret them", func(t *testing.T) {
+		// These paths contain shell metacharacters but are safe with exec.Command
+		// because arguments are passed directly without shell interpretation.
+		// Radarr/Sonarr commonly use {} for IMDB IDs and edition tags.
+		safePaths := []string{
+			"/media/movies/Movie {imdb-tt0848228}.mkv",
+			"/media/movies/test$variable.mkv",
+			"/media/movies/test`backtick`.mkv",
+			"/media/movies/test;semicolon.mkv",
+			"/media/movies/test|pipe.mkv",
+			"/media/movies/test&ampersand.mkv",
+			"/media/movies/test<angle>brackets.mkv",
+			"/media/movies/test\"quotes.mkv",
+		}
+
+		for _, path := range safePaths {
+			if err := validateMediaPath(path); err != nil {
+				t.Errorf("validateMediaPath(%q) = %v, want nil (safe with exec.Command)", path, err)
 			}
 		}
 	})
@@ -430,33 +455,14 @@ func TestValidateMediaPath(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects command injection attempts", func(t *testing.T) {
-		dangerousPaths := []string{
-			"/media/movies/$(rm -rf /)/test.mkv",
-			"/media/movies/`whoami`/test.mkv",
-			"/media/movies/test;ls/test.mkv",
-			"/media/movies/test|cat /etc/passwd/test.mkv",
-			"/media/movies/test&& echo pwned/test.mkv",
-			"/media/movies/test > /tmp/out/test.mkv",
-			"/media/movies/test < /etc/passwd/test.mkv",
-			"/media/movies/test\"/test.mkv",
-			"/media/movies/${PATH}/test.mkv",
-			"/media/movies/test{a,b}/test.mkv",
-		}
-
-		for _, path := range dangerousPaths {
-			err := validateMediaPath(path)
-			if err == nil {
-				t.Errorf("validateMediaPath(%q) = nil, want error for dangerous path", path)
-			}
-		}
-	})
-
 	t.Run("rejects null bytes", func(t *testing.T) {
 		path := "/media/movies/test\x00.mkv"
 		err := validateMediaPath(path)
 		if err == nil {
 			t.Error("validateMediaPath with null byte should fail")
+		}
+		if err != nil && !strings.Contains(err.Error(), "null byte") {
+			t.Errorf("Error should mention null byte, got: %v", err)
 		}
 	})
 
@@ -471,30 +477,15 @@ func TestValidateMediaPath(t *testing.T) {
 			if err == nil {
 				t.Errorf("validateMediaPath(%q) = nil, want error for newline", path)
 			}
+			if err != nil && !strings.Contains(err.Error(), "newline") {
+				t.Errorf("Error should mention newline, got: %v", err)
+			}
 		}
 	})
 }
 
 func TestCmdHealthChecker_RejectsUnsafePaths(t *testing.T) {
 	hc := NewHealthChecker()
-
-	t.Run("rejects command injection in path", func(t *testing.T) {
-		dangerousPath := "/media/movies/$(rm -rf /)/test.mkv"
-
-		healthy, checkErr := hc.Check(dangerousPath, "quick")
-		if healthy {
-			t.Error("Expected unhealthy for dangerous path")
-		}
-		if checkErr == nil {
-			t.Fatal("Expected error for dangerous path")
-		}
-		if checkErr.Type != ErrorTypeInvalidConfig {
-			t.Errorf("Expected InvalidConfig error type, got %s", checkErr.Type)
-		}
-		if !strings.Contains(checkErr.Message, "invalid media path") {
-			t.Errorf("Error message should mention invalid path, got: %s", checkErr.Message)
-		}
-	})
 
 	t.Run("rejects relative path", func(t *testing.T) {
 		relativePath := "media/movies/test.mkv"
@@ -505,6 +496,36 @@ func TestCmdHealthChecker_RejectsUnsafePaths(t *testing.T) {
 		}
 		if checkErr == nil {
 			t.Fatal("Expected error for relative path")
+		}
+		if checkErr.Type != ErrorTypeInvalidConfig {
+			t.Errorf("Expected InvalidConfig error type, got %s", checkErr.Type)
+		}
+	})
+
+	t.Run("rejects path with null byte", func(t *testing.T) {
+		nullPath := "/media/movies/test\x00.mkv"
+
+		healthy, checkErr := hc.Check(nullPath, "quick")
+		if healthy {
+			t.Error("Expected unhealthy for path with null byte")
+		}
+		if checkErr == nil {
+			t.Fatal("Expected error for path with null byte")
+		}
+		if checkErr.Type != ErrorTypeInvalidConfig {
+			t.Errorf("Expected InvalidConfig error type, got %s", checkErr.Type)
+		}
+	})
+
+	t.Run("rejects path with newline", func(t *testing.T) {
+		newlinePath := "/media/movies/test\n.mkv"
+
+		healthy, checkErr := hc.Check(newlinePath, "quick")
+		if healthy {
+			t.Error("Expected unhealthy for path with newline")
+		}
+		if checkErr == nil {
+			t.Fatal("Expected error for path with newline")
 		}
 		if checkErr.Type != ErrorTypeInvalidConfig {
 			t.Errorf("Expected InvalidConfig error type, got %s", checkErr.Type)

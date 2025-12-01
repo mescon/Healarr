@@ -9,7 +9,7 @@ This documentation is designed for AI agents (LLMs) to understand the Healarr co
 | Aspect | Details |
 |--------|---------|
 | **Name** | Healarr (Health Evaluation And Library Auto-Recovery for *aRR) |
-| **Version** | v1.0.1 |
+| **Version** | v1.0.2 |
 | **License** | GPLv3 |
 | **Repository** | `github.com/mescon/Healarr` |
 | **Backend** | Go 1.25+ with Gin v1.11.0 framework |
