@@ -40,7 +40,29 @@ func NewRESTServer(db *sql.DB, eb *eventbus.EventBus, scanner *services.ScannerS
 	// Set Gin to release mode for production (suppresses debug warnings)
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery()) // Recover from panics
+
+	// Request ID middleware for correlation/tracing
+	r.Use(func(c *gin.Context) {
+		// Use existing request ID from header if provided, otherwise generate one
+		reqID := c.GetHeader("X-Request-ID")
+		if reqID == "" {
+			reqID = fmt.Sprintf("%d-%d", time.Now().UnixNano(), c.Request.ContentLength)
+		}
+		c.Set("request_id", reqID)
+		c.Header("X-Request-ID", reqID)
+		c.Next()
+	})
+
+	// Custom recovery middleware with enhanced logging
+	r.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+		reqID := c.GetString("request_id")
+		logger.Errorf("[PANIC RECOVERY] request_id=%s path=%s method=%s error=%v",
+			reqID, c.Request.URL.Path, c.Request.Method, recovered)
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+			"error":      "Internal server error",
+			"request_id": reqID,
+		})
+	}))
 
 	// CORS middleware - configurable via HEALARR_CORS_ORIGIN env var
 	// If not set, defaults to same-origin (no CORS header = browser enforces same-origin)

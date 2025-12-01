@@ -41,6 +41,13 @@ func NewRepository(dbPath string) (*Repository, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// Configure connection pool for SQLite
+	// SQLite benefits from limited connections to avoid lock contention
+	db.SetMaxOpenConns(1)                  // SQLite only supports one writer at a time
+	db.SetMaxIdleConns(1)                  // Keep one connection ready
+	db.SetConnMaxLifetime(0)               // Don't close connections due to age
+	db.SetConnMaxIdleTime(5 * time.Minute) // Close idle connections after 5 minutes
+
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
