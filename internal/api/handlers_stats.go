@@ -71,35 +71,43 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	s.db.QueryRow("SELECT COUNT(*) FROM scans").Scan(&stats.TotalScans)
 
 	// Get files scanned today
+	// Use substr to extract YYYY-MM-DD from timestamp (works with Go's time format)
 	s.db.QueryRow(`
 		SELECT COALESCE(SUM(files_scanned), 0) FROM scans
-		WHERE date(started_at) = date('now')
+		WHERE substr(started_at, 1, 10) = date('now')
 	`).Scan(&stats.FilesScannedToday)
 
 	// Get files scanned this week
 	s.db.QueryRow(`
 		SELECT COALESCE(SUM(files_scanned), 0) FROM scans
-		WHERE started_at >= datetime('now', '-7 days')
+		WHERE substr(started_at, 1, 10) >= date('now', '-7 days')
 	`).Scan(&stats.FilesScannedWeek)
 
 	// Get corruptions detected today (excluding ones that are now ignored)
+	// Use substr to extract YYYY-MM-DD from Go's time.Time format
 	s.db.QueryRow(`
 		SELECT COUNT(*) FROM events e
 		WHERE e.event_type = 'CorruptionDetected'
-		AND date(e.created_at) = date('now')
+		AND substr(e.created_at, 1, 10) = date('now')
 		AND NOT EXISTS (
 			SELECT 1 FROM corruption_status cs
-			WHERE cs.corruption_id = e.corruption_id
+			WHERE cs.corruption_id = e.aggregate_id
 			AND cs.current_state = 'CorruptionIgnored'
 		)
 	`).Scan(&stats.CorruptionsToday)
 
 	// Calculate success rate (excluding ignored from totals)
+	// Success rate = resolved / (resolved + orphaned) for completed remediations
+	// If nothing has completed yet (all still in progress), show N/A as 0
 	totalAttempts := resolved + orphaned
 	if totalAttempts > 0 {
 		stats.SuccessRate = (resolved * 100) / totalAttempts
+	} else if inProgress > 0 {
+		// Active remediations but none completed yet - can't calculate rate
+		stats.SuccessRate = 0
 	} else {
-		stats.SuccessRate = 100 // No failures = 100% success
+		// No remediations at all - show 100% (no failures)
+		stats.SuccessRate = 100
 	}
 
 	c.JSON(http.StatusOK, stats)
@@ -107,13 +115,14 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 
 func (s *RESTServer) getStatsHistory(c *gin.Context) {
 	// Group by date for the last 30 days
+	// Use substr to extract YYYY-MM-DD from Go's time.Time format
 	rows, err := s.db.Query(`
-		SELECT date(created_at) as date, COUNT(*) as count
+		SELECT substr(created_at, 1, 10) as date, COUNT(*) as count
 		FROM events
 		WHERE event_type = 'CorruptionDetected'
-		AND created_at >= date('now', '-30 days')
-		GROUP BY date(created_at)
-		ORDER BY date(created_at) ASC
+		AND substr(created_at, 1, 10) >= date('now', '-30 days')
+		GROUP BY substr(created_at, 1, 10)
+		ORDER BY date ASC
 	`)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

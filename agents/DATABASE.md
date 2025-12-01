@@ -359,10 +359,10 @@ func (r *Repository) RunMaintenance(retentionDays int) error {
     r.DB.Exec("DELETE FROM events WHERE created_at < ?", cutoff)
 
     // 2. Prune old completed scans
-    r.DB.Exec(`DELETE FROM scans WHERE status IN ('completed', 'cancelled', 'error') AND ended_at < ?`, cutoff)
+    r.DB.Exec(`DELETE FROM scans WHERE status IN ('completed', 'cancelled', 'error') AND completed_at < ?`, cutoff)
 
-    // 3. Delete orphaned corruption records
-    r.DB.Exec(`DELETE FROM corruptions WHERE scan_id NOT IN (SELECT id FROM scans) AND status IN ('resolved', 'failed')`)
+    // 3. Delete orphaned scan_files records
+    r.DB.Exec(`DELETE FROM scan_files WHERE scan_id NOT IN (SELECT id FROM scans)`)
 
     // 4. Incremental vacuum
     r.DB.Exec("PRAGMA incremental_vacuum")

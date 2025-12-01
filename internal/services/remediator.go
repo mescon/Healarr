@@ -139,6 +139,11 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.SearchStarted,
+			EventData: map[string]interface{}{
+				"file_path": filePath,
+				"media_id":  mediaID,
+				"path_id":   pathID,
+			},
 		})
 
 		// Extract episode IDs from metadata if available
@@ -320,6 +325,11 @@ func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
 				AggregateID:   corruptionID,
 				AggregateType: "corruption",
 				EventType:     domain.SearchStarted,
+				EventData: map[string]interface{}{
+					"file_path": filePath,
+					"media_id":  mediaID,
+					"path_id":   pathID,
+				},
 			})
 
 			// Extract episode IDs from metadata for targeted search

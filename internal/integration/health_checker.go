@@ -72,17 +72,23 @@ func (hc *CmdHealthChecker) CheckWithConfig(path string, config DetectionConfig)
 	case DetectionFFprobe:
 		err := hc.runFFprobeWithArgs(path, config.Args, mode)
 		if err != nil {
-			return false, &HealthCheckError{Type: ErrorTypeCorruptHeader, Message: err.Error()}
+			return false, hc.classifyDetectorError(err, path)
 		}
 	case DetectionMediaInfo:
 		err := hc.runMediaInfo(path, config.Args, mode)
 		if err != nil {
-			return false, &HealthCheckError{Type: ErrorTypeCorruptHeader, Message: err.Error()}
+			return false, hc.classifyDetectorError(err, path)
 		}
 	case DetectionHandBrake:
 		err := hc.runHandBrakeWithArgs(path, config.Args, mode)
 		if err != nil {
-			return false, &HealthCheckError{Type: ErrorTypeCorruptStream, Message: err.Error()}
+			// HandBrake errors are typically stream-level corruption
+			errStr := err.Error()
+			if strings.Contains(errStr, "No such file or directory") ||
+				strings.Contains(errStr, "does not exist") {
+				return false, &HealthCheckError{Type: ErrorTypePathNotFound, Message: errStr}
+			}
+			return false, &HealthCheckError{Type: ErrorTypeCorruptStream, Message: errStr}
 		}
 	default:
 		return false, &HealthCheckError{Type: ErrorTypeInvalidConfig, Message: "unknown detection method"}
@@ -209,6 +215,57 @@ func (hc *CmdHealthChecker) classifyOSError(err error, path string, isParent boo
 	return &HealthCheckError{
 		Type:    ErrorTypeIOError,
 		Message: fmt.Sprintf("filesystem error accessing %s: %v", context, err),
+	}
+}
+
+// classifyDetectorError analyzes errors from ffprobe/mediainfo and classifies them appropriately.
+// This catches cases where files disappear between accessibility check and detector execution (race condition),
+// or where the detector sees different paths than Go's os.Stat (e.g., symlink resolution differences).
+func (hc *CmdHealthChecker) classifyDetectorError(err error, path string) *HealthCheckError {
+	errStr := err.Error()
+
+	// Check for path-related errors (file disappeared, wrong path, symlink issues)
+	if strings.Contains(errStr, "No such file or directory") ||
+		strings.Contains(errStr, "does not exist") ||
+		strings.Contains(errStr, "not found") {
+		return &HealthCheckError{
+			Type:    ErrorTypePathNotFound,
+			Message: errStr,
+		}
+	}
+
+	// Check for permission errors
+	if strings.Contains(errStr, "Permission denied") ||
+		strings.Contains(errStr, "access denied") {
+		return &HealthCheckError{
+			Type:    ErrorTypeAccessDenied,
+			Message: errStr,
+		}
+	}
+
+	// Check for I/O errors (network/mount issues that manifest during read)
+	if strings.Contains(errStr, "Input/output error") ||
+		strings.Contains(errStr, "Connection refused") ||
+		strings.Contains(errStr, "Network is unreachable") ||
+		strings.Contains(errStr, "transport endpoint") {
+		return &HealthCheckError{
+			Type:    ErrorTypeIOError,
+			Message: errStr,
+		}
+	}
+
+	// Check for timeout
+	if strings.Contains(errStr, "timed out") {
+		return &HealthCheckError{
+			Type:    ErrorTypeTimeout,
+			Message: errStr,
+		}
+	}
+
+	// Default: treat as header/container corruption (the detector ran but found issues with the file content)
+	return &HealthCheckError{
+		Type:    ErrorTypeCorruptHeader,
+		Message: errStr,
 	}
 }
 

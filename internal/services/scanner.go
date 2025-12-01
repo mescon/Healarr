@@ -117,6 +117,13 @@ type ScanProgress struct {
 	isThrottled      bool               `json:"-"` // Whether this scan is being throttled
 }
 
+// scanPathConfig holds cached scan path configuration
+type scanPathConfig struct {
+	LocalPath     string
+	AutoRemediate bool
+	DryRun        bool
+}
+
 type ScannerService struct {
 	db          *sql.DB
 	eventBus    *eventbus.EventBus
@@ -129,6 +136,11 @@ type ScannerService struct {
 	filesMu         sync.Mutex
 	shutdownCh      chan struct{}
 	wg              sync.WaitGroup
+
+	// Cached scan path configs to avoid N+1 queries
+	scanPathCache     []scanPathConfig
+	scanPathCacheMu   sync.RWMutex
+	scanPathCacheTime time.Time
 }
 
 func NewScannerService(db *sql.DB, eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper) *ScannerService {
@@ -674,14 +686,15 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 // scanFileContext holds the context for scanning a single file.
 // This reduces parameter passing and groups related data together.
 type scanFileContext struct {
-	filePath        string
-	fileSize        int64
-	fileMtime       time.Time
-	pathID          int64
-	scanDBID        int64
-	autoRemediate   bool
-	dryRun          bool
-	detectionConfig integration.DetectionConfig
+	filePath          string
+	fileSize          int64
+	fileMtime         time.Time
+	pathID            int64
+	scanDBID          int64
+	autoRemediate     bool
+	dryRun            bool
+	detectionConfig   integration.DetectionConfig
+	activeCorruptions map[string]bool // Preloaded map of file paths with active corruptions
 }
 
 // scanLoopAction indicates what the scan loop should do after checking state.
@@ -864,7 +877,14 @@ func (s *ScannerService) handleTrueCorruption(ctx context.Context, progress *Sca
 	logger.Infof("Corruption detected in file: %s (Type: %s)", sfc.filePath, healthErr.Type)
 
 	// DEDUPLICATION: Check if already being processed
-	if s.hasActiveCorruption(sfc.filePath) {
+	// Use preloaded map for path scans (O(1) lookup), fall back to query for single-file scans
+	hasActive := false
+	if sfc.activeCorruptions != nil {
+		hasActive = sfc.activeCorruptions[sfc.filePath]
+	} else {
+		hasActive = s.hasActiveCorruption(sfc.filePath)
+	}
+	if hasActive {
 		logger.Infof("Skipping duplicate corruption for file already being processed: %s", sfc.filePath)
 		if sfc.scanDBID > 0 {
 			db.ExecWithRetry(s.db, `
@@ -973,6 +993,10 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 	localPath := progress.Path
 	pathID := progress.PathID
 
+	// PERFORMANCE: Preload active corruptions in a single query to avoid N+1 problem
+	// This loads all files under this path that already have active corruption records.
+	activeCorruptions := s.LoadActiveCorruptionsForPath(localPath)
+
 	for i := startIndex; i < len(files); i++ {
 		filePath := files[i]
 
@@ -1010,14 +1034,15 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 
 		// Build scan file context for helper methods
 		sfc := &scanFileContext{
-			filePath:        filePath,
-			fileSize:        fileSize,
-			fileMtime:       fileMtime,
-			pathID:          pathID,
-			scanDBID:        scanDBID,
-			autoRemediate:   autoRemediate,
-			dryRun:          dryRun,
-			detectionConfig: detectionConfig,
+			filePath:          filePath,
+			fileSize:          fileSize,
+			fileMtime:         fileMtime,
+			pathID:            pathID,
+			scanDBID:          scanDBID,
+			autoRemediate:     autoRemediate,
+			dryRun:            dryRun,
+			detectionConfig:   detectionConfig,
+			activeCorruptions: activeCorruptions,
 		}
 
 		// SAFETY: Skip recently modified files (likely being written)
@@ -1163,36 +1188,71 @@ func (s *ScannerService) ResumeScan(scanID string) error {
 	return nil
 }
 
-// getScanPathConfig finds the matching scan path configuration for a file path
-// Returns auto_remediate, dry_run, and any error
-func (s *ScannerService) getScanPathConfig(filePath string) (autoRemediate bool, dryRun bool, err error) {
-	// Find the scan path that matches this file
+// refreshScanPathCache loads all enabled scan paths into memory cache.
+// Cache expires after 60 seconds to pick up config changes.
+func (s *ScannerService) refreshScanPathCache() error {
+	s.scanPathCacheMu.Lock()
+	defer s.scanPathCacheMu.Unlock()
+
+	// Check if cache is still valid (60 second TTL)
+	if time.Since(s.scanPathCacheTime) < 60*time.Second && len(s.scanPathCache) > 0 {
+		return nil
+	}
+
 	rows, err := s.db.Query("SELECT local_path, auto_remediate, COALESCE(dry_run, 0) FROM scan_paths WHERE enabled = 1")
 	if err != nil {
-		return false, false, err
+		return err
 	}
 	defer rows.Close()
+
+	cache := make([]scanPathConfig, 0, 10)
+	for rows.Next() {
+		var cfg scanPathConfig
+		if err := rows.Scan(&cfg.LocalPath, &cfg.AutoRemediate, &cfg.DryRun); err != nil {
+			continue
+		}
+		cache = append(cache, cfg)
+	}
+
+	s.scanPathCache = cache
+	s.scanPathCacheTime = time.Now()
+	return nil
+}
+
+// InvalidateScanPathCache clears the scan path cache, forcing a reload on next access.
+// Call this when scan paths are added/modified/deleted.
+func (s *ScannerService) InvalidateScanPathCache() {
+	s.scanPathCacheMu.Lock()
+	defer s.scanPathCacheMu.Unlock()
+	s.scanPathCacheTime = time.Time{} // Zero time forces refresh
+}
+
+// getScanPathConfig finds the matching scan path configuration for a file path.
+// Uses cached scan paths to avoid N+1 query problem (was: 1 query per file).
+// Returns auto_remediate, dry_run, and any error.
+func (s *ScannerService) getScanPathConfig(filePath string) (autoRemediate bool, dryRun bool, err error) {
+	// Ensure cache is fresh
+	if err := s.refreshScanPathCache(); err != nil {
+		return false, false, err
+	}
+
+	s.scanPathCacheMu.RLock()
+	defer s.scanPathCacheMu.RUnlock()
 
 	var bestMatchLen int
 	found := false
 
-	for rows.Next() {
-		var rootPath string
-		var ar, dr bool
-		if err := rows.Scan(&rootPath, &ar, &dr); err != nil {
-			continue
-		}
-
+	for _, cfg := range s.scanPathCache {
 		// Check if filePath starts with rootPath AND is followed by / or end of string
 		// This prevents /mnt/media/TV from matching /mnt/media/TV2
-		if strings.HasPrefix(filePath, rootPath) {
-			remainder := filePath[len(rootPath):]
+		if strings.HasPrefix(filePath, cfg.LocalPath) {
+			remainder := filePath[len(cfg.LocalPath):]
 			// Valid match only if remainder is empty or starts with /
 			if remainder == "" || strings.HasPrefix(remainder, "/") {
-				if len(rootPath) > bestMatchLen {
-					bestMatchLen = len(rootPath)
-					autoRemediate = ar
-					dryRun = dr
+				if len(cfg.LocalPath) > bestMatchLen {
+					bestMatchLen = len(cfg.LocalPath)
+					autoRemediate = cfg.AutoRemediate
+					dryRun = cfg.DryRun
 					found = true
 				}
 			}
@@ -1272,8 +1332,8 @@ func (s *ScannerService) hasActiveCorruption(filePath string) bool {
 		AND json_extract(e1.event_data, '$.file_path') = ?
 		AND e1.created_at > datetime('now', '-7 days')
 		AND NOT EXISTS (
-			SELECT 1 FROM events e2 
-			WHERE e2.aggregate_id = e1.aggregate_id 
+			SELECT 1 FROM events e2
+			WHERE e2.aggregate_id = e1.aggregate_id
 			AND e2.event_type IN ('VerificationSuccess', 'MaxRetriesReached')
 		)
 	`, filePath).Scan(&count)
@@ -1284,6 +1344,43 @@ func (s *ScannerService) hasActiveCorruption(filePath string) bool {
 	}
 
 	return count > 0
+}
+
+// LoadActiveCorruptionsForPath preloads all active corruptions for a given root path.
+// This fixes the N+1 query problem during path scans by doing a single query upfront.
+// Returns a map of file_path -> true for files with active corruptions.
+func (s *ScannerService) LoadActiveCorruptionsForPath(rootPath string) map[string]bool {
+	result := make(map[string]bool)
+
+	// Get all active corruptions for files under this path in a single query
+	rows, err := s.db.Query(`
+		SELECT DISTINCT json_extract(e1.event_data, '$.file_path') as file_path
+		FROM events e1
+		WHERE e1.event_type = 'CorruptionDetected'
+		AND json_extract(e1.event_data, '$.file_path') LIKE ? || '%'
+		AND e1.created_at > datetime('now', '-7 days')
+		AND NOT EXISTS (
+			SELECT 1 FROM events e2
+			WHERE e2.aggregate_id = e1.aggregate_id
+			AND e2.event_type IN ('VerificationSuccess', 'MaxRetriesReached')
+		)
+	`, rootPath)
+	if err != nil {
+		logger.Debugf("Error loading active corruptions for path %s: %v", rootPath, err)
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var filePath string
+		if err := rows.Scan(&filePath); err != nil {
+			continue
+		}
+		result[filePath] = true
+	}
+
+	logger.Debugf("Preloaded %d active corruptions for path %s", len(result), rootPath)
+	return result
 }
 
 // queueForRescan adds a file to the pending_rescans table for later retry

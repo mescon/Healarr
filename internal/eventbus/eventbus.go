@@ -49,7 +49,7 @@ func (eb *EventBus) Publish(event domain.Event) error {
 
 	// Set default values if missing
 	if event.CreatedAt.IsZero() {
-		event.CreatedAt = time.Now()
+		event.CreatedAt = time.Now().UTC() // Use UTC for consistent SQLite date parsing
 	}
 	if event.EventVersion == 0 {
 		event.EventVersion = 1

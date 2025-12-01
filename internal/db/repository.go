@@ -232,7 +232,7 @@ func (r *Repository) RunMaintenance(retentionDays int) error {
 		result, err = r.DB.Exec(`
 			DELETE FROM scans
 			WHERE status IN ('completed', 'cancelled', 'error')
-			AND ended_at < ?
+			AND completed_at < ?
 		`, cutoff)
 		if err != nil {
 			logger.Errorf("Failed to prune old scans: %v", err)
@@ -243,18 +243,17 @@ func (r *Repository) RunMaintenance(retentionDays int) error {
 			}
 		}
 
-		// Delete orphaned corruption records (corruptions from deleted scans)
+		// Delete orphaned scan_files records (from deleted scans)
 		result, err = r.DB.Exec(`
-			DELETE FROM corruptions
+			DELETE FROM scan_files
 			WHERE scan_id NOT IN (SELECT id FROM scans)
-			AND status IN ('resolved', 'failed')
 		`)
 		if err != nil {
-			logger.Errorf("Failed to prune orphaned corruptions: %v", err)
+			logger.Errorf("Failed to prune orphaned scan_files: %v", err)
 		} else {
 			deleted, _ := result.RowsAffected()
 			if deleted > 0 {
-				logger.Infof("Pruned %d orphaned corruption records", deleted)
+				logger.Infof("Pruned %d orphaned scan_files records", deleted)
 			}
 		}
 	}
