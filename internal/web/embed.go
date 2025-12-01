@@ -47,9 +47,9 @@ func ListEmbeddedFiles() []string {
 	}
 
 	var files []string
-	fs.WalkDir(embeddedFS, ".", func(path string, d fs.DirEntry, err error) error {
+	_ = fs.WalkDir(embeddedFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return nil // Continue walking on error
 		}
 		if !d.IsDir() {
 			files = append(files, path)

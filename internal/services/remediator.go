@@ -135,7 +135,7 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 		defer func() { <-r.semaphore }()
 
 		// Trigger search directly (skip deletion)
-		r.eventBus.Publish(domain.Event{
+		if err := r.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.SearchStarted,
@@ -144,7 +144,9 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 				"media_id":  mediaID,
 				"path_id":   pathID,
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish SearchStarted event: %v", err)
+		}
 
 		// Extract episode IDs from metadata if available
 		var episodeIDs []int64
@@ -174,7 +176,7 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 
 		logger.Infof("Retry search triggered successfully for %s (media ID: %d)", filePath, mediaID)
 
-		r.eventBus.Publish(domain.Event{
+		if err := r.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.SearchCompleted,
@@ -185,7 +187,9 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 				"path_id":   pathID,
 				"is_retry":  true,
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish SearchCompleted event: %v", err)
+		}
 	}()
 }
 
@@ -200,184 +204,214 @@ func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
 		return
 	}
 
-	filePath := data.FilePath
-	corruptionType := data.CorruptionType
-	pathID := data.PathID
-	autoRemediate := data.AutoRemediate
-	dryRun := data.DryRun
-
 	// SAFETY CHECK: Verify this is a true corruption, not a recoverable error
-	// This is a defense-in-depth check - the scanner should already filter these out,
-	// but we double-check here before taking any destructive action
-	switch corruptionType {
-	case integration.ErrorTypeAccessDenied, integration.ErrorTypePathNotFound,
-		integration.ErrorTypeMountLost, integration.ErrorTypeIOError,
-		integration.ErrorTypeTimeout, integration.ErrorTypeInvalidConfig:
-		// This is a recoverable error that somehow made it through - DO NOT remediate
+	if r.isInfrastructureError(data.CorruptionType) {
 		logger.Errorf("SAFETY: Refusing to remediate %s - error type '%s' indicates infrastructure issue, not corruption",
-			filePath, corruptionType)
+			data.FilePath, data.CorruptionType)
 		r.publishError(corruptionID, domain.DeletionFailed,
 			"remediation blocked: error type indicates infrastructure issue, not file corruption")
 		return
 	}
 
-	logger.Infof("Handling corruption for file: %s", filePath)
+	logger.Infof("Handling corruption for file: %s", data.FilePath)
 
 	// Get path mapping
-	arrPath, err := r.pathMapper.ToArrPath(filePath)
+	arrPath, err := r.pathMapper.ToArrPath(data.FilePath)
 	if err != nil {
-		logger.Errorf("Failed to map path %s: %v", filePath, err)
+		logger.Errorf("Failed to map path %s: %v", data.FilePath, err)
 		r.publishError(corruptionID, domain.DeletionFailed, err.Error())
 		return
 	}
 
 	// Emit queued event
-	r.eventBus.Publish(domain.Event{
+	if err := r.eventBus.Publish(domain.Event{
 		AggregateID:   corruptionID,
 		AggregateType: "corruption",
 		EventType:     domain.RemediationQueued,
-	})
+	}); err != nil {
+		logger.Errorf("Failed to publish RemediationQueued event: %v", err)
+	}
 
 	// Check for auto-remediation
-	if autoRemediate {
-		// Check for global dry-run mode (environment variable) OR per-path dry-run mode
-		// Global DryRunMode takes precedence - if set, ALL remediations are simulated
-		if config.Get().DryRunMode {
-			dryRun = true // Global override
-		}
+	if !data.AutoRemediate {
+		return
+	}
 
-		if dryRun {
-			logger.Infof("Auto-remediation enabled for %s, but DRY-RUN mode is set for this path", filePath)
-		} else {
-			logger.Infof("Auto-remediation enabled for %s, proceeding immediately", filePath)
-		}
+	// Check for global dry-run mode override
+	dryRun := data.DryRun || config.Get().DryRunMode
 
-		// DRY-RUN MODE: Log what would happen without actually doing it
-		if dryRun {
-			go func() {
-				mediaID, err := r.arrClient.FindMediaByPath(arrPath)
-				if err != nil {
-					logger.Infof("[DRY-RUN] Would fail to find media for path %s: %v", arrPath, err)
-					return
-				}
-				logger.Infof("[DRY-RUN] Would delete file and trigger search:")
-				logger.Infof("[DRY-RUN]   - File: %s", filePath)
-				logger.Infof("[DRY-RUN]   - *arr Path: %s", arrPath)
-				logger.Infof("[DRY-RUN]   - Media ID: %d", mediaID)
-				logger.Infof("[DRY-RUN]   - Action: DELETE file via *arr API, then trigger search")
-				logger.Infof("[DRY-RUN] Set HEALARR_DRY_RUN=false to enable actual remediation")
-
-				// Emit a special event for dry-run completion
-				r.eventBus.Publish(domain.Event{
-					AggregateID:   corruptionID,
-					AggregateType: "corruption",
-					EventType:     domain.RemediationQueued, // Stay in queued state
-					EventData: map[string]interface{}{
-						"dry_run":  true,
-						"media_id": mediaID,
-						"message":  "Dry-run mode: remediation simulated but not executed",
-					},
-				})
-			}()
-			return
-		}
-
-		// Trigger remediation immediately
-		go func() {
-			// Acquire semaphore to limit concurrent remediations
-			r.semaphore <- struct{}{}
-			defer func() { <-r.semaphore }()
-
-			// Delete file
-			r.eventBus.Publish(domain.Event{
-				AggregateID:   corruptionID,
-				AggregateType: "corruption",
-				EventType:     domain.DeletionStarted,
-			})
-
-			mediaID, err := r.arrClient.FindMediaByPath(arrPath)
-			if err != nil {
-				logger.Errorf("Failed to find media for path %s: %v", arrPath, err)
-				r.publishError(corruptionID, domain.DeletionFailed, err.Error())
-				return
-			}
-
-			metadata, err := r.arrClient.DeleteFile(mediaID, arrPath)
-			if err != nil {
-				logger.Errorf("Failed to delete file %s: %v", arrPath, err)
-				r.publishError(corruptionID, domain.DeletionFailed, err.Error())
-				return
-			}
-
-			// Success - emit deleted event
-			r.eventBus.Publish(domain.Event{
-				AggregateID:   corruptionID,
-				AggregateType: "corruption",
-				EventType:     domain.DeletionCompleted,
-				EventData: map[string]interface{}{
-					"media_id": mediaID,
-					"metadata": metadata,
-				},
-			})
-
-			// Trigger search
-			r.eventBus.Publish(domain.Event{
-				AggregateID:   corruptionID,
-				AggregateType: "corruption",
-				EventType:     domain.SearchStarted,
-				EventData: map[string]interface{}{
-					"file_path": filePath,
-					"media_id":  mediaID,
-					"path_id":   pathID,
-				},
-			})
-
-			// Extract episode IDs from metadata for targeted search
-			var episodeIDs []int64
-			if episodeIDsRaw, ok := metadata["episode_ids"]; ok {
-				switch v := episodeIDsRaw.(type) {
-				case []int64:
-					episodeIDs = v
-				case []interface{}:
-					for _, item := range v {
-						if f, ok := item.(float64); ok {
-							episodeIDs = append(episodeIDs, int64(f))
-						} else if i, ok := item.(int64); ok {
-							episodeIDs = append(episodeIDs, i)
-						}
-					}
-				}
-			}
-
-			err = r.arrClient.TriggerSearch(mediaID, arrPath, episodeIDs)
-			if err != nil {
-				logger.Errorf("Failed to trigger search for media %d: %v", mediaID, err)
-				r.publishError(corruptionID, domain.SearchFailed, err.Error())
-				return
-			}
-
-			logger.Infof("Remediation completed successfully for %s", filePath)
-
-			r.eventBus.Publish(domain.Event{
-				AggregateID:   corruptionID,
-				AggregateType: "corruption",
-				EventType:     domain.SearchCompleted,
-				EventData: map[string]interface{}{
-					"file_path": filePath,
-					"media_id":  mediaID,
-					"metadata":  metadata,
-					"path_id":   pathID,
-				},
-			})
-		}()
+	if dryRun {
+		logger.Infof("Auto-remediation enabled for %s, but DRY-RUN mode is set for this path", data.FilePath)
+		go r.executeDryRun(corruptionID, data.FilePath, arrPath)
+	} else {
+		logger.Infof("Auto-remediation enabled for %s, proceeding immediately", data.FilePath)
+		go r.executeRemediation(corruptionID, data.FilePath, arrPath, data.PathID)
 	}
 }
 
+// isInfrastructureError checks if the error type indicates an infrastructure issue
+// rather than actual file corruption
+func (r *RemediatorService) isInfrastructureError(corruptionType string) bool {
+	switch corruptionType {
+	case integration.ErrorTypeAccessDenied, integration.ErrorTypePathNotFound,
+		integration.ErrorTypeMountLost, integration.ErrorTypeIOError,
+		integration.ErrorTypeTimeout, integration.ErrorTypeInvalidConfig:
+		return true
+	}
+	return false
+}
+
+// executeDryRun simulates the remediation without making changes
+func (r *RemediatorService) executeDryRun(corruptionID, filePath, arrPath string) {
+	mediaID, err := r.arrClient.FindMediaByPath(arrPath)
+	if err != nil {
+		logger.Infof("[DRY-RUN] Would fail to find media for path %s: %v", arrPath, err)
+		return
+	}
+	logger.Infof("[DRY-RUN] Would delete file and trigger search:")
+	logger.Infof("[DRY-RUN]   - File: %s", filePath)
+	logger.Infof("[DRY-RUN]   - *arr Path: %s", arrPath)
+	logger.Infof("[DRY-RUN]   - Media ID: %d", mediaID)
+	logger.Infof("[DRY-RUN]   - Action: DELETE file via *arr API, then trigger search")
+	logger.Infof("[DRY-RUN] Set HEALARR_DRY_RUN=false to enable actual remediation")
+
+	// Emit a special event for dry-run completion
+	if err := r.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.RemediationQueued, // Stay in queued state
+		EventData: map[string]interface{}{
+			"dry_run":  true,
+			"media_id": mediaID,
+			"message":  "Dry-run mode: remediation simulated but not executed",
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish dry-run event: %v", err)
+	}
+}
+
+// executeRemediation performs the actual deletion and search trigger
+func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath string, pathID int64) {
+	// Acquire semaphore to limit concurrent remediations
+	r.semaphore <- struct{}{}
+	defer func() { <-r.semaphore }()
+
+	// Publish deletion started
+	if err := r.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DeletionStarted,
+	}); err != nil {
+		logger.Errorf("Failed to publish DeletionStarted event: %v", err)
+	}
+
+	// Find media
+	mediaID, err := r.arrClient.FindMediaByPath(arrPath)
+	if err != nil {
+		logger.Errorf("Failed to find media for path %s: %v", arrPath, err)
+		r.publishError(corruptionID, domain.DeletionFailed, err.Error())
+		return
+	}
+
+	// Delete file
+	metadata, err := r.arrClient.DeleteFile(mediaID, arrPath)
+	if err != nil {
+		logger.Errorf("Failed to delete file %s: %v", arrPath, err)
+		r.publishError(corruptionID, domain.DeletionFailed, err.Error())
+		return
+	}
+
+	// Publish deletion completed
+	if err := r.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DeletionCompleted,
+		EventData: map[string]interface{}{
+			"media_id": mediaID,
+			"metadata": metadata,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish DeletionCompleted event: %v", err)
+	}
+
+	// Trigger search
+	r.triggerSearch(corruptionID, filePath, arrPath, pathID, mediaID, metadata)
+}
+
+// triggerSearch initiates the search for a replacement file
+func (r *RemediatorService) triggerSearch(corruptionID, filePath, arrPath string, pathID, mediaID int64, metadata map[string]interface{}) {
+	// Publish search started
+	if err := r.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.SearchStarted,
+		EventData: map[string]interface{}{
+			"file_path": filePath,
+			"media_id":  mediaID,
+			"path_id":   pathID,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish SearchStarted event: %v", err)
+	}
+
+	// Extract episode IDs from metadata for targeted search
+	episodeIDs := extractEpisodeIDs(metadata)
+
+	err := r.arrClient.TriggerSearch(mediaID, arrPath, episodeIDs)
+	if err != nil {
+		logger.Errorf("Failed to trigger search for media %d: %v", mediaID, err)
+		r.publishError(corruptionID, domain.SearchFailed, err.Error())
+		return
+	}
+
+	logger.Infof("Remediation completed successfully for %s", filePath)
+
+	// Publish search completed
+	if err := r.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.SearchCompleted,
+		EventData: map[string]interface{}{
+			"file_path": filePath,
+			"media_id":  mediaID,
+			"metadata":  metadata,
+			"path_id":   pathID,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish SearchCompleted event: %v", err)
+	}
+}
+
+// extractEpisodeIDs extracts episode IDs from metadata for targeted search
+func extractEpisodeIDs(metadata map[string]interface{}) []int64 {
+	var episodeIDs []int64
+	episodeIDsRaw, ok := metadata["episode_ids"]
+	if !ok {
+		return episodeIDs
+	}
+
+	switch v := episodeIDsRaw.(type) {
+	case []int64:
+		episodeIDs = v
+	case []interface{}:
+		for _, item := range v {
+			if f, ok := item.(float64); ok {
+				episodeIDs = append(episodeIDs, int64(f))
+			} else if i, ok := item.(int64); ok {
+				episodeIDs = append(episodeIDs, i)
+			}
+		}
+	}
+	return episodeIDs
+}
+
 func (r *RemediatorService) publishError(id string, eventType domain.EventType, errMsg string) {
-	r.eventBus.Publish(domain.Event{
+	if err := r.eventBus.Publish(domain.Event{
 		AggregateID:   id,
 		AggregateType: "corruption",
 		EventType:     eventType,
 		EventData:     map[string]interface{}{"error": errMsg},
-	})
+	}); err != nil {
+		logger.Errorf("Failed to publish error event %s: %v", eventType, err)
+	}
 }

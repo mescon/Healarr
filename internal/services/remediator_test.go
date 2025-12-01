@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -442,8 +443,9 @@ func TestRemediatorService_Concurrency(t *testing.T) {
 
 		mockEventBus := testutil.NewMockEventBus()
 
-		// Track concurrent calls
+		// Track concurrent calls with proper synchronization
 		concurrentCalls := make(chan int, 100)
+		var concurrentMu sync.Mutex
 		currentConcurrent := 0
 		maxConcurrent := 0
 
@@ -452,16 +454,20 @@ func TestRemediatorService_Concurrency(t *testing.T) {
 				return 123, nil
 			},
 			DeleteFileFunc: func(mediaID int64, path string) (map[string]interface{}, error) {
+				concurrentMu.Lock()
 				currentConcurrent++
 				if currentConcurrent > maxConcurrent {
 					maxConcurrent = currentConcurrent
 				}
 				concurrentCalls <- currentConcurrent
+				concurrentMu.Unlock()
 
 				// Simulate some work
 				time.Sleep(50 * time.Millisecond)
 
+				concurrentMu.Lock()
 				currentConcurrent--
+				concurrentMu.Unlock()
 				return nil, nil
 			},
 			TriggerSearchFunc: func(mediaID int64, path string, episodeIDs []int64) error {
@@ -486,8 +492,11 @@ func TestRemediatorService_Concurrency(t *testing.T) {
 		time.Sleep(1 * time.Second)
 
 		// Assert - max concurrent should be <= 5 (maxConcurrentRemediations)
-		if maxConcurrent > maxConcurrentRemediations {
-			t.Errorf("Expected max concurrent <= %d, got %d", maxConcurrentRemediations, maxConcurrent)
+		concurrentMu.Lock()
+		maxConcurrentValue := maxConcurrent
+		concurrentMu.Unlock()
+		if maxConcurrentValue > maxConcurrentRemediations {
+			t.Errorf("Expected max concurrent <= %d, got %d", maxConcurrentRemediations, maxConcurrentValue)
 		}
 	})
 }

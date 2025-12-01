@@ -132,7 +132,7 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 		elapsed := time.Since(startTime)
 		if elapsed > timeout {
 			logger.Infof("[WARN] Verification timeout for %s after %s", corruptionID, elapsed)
-			v.eventBus.Publish(domain.Event{
+			if err := v.eventBus.Publish(domain.Event{
 				AggregateID:   corruptionID,
 				AggregateType: "corruption",
 				EventType:     domain.DownloadTimeout,
@@ -141,7 +141,9 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 					"attempts":    attempt,
 					"last_status": lastStatus,
 				},
-			})
+			}); err != nil {
+				logger.Errorf("Failed to publish DownloadTimeout event: %v", err)
+			}
 			return
 		}
 
@@ -161,7 +163,7 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 			// Check for failure states
 			if item.TrackedDownloadState == "failed" || item.TrackedDownloadState == "failedPending" {
 				logger.Infof("[WARN] Download failed for %s: %s", corruptionID, item.ErrorMessage)
-				v.eventBus.Publish(domain.Event{
+				if err := v.eventBus.Publish(domain.Event{
 					AggregateID:   corruptionID,
 					AggregateType: "corruption",
 					EventType:     domain.DownloadFailed,
@@ -171,7 +173,9 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 						"queue_id":    item.ID,
 						"download_id": item.DownloadID,
 					},
-				})
+				}); err != nil {
+					logger.Errorf("Failed to publish DownloadFailed event: %v", err)
+				}
 				return
 			}
 
@@ -218,12 +222,14 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 					}
 				}
 
-				v.eventBus.Publish(domain.Event{
+				if err := v.eventBus.Publish(domain.Event{
 					AggregateID:   corruptionID,
 					AggregateType: "corruption",
 					EventType:     domain.DownloadProgress,
 					EventData:     eventData,
-				})
+				}); err != nil {
+					logger.Debugf("Failed to publish DownloadProgress event: %v", err)
+				}
 			}
 
 			// If import is pending or completed in queue, check history
@@ -359,7 +365,7 @@ func (v *VerifierService) pollForFileWithBackoff(corruptionID string, referenceP
 
 		if time.Since(startTime) > timeout {
 			logger.Infof("Verification timeout for %s after %d attempts", corruptionID, attempt)
-			v.eventBus.Publish(domain.Event{
+			if err := v.eventBus.Publish(domain.Event{
 				AggregateID:   corruptionID,
 				AggregateType: "corruption",
 				EventType:     domain.DownloadTimeout,
@@ -367,7 +373,9 @@ func (v *VerifierService) pollForFileWithBackoff(corruptionID string, referenceP
 					"elapsed":  time.Since(startTime).String(),
 					"attempts": attempt,
 				},
-			})
+			}); err != nil {
+				logger.Errorf("Failed to publish DownloadTimeout event: %v", err)
+			}
 			return
 		}
 
@@ -446,10 +454,6 @@ func (v *VerifierService) getVerificationTimeout(pathID int64) time.Duration {
 	return time.Duration(timeoutHours.Int64) * time.Hour
 }
 
-func (v *VerifierService) emitFileDetected(corruptionID, filePath string) {
-	v.emitFilesDetected(corruptionID, []string{filePath})
-}
-
 // emitFilesDetected handles verification of one or more files (for multi-episode replacements)
 func (v *VerifierService) emitFilesDetected(corruptionID string, filePaths []string) {
 	if len(filePaths) == 0 {
@@ -458,15 +462,17 @@ func (v *VerifierService) emitFilesDetected(corruptionID string, filePaths []str
 
 	// If single file, use simple path in event
 	if len(filePaths) == 1 {
-		v.eventBus.Publish(domain.Event{
+		if err := v.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.FileDetected,
 			EventData:     map[string]interface{}{"file_path": filePaths[0]},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish FileDetected event: %v", err)
+		}
 	} else {
 		// Multiple files (multi-episode replacement with individual episodes)
-		v.eventBus.Publish(domain.Event{
+		if err := v.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.FileDetected,
@@ -475,25 +481,25 @@ func (v *VerifierService) emitFilesDetected(corruptionID string, filePaths []str
 				"file_paths": filePaths,    // All paths
 				"file_count": len(filePaths),
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish FileDetected event: %v", err)
+		}
 		logger.Infof("Multi-episode replacement detected for %s: %d files to verify", corruptionID, len(filePaths))
 	}
 
 	v.verifyHealthMultiple(corruptionID, filePaths)
 }
 
-func (v *VerifierService) verifyHealth(corruptionID string, filePath string) {
-	v.verifyHealthMultiple(corruptionID, []string{filePath})
-}
-
 // verifyHealthMultiple verifies the health of one or more files.
 // All files must be healthy for verification to succeed.
 func (v *VerifierService) verifyHealthMultiple(corruptionID string, filePaths []string) {
-	v.eventBus.Publish(domain.Event{
+	if err := v.eventBus.Publish(domain.Event{
 		AggregateID:   corruptionID,
 		AggregateType: "corruption",
 		EventType:     domain.VerificationStarted,
-	})
+	}); err != nil {
+		logger.Errorf("Failed to publish VerificationStarted event: %v", err)
+	}
 
 	// Verify all files - all must be healthy for success
 	var failedPaths []string
@@ -514,17 +520,19 @@ func (v *VerifierService) verifyHealthMultiple(corruptionID string, filePaths []
 
 	if len(failedPaths) == 0 {
 		// All files healthy
-		v.eventBus.Publish(domain.Event{
+		if err := v.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.VerificationSuccess,
 			EventData: map[string]interface{}{
 				"verified_count": len(filePaths),
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish VerificationSuccess event: %v", err)
+		}
 	} else {
 		// At least one file failed verification
-		v.eventBus.Publish(domain.Event{
+		if err := v.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.VerificationFailed,
@@ -534,6 +542,8 @@ func (v *VerifierService) verifyHealthMultiple(corruptionID string, filePaths []
 				"failed_count": len(failedPaths),
 				"total_count":  len(filePaths),
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish VerificationFailed event: %v", err)
+		}
 	}
 }

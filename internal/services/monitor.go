@@ -41,11 +41,13 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 	}
 
 	if retryCount >= maxRetries {
-		m.eventBus.Publish(domain.Event{
+		if err := m.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.MaxRetriesReached,
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish MaxRetriesReached event for %s: %v", corruptionID, err)
+		}
 		return
 	}
 
@@ -61,7 +63,7 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 	delay := time.Duration(math.Pow(2, float64(retryCount))) * 15 * time.Minute
 
 	time.AfterFunc(delay, func() {
-		m.eventBus.Publish(domain.Event{
+		if err := m.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.RetryScheduled,
@@ -70,7 +72,9 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 				"path_id":        pathID,
 				"auto_remediate": true, // Retries should always auto-remediate
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish RetryScheduled event for %s: %v", corruptionID, err)
+		}
 	})
 }
 

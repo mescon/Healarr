@@ -119,7 +119,9 @@ func (h *WebSocketHub) run() {
 			h.mu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
-				client.Close()
+				if err := client.Close(); err != nil {
+					logger.Debugf("WebSocket close error: %v", err)
+				}
 				logger.Debugf("WebSocket client disconnected")
 			}
 			h.mu.Unlock()
@@ -130,7 +132,9 @@ func (h *WebSocketHub) run() {
 				err := client.WriteJSON(message)
 				if err != nil {
 					logger.Errorf("WebSocket error: %v", err)
-					client.Close()
+					if closeErr := client.Close(); closeErr != nil {
+						logger.Debugf("WebSocket close error during broadcast: %v", closeErr)
+					}
 					delete(h.clients, client)
 				}
 			}
@@ -149,7 +153,9 @@ func (h *WebSocketHub) HandleConnection(c *gin.Context) {
 
 	// Send initial ping to verify connection (safe before ping goroutine starts)
 	h.mu.Lock()
-	ws.WriteJSON(gin.H{"type": "ping", "timestamp": time.Now()})
+	if err := ws.WriteJSON(gin.H{"type": "ping", "timestamp": time.Now()}); err != nil {
+		logger.Debugf("Failed to send initial ping: %v", err)
+	}
 	h.mu.Unlock()
 
 	// Set up ping/pong to keep connection alive
@@ -158,10 +164,12 @@ func (h *WebSocketHub) HandleConnection(c *gin.Context) {
 		pingPeriod = (pongWait * 9) / 10
 	)
 
-	ws.SetReadDeadline(time.Now().Add(pongWait))
+	if err := ws.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		logger.Debugf("Failed to set initial read deadline: %v", err)
+	}
 	ws.SetPongHandler(func(string) error {
-		ws.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
+		// SetReadDeadline error is returned to the pong handler caller
+		return ws.SetReadDeadline(time.Now().Add(pongWait))
 	})
 
 	// Send pings periodically

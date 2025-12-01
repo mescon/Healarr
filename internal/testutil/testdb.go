@@ -19,7 +19,7 @@ func NewTestDB() (*sql.DB, error) {
 	}
 
 	if err := initializeSchema(db); err != nil {
-		db.Close()
+		_ = db.Close() // Ignore close error since we're already returning an error
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 

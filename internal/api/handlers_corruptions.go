@@ -208,7 +208,9 @@ func (s *RESTServer) getCorruptionHistory(c *gin.Context) {
 
 		var data map[string]interface{}
 		if len(eventData) > 0 {
-			json.Unmarshal(eventData, &data)
+			if err := json.Unmarshal(eventData, &data); err != nil {
+				logger.Debugf("Failed to unmarshal event data: %v", err)
+			}
 		}
 
 		history = append(history, map[string]interface{}{
@@ -253,7 +255,7 @@ func (s *RESTServer) retryCorruptions(c *gin.Context) {
 			continue
 		}
 
-		s.eventBus.Publish(domain.Event{
+		if err := s.eventBus.Publish(domain.Event{
 			AggregateID:   id,
 			AggregateType: "corruption",
 			EventType:     domain.RetryScheduled,
@@ -263,7 +265,10 @@ func (s *RESTServer) retryCorruptions(c *gin.Context) {
 				"auto_remediate": true,
 				"manual_retry":   true,
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish RetryScheduled event for %s: %v", id, err)
+			continue
+		}
 		retried++
 	}
 
@@ -290,12 +295,15 @@ func (s *RESTServer) ignoreCorruptions(c *gin.Context) {
 
 	ignored := 0
 	for _, id := range req.IDs {
-		s.eventBus.Publish(domain.Event{
+		if err := s.eventBus.Publish(domain.Event{
 			AggregateID:   id,
 			AggregateType: "corruption",
 			EventType:     domain.CorruptionIgnored,
 			EventData:     map[string]interface{}{"reason": "Manually ignored by user"},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish CorruptionIgnored event for %s: %v", id, err)
+			continue
+		}
 		ignored++
 	}
 
@@ -327,7 +335,11 @@ func (s *RESTServer) deleteCorruptions(c *gin.Context) {
 			logger.Errorf("Failed to delete events for corruption %s: %v", id, err)
 			continue
 		}
-		rows, _ := result.RowsAffected()
+		rows, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			logger.Debugf("Failed to get rows affected for corruption %s: %v", id, rowsErr)
+			continue
+		}
 		if rows > 0 {
 			deleted++
 		}

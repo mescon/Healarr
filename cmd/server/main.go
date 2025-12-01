@@ -292,8 +292,11 @@ func main() {
 	}
 
 	logger.Infof("Closing database connection...")
-	repo.Close()
-	logger.Infof("✓ Database connection closed")
+	if err := repo.Close(); err != nil {
+		logger.Errorf("Failed to close database connection: %v", err)
+	} else {
+		logger.Infof("✓ Database connection closed")
+	}
 
 	logger.Infof("========================================")
 	logger.Infof("✓ Healarr shutdown complete")

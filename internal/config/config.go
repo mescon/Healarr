@@ -2,6 +2,7 @@ package config
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -119,7 +120,11 @@ func Load() *Config {
 	}
 
 	// Create data directory if it doesn't exist
-	os.MkdirAll(dataDir, 0755)
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		// Log to stderr since logger may not be initialized yet
+		// We continue anyway since the directory may already exist
+		fmt.Fprintf(os.Stderr, "Warning: failed to create data directory %s: %v\n", dataDir, err)
+	}
 
 	// Determine WebDir - find the web directory
 	webDir := getEnvOrDefault("HEALARR_WEB_DIR", "")
@@ -176,7 +181,9 @@ func Load() *Config {
 
 	// Log directory - inside data directory
 	logDir := filepath.Join(dataDir, "logs")
-	os.MkdirAll(logDir, 0755)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to create log directory %s: %v\n", logDir, err)
+	}
 
 	cfg = &Config{
 		Port:                 getEnvOrDefault("HEALARR_PORT", "3090"),

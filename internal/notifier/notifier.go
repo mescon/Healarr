@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -451,7 +450,7 @@ func (n *Notifier) sendNotification(cfg *NotificationConfig, eventType string, d
 		n.logNotification(cfg.ID, eventType, message, "failed", err.Error())
 		// Publish NotificationFailed event if we have an aggregate ID
 		if aggregateID != "" {
-			n.eb.Publish(domain.Event{
+			if pubErr := n.eb.Publish(domain.Event{
 				AggregateType: "corruption",
 				AggregateID:   aggregateID,
 				EventType:     domain.NotificationFailed,
@@ -460,14 +459,16 @@ func (n *Notifier) sendNotification(cfg *NotificationConfig, eventType string, d
 					"trigger_event": eventType,
 					"error":         err.Error(),
 				},
-			})
+			}); pubErr != nil {
+				logger.Errorf("Failed to publish NotificationFailed event: %v", pubErr)
+			}
 		}
 	} else {
 		logger.Debugf("Sent notification %d for event %s", cfg.ID, eventType)
 		n.logNotification(cfg.ID, eventType, message, "sent", "")
 		// Publish NotificationSent event if we have an aggregate ID
 		if aggregateID != "" {
-			n.eb.Publish(domain.Event{
+			if pubErr := n.eb.Publish(domain.Event{
 				AggregateType: "corruption",
 				AggregateID:   aggregateID,
 				EventType:     domain.NotificationSent,
@@ -475,7 +476,9 @@ func (n *Notifier) sendNotification(cfg *NotificationConfig, eventType string, d
 					"provider":      providerLabel,
 					"trigger_event": eventType,
 				},
-			})
+			}); pubErr != nil {
+				logger.Debugf("Failed to publish NotificationSent event: %v", pubErr)
+			}
 		}
 	}
 }
@@ -548,335 +551,11 @@ func (n *Notifier) getProviderLabel(providerType string) string {
 }
 
 func (n *Notifier) buildShoutrrrURL(cfg *NotificationConfig) (string, error) {
-	switch cfg.ProviderType {
-	case ProviderDiscord:
-		var c DiscordConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		return convertDiscordWebhook(c.WebhookURL)
-
-	case ProviderPushover:
-		var c PushoverConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		u := fmt.Sprintf("pushover://shoutrrr:%s@%s/", c.AppToken, c.UserKey)
-		params := url.Values{}
-		if c.Priority != 0 {
-			params.Set("priority", fmt.Sprintf("%d", c.Priority))
-		}
-		if c.Sound != "" {
-			params.Set("sound", c.Sound)
-		}
-		if len(params) > 0 {
-			u += "?" + params.Encode()
-		}
-		return u, nil
-
-	case ProviderTelegram:
-		var c TelegramConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("telegram://%s@telegram?chats=%s", c.BotToken, c.ChatID), nil
-
-	case ProviderSlack:
-		var c SlackConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		return convertSlackWebhook(c.WebhookURL)
-
-	case ProviderEmail:
-		var c EmailConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		auth := ""
-		if c.Username != "" {
-			auth = url.QueryEscape(c.Username)
-			if c.Password != "" {
-				auth += ":" + url.QueryEscape(c.Password)
-			}
-			auth += "@"
-		}
-		scheme := "smtp"
-		if c.TLS {
-			scheme = "smtps"
-		}
-		return fmt.Sprintf("%s://%s%s:%d/?from=%s&to=%s",
-			scheme, auth, c.Host, c.Port,
-			url.QueryEscape(c.From), url.QueryEscape(c.To)), nil
-
-	case ProviderGotify:
-		var c GotifyConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		serverURL := strings.TrimPrefix(c.ServerURL, "https://")
-		serverURL = strings.TrimPrefix(serverURL, "http://")
-		u := fmt.Sprintf("gotify://%s/%s", serverURL, c.AppToken)
-		if c.Priority > 0 {
-			u += fmt.Sprintf("?priority=%d", c.Priority)
-		}
-		return u, nil
-
-	case ProviderNtfy:
-		var c NtfyConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		serverURL := c.ServerURL
-		if serverURL == "" {
-			serverURL = "https://ntfy.sh"
-		}
-		serverURL = strings.TrimPrefix(serverURL, "https://")
-		serverURL = strings.TrimPrefix(serverURL, "http://")
-		u := fmt.Sprintf("ntfy://%s/%s", serverURL, c.Topic)
-		if c.Priority > 0 {
-			u += fmt.Sprintf("?priority=%d", c.Priority)
-		}
-		return u, nil
-
-	case ProviderWhatsApp:
-		var c WhatsAppConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		// WhatsApp via generic webhook (CallMeBot or similar services)
-		// Format: generic+https://api.callmebot.com/whatsapp.php?phone=PHONE&text=MESSAGE&apikey=APIKEY
-		// We'll use the generic webhook format which allows custom URLs
-		apiURL := c.APIURL
-		if apiURL == "" {
-			apiURL = "https://api.callmebot.com/whatsapp.php"
-		}
-		apiURL = strings.TrimPrefix(apiURL, "https://")
-		apiURL = strings.TrimPrefix(apiURL, "http://")
-		// Build the generic webhook URL with query params
-		return fmt.Sprintf("generic+https://%s?phone=%s&apikey=%s", apiURL, url.QueryEscape(c.Phone), url.QueryEscape(c.APIKey)), nil
-
-	case ProviderSignal:
-		var c SignalConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		// Signal via signal-cli-rest-api
-		// Format: generic+http://signal-api:8080/v2/send?number=SENDER&recipients=RECIPIENT
-		apiURL := c.APIURL
-		if apiURL == "" {
-			return "", fmt.Errorf("signal API URL is required (e.g., http://localhost:8080)")
-		}
-		apiURL = strings.TrimSuffix(apiURL, "/")
-		apiURL = strings.TrimPrefix(apiURL, "https://")
-		apiURL = strings.TrimPrefix(apiURL, "http://")
-		return fmt.Sprintf("generic+http://%s/v2/send?number=%s&recipients=%s", apiURL, url.QueryEscape(c.Number), url.QueryEscape(c.Recipient)), nil
-
-	case ProviderBark:
-		var c BarkConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		serverURL := c.ServerURL
-		if serverURL == "" {
-			serverURL = "api.day.app"
-		}
-		serverURL = strings.TrimPrefix(serverURL, "https://")
-		serverURL = strings.TrimPrefix(serverURL, "http://")
-		return fmt.Sprintf("bark://%s@%s", c.DeviceKey, serverURL), nil
-
-	case ProviderGoogleChat:
-		var c GoogleChatConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		// Extract space/key/token from webhook URL
-		// Format: https://chat.googleapis.com/v1/spaces/SPACE/messages?key=KEY&token=TOKEN
-		u, err := url.Parse(c.WebhookURL)
-		if err != nil {
-			return "", fmt.Errorf("invalid Google Chat webhook URL: %w", err)
-		}
-		return fmt.Sprintf("googlechat://%s%s?%s", u.Host, u.Path, u.RawQuery), nil
-
-	case ProviderIFTTT:
-		var c IFTTTConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("ifttt://%s/?events=%s", c.WebhookKey, c.Event), nil
-
-	case ProviderJoin:
-		var c JoinConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("join://shoutrrr:%s@join/?devices=%s", c.APIKey, c.Devices), nil
-
-	case ProviderMattermost:
-		var c MattermostConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		// Parse webhook URL to extract host and token
-		u, err := url.Parse(c.WebhookURL)
-		if err != nil {
-			return "", fmt.Errorf("invalid Mattermost webhook URL: %w", err)
-		}
-		token := strings.TrimPrefix(u.Path, "/hooks/")
-		result := fmt.Sprintf("mattermost://%s/%s", u.Host, token)
-		if c.Channel != "" {
-			result += "/" + c.Channel
-		}
-		return result, nil
-
-	case ProviderMatrix:
-		var c MatrixConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		host := strings.TrimPrefix(c.HomeServer, "https://")
-		host = strings.TrimPrefix(host, "http://")
-		result := fmt.Sprintf("matrix://%s:%s@%s", url.QueryEscape(c.User), url.QueryEscape(c.Password), host)
-		if c.Rooms != "" {
-			result += "/?rooms=" + url.QueryEscape(c.Rooms)
-		}
-		return result, nil
-
-	case ProviderPushbullet:
-		var c PushbulletConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		result := fmt.Sprintf("pushbullet://%s", c.APIToken)
-		if c.Targets != "" {
-			result += "/" + c.Targets
-		}
-		return result, nil
-
-	case ProviderRocketchat:
-		var c RocketchatConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		// Parse webhook URL to extract host and token
-		u, err := url.Parse(c.WebhookURL)
-		if err != nil {
-			return "", fmt.Errorf("invalid Rocketchat webhook URL: %w", err)
-		}
-		token := strings.TrimPrefix(u.Path, "/hooks/")
-		result := fmt.Sprintf("rocketchat://%s/%s", u.Host, token)
-		if c.Channel != "" {
-			result += "/" + c.Channel
-		}
-		return result, nil
-
-	case ProviderTeams:
-		var c TeamsConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		// Parse Teams webhook URL to extract components
-		// Format: https://xxx.webhook.office.com/webhookb2/GROUP@TENANT/IncomingWebhook/ALTID/GROUPOWNER
-		u, err := url.Parse(c.WebhookURL)
-		if err != nil {
-			return "", fmt.Errorf("invalid Teams webhook URL: %w", err)
-		}
-		parts := strings.Split(strings.TrimPrefix(u.Path, "/webhookb2/"), "/")
-		if len(parts) < 4 {
-			return "", fmt.Errorf("invalid Teams webhook URL format")
-		}
-		groupTenant := strings.Split(parts[0], "@")
-		if len(groupTenant) != 2 {
-			return "", fmt.Errorf("invalid Teams webhook URL format: missing group@tenant")
-		}
-		return fmt.Sprintf("teams://%s@%s/%s/%s?host=%s", groupTenant[0], groupTenant[1], parts[2], parts[3], u.Host), nil
-
-	case ProviderZulip:
-		var c ZulipConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		host := strings.TrimPrefix(c.Host, "https://")
-		host = strings.TrimPrefix(host, "http://")
-		return fmt.Sprintf("zulip://%s:%s@%s/?stream=%s&topic=%s",
-			url.QueryEscape(c.BotEmail), url.QueryEscape(c.BotKey), host,
-			url.QueryEscape(c.Stream), url.QueryEscape(c.Topic)), nil
-
-	case ProviderGeneric:
-		var c GenericConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		// Build generic webhook URL
-		targetURL := c.WebhookURL
-		if !strings.HasPrefix(targetURL, "http") {
-			targetURL = "https://" + targetURL
-		}
-
-		params := url.Values{}
-		if c.Template != "" {
-			params.Set("template", c.Template)
-		}
-		if c.MessageKey != "" && c.MessageKey != "message" {
-			params.Set("messageKey", c.MessageKey)
-		}
-		if c.TitleKey != "" && c.TitleKey != "title" {
-			params.Set("titleKey", c.TitleKey)
-		}
-		if c.ContentType != "" && c.ContentType != "application/json" {
-			params.Set("contenttype", c.ContentType)
-		}
-		if c.Method != "" && c.Method != "POST" {
-			params.Set("requestmethod", c.Method)
-		}
-
-		// Parse custom headers (@key=value format)
-		if c.CustomHeaders != "" {
-			for _, line := range strings.Split(c.CustomHeaders, "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				parts := strings.SplitN(line, "=", 2)
-				if len(parts) == 2 {
-					params.Set("@"+parts[0], parts[1])
-				}
-			}
-		}
-
-		// Parse extra data ($key=value format)
-		if c.ExtraData != "" {
-			for _, line := range strings.Split(c.ExtraData, "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				parts := strings.SplitN(line, "=", 2)
-				if len(parts) == 2 {
-					params.Set("$"+parts[0], parts[1])
-				}
-			}
-		}
-
-		result := "generic+" + targetURL
-		if len(params) > 0 {
-			// Need to use generic:// format for params
-			u, _ := url.Parse(targetURL)
-			host := u.Host + u.Path
-			result = "generic://" + host + "?" + params.Encode()
-		}
-		return result, nil
-
-	case ProviderCustom:
-		var c CustomConfig
-		if err := json.Unmarshal(cfg.Config, &c); err != nil {
-			return "", err
-		}
-		return c.URL, nil
-
-	default:
+	builder, ok := urlBuilders[cfg.ProviderType]
+	if !ok {
 		return "", fmt.Errorf("unknown provider type: %s", cfg.ProviderType)
 	}
+	return builder.BuildURL(cfg.Config)
 }
 
 func convertDiscordWebhook(webhookURL string) (string, error) {

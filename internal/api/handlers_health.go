@@ -88,7 +88,9 @@ func (s *RESTServer) handleHealth(c *gin.Context) {
 				defer wg.Done()
 				testURL := strings.TrimSuffix(url, "/") + "/api/v3/system/status?apikey=" + apiKey
 				if resp, err := client.Get(testURL); err == nil {
-					resp.Body.Close()
+					if err := resp.Body.Close(); err != nil {
+						logger.Debugf("Failed to close response body: %v", err)
+					}
 					if resp.StatusCode == 200 {
 						mu.Lock()
 						onlineArr++
@@ -107,7 +109,9 @@ func (s *RESTServer) handleHealth(c *gin.Context) {
 
 	// Get pending corruptions count
 	var pending int
-	s.db.QueryRow("SELECT COUNT(*) FROM corruption_status WHERE current_state = 'CorruptionDetected'").Scan(&pending)
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM corruption_status WHERE current_state = 'CorruptionDetected'").Scan(&pending); err != nil {
+		logger.Debugf("Failed to query pending corruptions: %v", err)
+	}
 	health["pending_corruptions"] = pending
 
 	// Get WebSocket connections count

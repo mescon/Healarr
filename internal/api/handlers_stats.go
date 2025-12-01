@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mescon/Healarr/internal/logger"
 )
 
 func (s *RESTServer) getDashboardStats(c *gin.Context) {
@@ -45,47 +46,61 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 
 	// Get pending count (just CorruptionDetected state - waiting to be processed)
 	// Excluded from CorruptionIgnored check as it's a separate state
-	s.db.QueryRow(`
+	if err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM corruption_status
 		WHERE current_state = 'CorruptionDetected'
-	`).Scan(&stats.PendingCorruptions)
+	`).Scan(&stats.PendingCorruptions); err != nil {
+		logger.Debugf("Failed to query pending corruptions: %v", err)
+	}
 
 	// Get failed count (*Failed states, not MaxRetriesReached, not ignored)
-	s.db.QueryRow(`
+	if err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM corruption_status
 		WHERE current_state LIKE '%Failed'
 		AND current_state != 'MaxRetriesReached'
 		AND current_state != 'CorruptionIgnored'
-	`).Scan(&stats.FailedCorruptions)
+	`).Scan(&stats.FailedCorruptions); err != nil {
+		logger.Debugf("Failed to query failed corruptions: %v", err)
+	}
 
 	// Get ignored count (separate stat for reference)
-	s.db.QueryRow(`
+	if err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM corruption_status
 		WHERE current_state = 'CorruptionIgnored'
-	`).Scan(&stats.IgnoredCorruptions)
+	`).Scan(&stats.IgnoredCorruptions); err != nil {
+		logger.Debugf("Failed to query ignored corruptions: %v", err)
+	}
 
 	// Get active scans from scans table
-	s.db.QueryRow("SELECT COUNT(*) FROM scans WHERE status = 'running'").Scan(&stats.ActiveScans)
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM scans WHERE status = 'running'").Scan(&stats.ActiveScans); err != nil {
+		logger.Debugf("Failed to query active scans: %v", err)
+	}
 
 	// Get total scans
-	s.db.QueryRow("SELECT COUNT(*) FROM scans").Scan(&stats.TotalScans)
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM scans").Scan(&stats.TotalScans); err != nil {
+		logger.Debugf("Failed to query total scans: %v", err)
+	}
 
 	// Get files scanned today
 	// Use substr to extract YYYY-MM-DD from timestamp (works with Go's time format)
-	s.db.QueryRow(`
+	if err := s.db.QueryRow(`
 		SELECT COALESCE(SUM(files_scanned), 0) FROM scans
 		WHERE substr(started_at, 1, 10) = date('now')
-	`).Scan(&stats.FilesScannedToday)
+	`).Scan(&stats.FilesScannedToday); err != nil {
+		logger.Debugf("Failed to query files scanned today: %v", err)
+	}
 
 	// Get files scanned this week
-	s.db.QueryRow(`
+	if err := s.db.QueryRow(`
 		SELECT COALESCE(SUM(files_scanned), 0) FROM scans
 		WHERE substr(started_at, 1, 10) >= date('now', '-7 days')
-	`).Scan(&stats.FilesScannedWeek)
+	`).Scan(&stats.FilesScannedWeek); err != nil {
+		logger.Debugf("Failed to query files scanned this week: %v", err)
+	}
 
 	// Get corruptions detected today (excluding ones that are now ignored)
 	// Use substr to extract YYYY-MM-DD from Go's time.Time format
-	s.db.QueryRow(`
+	if err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM events e
 		WHERE e.event_type = 'CorruptionDetected'
 		AND substr(e.created_at, 1, 10) = date('now')
@@ -94,7 +109,9 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 			WHERE cs.corruption_id = e.aggregate_id
 			AND cs.current_state = 'CorruptionIgnored'
 		)
-	`).Scan(&stats.CorruptionsToday)
+	`).Scan(&stats.CorruptionsToday); err != nil {
+		logger.Debugf("Failed to query corruptions today: %v", err)
+	}
 
 	// Calculate success rate (excluding ignored from totals)
 	// Success rate = resolved / (resolved + orphaned) for completed remediations

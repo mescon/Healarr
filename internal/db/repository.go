@@ -294,15 +294,21 @@ func (r *Repository) GetDatabaseStats() (map[string]interface{}, error) {
 
 	// Get page count and page size
 	var pageCount, pageSize int64
-	r.DB.QueryRow("PRAGMA page_count").Scan(&pageCount)
-	r.DB.QueryRow("PRAGMA page_size").Scan(&pageSize)
+	if err := r.DB.QueryRow("PRAGMA page_count").Scan(&pageCount); err != nil {
+		return nil, fmt.Errorf("failed to get page_count: %w", err)
+	}
+	if err := r.DB.QueryRow("PRAGMA page_size").Scan(&pageSize); err != nil {
+		return nil, fmt.Errorf("failed to get page_size: %w", err)
+	}
 	stats["size_bytes"] = pageCount * pageSize
 	stats["page_count"] = pageCount
 	stats["page_size"] = pageSize
 
 	// Get freelist count (unused pages)
 	var freelistCount int64
-	r.DB.QueryRow("PRAGMA freelist_count").Scan(&freelistCount)
+	if err := r.DB.QueryRow("PRAGMA freelist_count").Scan(&freelistCount); err != nil {
+		return nil, fmt.Errorf("failed to get freelist_count: %w", err)
+	}
 	stats["freelist_pages"] = freelistCount
 	stats["freelist_bytes"] = freelistCount * pageSize
 
@@ -311,8 +317,8 @@ func (r *Repository) GetDatabaseStats() (map[string]interface{}, error) {
 	tableCounts := make(map[string]int64)
 	for _, table := range tables {
 		var count int64
-		err := r.DB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count)
-		if err == nil {
+		// Table might not exist yet, so we don't fail on error here
+		if err := r.DB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count); err == nil {
 			tableCounts[table] = count
 		}
 	}
@@ -320,12 +326,16 @@ func (r *Repository) GetDatabaseStats() (map[string]interface{}, error) {
 
 	// Get journal mode
 	var journalMode string
-	r.DB.QueryRow("PRAGMA journal_mode").Scan(&journalMode)
+	if err := r.DB.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		return nil, fmt.Errorf("failed to get journal_mode: %w", err)
+	}
 	stats["journal_mode"] = journalMode
 
 	// Get auto_vacuum setting
 	var autoVacuum int
-	r.DB.QueryRow("PRAGMA auto_vacuum").Scan(&autoVacuum)
+	if err := r.DB.QueryRow("PRAGMA auto_vacuum").Scan(&autoVacuum); err != nil {
+		return nil, fmt.Errorf("failed to get auto_vacuum: %w", err)
+	}
 	autoVacuumModes := map[int]string{0: "none", 1: "full", 2: "incremental"}
 	stats["auto_vacuum"] = autoVacuumModes[autoVacuum]
 
@@ -384,14 +394,18 @@ func (r *Repository) runMigrations() error {
 			// Execute migration
 			_, err = tx.Exec(string(content))
 			if err != nil {
-				tx.Rollback()
+				if rbErr := tx.Rollback(); rbErr != nil {
+					logger.Errorf("Failed to rollback transaction after migration error: %v", rbErr)
+				}
 				return fmt.Errorf("failed to execute migration %s: %w", file, err)
 			}
 
 			// Record version
 			_, err = tx.Exec("INSERT INTO schema_migrations (version) VALUES (?)", version)
 			if err != nil {
-				tx.Rollback()
+				if rbErr := tx.Rollback(); rbErr != nil {
+					logger.Errorf("Failed to rollback transaction after version record error: %v", rbErr)
+				}
 				return fmt.Errorf("failed to record migration version %s: %w", file, err)
 			}
 
@@ -429,23 +443,36 @@ func (r *Repository) Backup(dbPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to open source database: %w", err)
 	}
-	defer srcFile.Close()
+	defer func() {
+		if closeErr := srcFile.Close(); closeErr != nil {
+			logger.Warnf("Failed to close source database file: %v", closeErr)
+		}
+	}()
 
 	dstFile, err := os.Create(backupPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to create backup file: %w", err)
 	}
-	defer dstFile.Close()
+	// Note: We handle dstFile.Close() explicitly below to catch errors
 
 	_, err = io.Copy(dstFile, srcFile)
 	if err != nil {
-		os.Remove(backupPath) // Clean up partial backup
+		_ = dstFile.Close() // Ignore close error since we're already returning an error
+		_ = os.Remove(backupPath) // Clean up partial backup, ignore error
 		return "", fmt.Errorf("failed to copy database: %w", err)
 	}
 
 	// Sync to ensure backup is fully written to disk
 	if err := dstFile.Sync(); err != nil {
+		_ = dstFile.Close()
+		_ = os.Remove(backupPath)
 		return "", fmt.Errorf("failed to sync backup file: %w", err)
+	}
+
+	// Explicitly close dst file and check for errors - this ensures data is flushed
+	if err := dstFile.Close(); err != nil {
+		_ = os.Remove(backupPath)
+		return "", fmt.Errorf("failed to close backup file: %w", err)
 	}
 
 	// Clean up old backups (keep last 5)

@@ -79,7 +79,10 @@ func (s *RESTServer) exportConfig(c *gin.Context) {
 	}
 
 	// Export arr instances (without IDs - they'll be regenerated on import)
-	arrRows, _ := s.db.Query("SELECT name, type, url, api_key, enabled FROM arr_instances")
+	arrRows, err := s.db.Query("SELECT name, type, url, api_key, enabled FROM arr_instances")
+	if err != nil {
+		logger.Debugf("Failed to query arr instances for export: %v", err)
+	}
 	if arrRows != nil {
 		defer arrRows.Close()
 		var instances []gin.H
@@ -104,9 +107,12 @@ func (s *RESTServer) exportConfig(c *gin.Context) {
 	}
 
 	// Export scan paths
-	pathRows, _ := s.db.Query(`SELECT local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run,
+	pathRows, err := s.db.Query(`SELECT local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run,
 		detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours
 		FROM scan_paths`)
+	if err != nil {
+		logger.Debugf("Failed to query scan paths for export: %v", err)
+	}
 	if pathRows != nil {
 		defer pathRows.Close()
 		var paths []gin.H
@@ -142,7 +148,10 @@ func (s *RESTServer) exportConfig(c *gin.Context) {
 	}
 
 	// Export schedules
-	schedRows, _ := s.db.Query("SELECT scan_path_id, cron_expression, enabled FROM scan_schedules")
+	schedRows, err := s.db.Query("SELECT scan_path_id, cron_expression, enabled FROM scan_schedules")
+	if err != nil {
+		logger.Debugf("Failed to query schedules for export: %v", err)
+	}
 	if schedRows != nil {
 		defer schedRows.Close()
 		var schedules []gin.H
@@ -257,7 +266,9 @@ func (s *RESTServer) importConfig(c *gin.Context) {
 		}
 	}
 
-	s.pathMapper.Reload()
+	if err := s.pathMapper.Reload(); err != nil {
+		logger.Errorf("Failed to reload path mappings after import: %v", err)
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "Import complete", "imported": imported})
 }
 
@@ -302,9 +313,13 @@ func (s *RESTServer) downloadDatabaseBackup(c *gin.Context) {
 	}
 
 	_, err = io.Copy(dstFile, srcFile)
-	dstFile.Close() // Close before sending
+	if closeErr := dstFile.Close(); closeErr != nil {
+		logger.Debugf("Failed to close backup file: %v", closeErr)
+	}
 	if err != nil {
-		os.Remove(backupPath)
+		if rmErr := os.Remove(backupPath); rmErr != nil {
+			logger.Debugf("Failed to remove partial backup: %v", rmErr)
+		}
 		logger.Errorf("Failed to copy database: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to copy database"})
 		return
@@ -321,6 +336,8 @@ func (s *RESTServer) downloadDatabaseBackup(c *gin.Context) {
 	// Clean up the temporary backup file after sending (in background)
 	go func() {
 		time.Sleep(5 * time.Second) // Wait for download to complete
-		os.Remove(backupPath)
+		if err := os.Remove(backupPath); err != nil {
+			logger.Debugf("Failed to remove temporary backup file %s: %v", backupPath, err)
+		}
 	}()
 }

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -277,9 +278,13 @@ func TestVerifierService_EmitFilesDetected(t *testing.T) {
 
 		verifier := NewVerifierService(eb, mockHC, nil, nil, db)
 
+		var mu sync.Mutex
 		var fileDetectedEvent *domain.Event
 		eb.Subscribe(domain.FileDetected, func(e domain.Event) {
-			fileDetectedEvent = &e
+			mu.Lock()
+			eCopy := e // Copy the event
+			fileDetectedEvent = &eCopy
+			mu.Unlock()
 		})
 
 		verifier.emitFilesDetected("test-1", []string{"/media/movies/single.mkv"})
@@ -287,6 +292,8 @@ func TestVerifierService_EmitFilesDetected(t *testing.T) {
 		// Wait for async delivery
 		time.Sleep(100 * time.Millisecond)
 
+		mu.Lock()
+		defer mu.Unlock()
 		if fileDetectedEvent == nil {
 			t.Fatal("Expected FileDetected event")
 		}
@@ -309,9 +316,13 @@ func TestVerifierService_EmitFilesDetected(t *testing.T) {
 
 		verifier := NewVerifierService(eb, mockHC, nil, nil, db)
 
+		var mu sync.Mutex
 		var fileDetectedEvent *domain.Event
 		eb.Subscribe(domain.FileDetected, func(e domain.Event) {
-			fileDetectedEvent = &e
+			mu.Lock()
+			eCopy := e
+			fileDetectedEvent = &eCopy
+			mu.Unlock()
 		})
 
 		verifier.emitFilesDetected("test-2", []string{
@@ -323,6 +334,8 @@ func TestVerifierService_EmitFilesDetected(t *testing.T) {
 		// Wait for async delivery
 		time.Sleep(100 * time.Millisecond)
 
+		mu.Lock()
+		defer mu.Unlock()
 		if fileDetectedEvent == nil {
 			t.Fatal("Expected FileDetected event")
 		}

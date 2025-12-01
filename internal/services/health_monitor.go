@@ -137,7 +137,7 @@ func (h *HealthMonitorService) checkStuckRemediations() {
 			corruptionID.String, filePath.String, lastEventTime.String)
 
 		// Emit event for UI display and notification system
-		h.eventBus.Publish(domain.Event{
+		if err := h.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID.String,
 			AggregateType: "corruption",
 			EventType:     domain.StuckRemediation,
@@ -146,7 +146,9 @@ func (h *HealthMonitorService) checkStuckRemediations() {
 				"last_event_time": lastEventTime.String,
 				"threshold_hours": thresholdHours,
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish StuckRemediation event: %v", err)
+		}
 	}
 
 	if stuckCount > 0 {
@@ -193,7 +195,7 @@ func (h *HealthMonitorService) checkRepeatedFailures() {
 			filePath.String, failureCount)
 
 		// Emit event for notification system
-		h.eventBus.Publish(domain.Event{
+		if err := h.eventBus.Publish(domain.Event{
 			AggregateType: "health",
 			AggregateID:   "repeated_failure_" + filePath.String,
 			EventType:     domain.SystemHealthDegraded,
@@ -203,7 +205,9 @@ func (h *HealthMonitorService) checkRepeatedFailures() {
 				"failure_count": failureCount,
 				"message":       "File has failed verification multiple times - manual intervention may be required",
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish SystemHealthDegraded event for repeated failure: %v", err)
+		}
 	}
 }
 
@@ -223,7 +227,7 @@ func (h *HealthMonitorService) checkDatabaseHealth() {
 	if stats.OpenConnections > 0 && stats.InUse == stats.OpenConnections {
 		logger.Warnf("Database connection pool exhausted: all %d connections in use", stats.OpenConnections)
 
-		h.eventBus.Publish(domain.Event{
+		if err := h.eventBus.Publish(domain.Event{
 			AggregateType: "health",
 			AggregateID:   "database_pool",
 			EventType:     domain.SystemHealthDegraded,
@@ -232,7 +236,9 @@ func (h *HealthMonitorService) checkDatabaseHealth() {
 				"open_connections": stats.OpenConnections,
 				"in_use":           stats.InUse,
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish SystemHealthDegraded event for database pool: %v", err)
+		}
 	}
 
 	// Warn if wait duration is high (indicates connection contention)
@@ -282,7 +288,7 @@ func (h *HealthMonitorService) checkInstanceHealth() {
 			logger.Warnf("*arr instance unreachable: %s (%s) - %v", instance.Name, instance.URL, err)
 
 			// Emit event for monitoring
-			h.eventBus.Publish(domain.Event{
+			if pubErr := h.eventBus.Publish(domain.Event{
 				AggregateType: "health",
 				AggregateID:   "instance_" + instance.Name,
 				EventType:     domain.InstanceUnhealthy,
@@ -292,7 +298,9 @@ func (h *HealthMonitorService) checkInstanceHealth() {
 					"instance_url":  instance.URL,
 					"error":         err.Error(),
 				},
-			})
+			}); pubErr != nil {
+				logger.Errorf("Failed to publish InstanceUnhealthy event for %s: %v", instance.Name, pubErr)
+			}
 		} else {
 			logger.Debugf("*arr instance healthy: %s (%s)", instance.Name, instance.URL)
 		}
@@ -319,7 +327,7 @@ func (h *HealthMonitorService) GetHealthStatus() map[string]interface{} {
 	if h.db != nil {
 		var stuckCount int
 		thresholdHours := int(h.stuckThreshold.Hours())
-		h.db.QueryRow(`
+		if err := h.db.QueryRow(`
 			SELECT COUNT(DISTINCT e1.aggregate_id)
 			FROM events e1
 			JOIN events e2 ON e1.aggregate_id = e2.aggregate_id
@@ -332,7 +340,9 @@ func (h *HealthMonitorService) GetHealthStatus() map[string]interface{} {
 			)
 			GROUP BY e1.aggregate_id
 			HAVING MAX(e2.created_at) < datetime('now', '-' || ? || ' hours')
-		`, thresholdHours).Scan(&stuckCount)
+		`, thresholdHours).Scan(&stuckCount); err != nil {
+			logger.Debugf("Failed to query stuck remediations count: %v", err)
+		}
 		status["stuck_remediations"] = stuckCount
 	}
 

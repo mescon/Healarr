@@ -308,7 +308,13 @@ func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoi
 		if err == nil {
 			// Check for server errors (5xx) that might be retryable
 			if resp.StatusCode >= 500 && resp.StatusCode < 600 && attempt < maxRetries-1 {
-				resp.Body.Close()
+				// Drain and close body to allow connection reuse
+				if _, discardErr := io.Copy(io.Discard, resp.Body); discardErr != nil {
+					logger.Debugf("Failed to drain response body during retry: %v", discardErr)
+				}
+				if closeErr := resp.Body.Close(); closeErr != nil {
+					logger.Debugf("Failed to close response body during retry: %v", closeErr)
+				}
 				logger.Infof("*arr API returned %d, retrying (%d/%d)...", resp.StatusCode, attempt+1, maxRetries)
 				time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
 				continue
@@ -357,7 +363,13 @@ func (c *HTTPArrClient) FindMediaByPath(path string) (int64, error) {
 			}
 		}
 	} else if resp != nil {
-		resp.Body.Close()
+		// Drain and close body even on non-OK responses to allow connection reuse
+		if _, discardErr := io.Copy(io.Discard, resp.Body); discardErr != nil {
+			logger.Debugf("Failed to drain response body: %v", discardErr)
+		}
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.Debugf("Failed to close response body: %v", closeErr)
+		}
 	}
 
 	// 2. Fallback: List all and match by folder

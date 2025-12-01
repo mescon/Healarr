@@ -342,7 +342,7 @@ func (s *ScannerService) resumeScan(scanDBID, pathID int64, localPath string, to
 		delete(s.activeScans, scanID)
 		s.mu.Unlock()
 
-		s.eventBus.Publish(domain.Event{
+		if err := s.eventBus.Publish(domain.Event{
 			AggregateType: "scan",
 			AggregateID:   scanID,
 			EventType:     "ScanCompleted",
@@ -351,7 +351,9 @@ func (s *ScannerService) resumeScan(scanDBID, pathID int64, localPath string, to
 				"status":  finalStatus,
 				"resumed": true,
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish ScanCompleted event for resumed scan %s: %v", scanID, err)
+		}
 	}()
 
 	s.emitProgress(progress)
@@ -402,7 +404,7 @@ func (s *ScannerService) ScanFile(localPath string) error {
 		delete(s.activeScans, scanID)
 		s.mu.Unlock()
 		// Emit completion event
-		s.eventBus.Publish(domain.Event{
+		if err := s.eventBus.Publish(domain.Event{
 			AggregateType: "scan",
 			AggregateID:   scanID,
 			EventType:     "ScanCompleted", // Custom event type for now
@@ -410,7 +412,9 @@ func (s *ScannerService) ScanFile(localPath string) error {
 				"scan_id": scanID,
 				"status":  "completed",
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish ScanCompleted event for file scan %s: %v", scanID, err)
+		}
 	}()
 
 	// Emit start event
@@ -549,7 +553,7 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 		s.mu.Unlock()
 
 		// Notify about the inaccessible path
-		s.eventBus.Publish(domain.Event{
+		if pubErr := s.eventBus.Publish(domain.Event{
 			AggregateType: "system",
 			AggregateID:   scanID,
 			EventType:     domain.SystemHealthDegraded,
@@ -558,7 +562,9 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 				"reason":  "Scan path is inaccessible",
 				"details": err.Error(),
 			},
-		})
+		}); pubErr != nil {
+			logger.Errorf("Failed to publish SystemHealthDegraded event: %v", pubErr)
+		}
 
 		return fmt.Errorf("scan path inaccessible: %w", err)
 	}
@@ -663,7 +669,7 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 		s.mu.Lock()
 		delete(s.activeScans, scanID)
 		s.mu.Unlock()
-		s.eventBus.Publish(domain.Event{
+		if err := s.eventBus.Publish(domain.Event{
 			AggregateType: "scan",
 			AggregateID:   scanID,
 			EventType:     "ScanCompleted",
@@ -671,7 +677,9 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 				"scan_id": scanID,
 				"status":  progress.Status,
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish ScanCompleted event for path scan %s: %v", scanID, err)
+		}
 	}()
 
 	// Scan files starting from index 0
@@ -780,10 +788,12 @@ func (s *ScannerService) shouldSkipRecentlyModified(sfc *scanFileContext) bool {
 		logger.Infof("Skipping recently modified file (mtime %v ago): %s",
 			time.Since(sfc.fileMtime).Round(time.Second), sfc.filePath)
 		if sfc.scanDBID > 0 {
-			db.ExecWithRetry(s.db, `
+			if _, err := db.ExecWithRetry(s.db, `
 				INSERT INTO scan_files (scan_id, file_path, status, corruption_type, error_details, file_size)
 				VALUES (?, ?, 'skipped', 'RecentlyModified', 'File modified within last 2 minutes - likely still being written', ?)
-			`, sfc.scanDBID, sfc.filePath, sfc.fileSize)
+			`, sfc.scanDBID, sfc.filePath, sfc.fileSize); err != nil {
+				logger.Debugf("Failed to record skipped file (recently modified): %v", err)
+			}
 		}
 		return true
 	}
@@ -798,10 +808,12 @@ func (s *ScannerService) shouldSkipChangingSize(sfc *scanFileContext) bool {
 		if info2.Size() != sfc.fileSize {
 			logger.Infof("Skipping file with changing size (download in progress?): %s", sfc.filePath)
 			if sfc.scanDBID > 0 {
-				db.ExecWithRetry(s.db, `
+				if _, err := db.ExecWithRetry(s.db, `
 					INSERT INTO scan_files (scan_id, file_path, status, corruption_type, error_details, file_size)
 					VALUES (?, ?, 'skipped', 'SizeChanging', 'File size changed during scan - active download/copy', ?)
-				`, sfc.scanDBID, sfc.filePath, sfc.fileSize)
+				`, sfc.scanDBID, sfc.filePath, sfc.fileSize); err != nil {
+					logger.Debugf("Failed to record skipped file (size changing): %v", err)
+				}
 			}
 			return true
 		}
@@ -855,7 +867,7 @@ func (s *ScannerService) handleRecoverableError(progress *ScanProgress, sfc *sca
 		}
 
 		// Emit system health event
-		s.eventBus.Publish(domain.Event{
+		if err := s.eventBus.Publish(domain.Event{
 			AggregateType: "system",
 			AggregateID:   progress.ID,
 			EventType:     domain.SystemHealthDegraded,
@@ -864,7 +876,9 @@ func (s *ScannerService) handleRecoverableError(progress *ScanProgress, sfc *sca
 				"reason":  "Mount or filesystem became inaccessible during scan",
 				"details": healthErr.Message,
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish SystemHealthDegraded event: %v", err)
+		}
 		return scanReturn
 	}
 
@@ -887,10 +901,12 @@ func (s *ScannerService) handleTrueCorruption(ctx context.Context, progress *Sca
 	if hasActive {
 		logger.Infof("Skipping duplicate corruption for file already being processed: %s", sfc.filePath)
 		if sfc.scanDBID > 0 {
-			db.ExecWithRetry(s.db, `
+			if _, err := db.ExecWithRetry(s.db, `
 				INSERT INTO scan_files (scan_id, file_path, status, corruption_type, error_details, file_size)
 				VALUES (?, ?, 'skipped', 'AlreadyProcessing', 'File already has active corruption record', ?)
-			`, sfc.scanDBID, sfc.filePath, sfc.fileSize)
+			`, sfc.scanDBID, sfc.filePath, sfc.fileSize); err != nil {
+				logger.Debugf("Failed to record skipped file (already processing): %v", err)
+			}
 		}
 		return scanSkipToNext
 	}
@@ -950,7 +966,7 @@ func (s *ScannerService) applyBatchThrottling(ctx context.Context, progress *Sca
 			progress.corruptionCount, progress.ID)
 		progress.isThrottled = true
 
-		s.eventBus.Publish(domain.Event{
+		if err := s.eventBus.Publish(domain.Event{
 			AggregateType: "scan",
 			AggregateID:   progress.ID,
 			EventType:     domain.SystemHealthDegraded,
@@ -960,7 +976,9 @@ func (s *ScannerService) applyBatchThrottling(ctx context.Context, progress *Sca
 				"path":             progress.Path,
 				"message":          fmt.Sprintf("High corruption count (%d) detected - throttling remediations", progress.corruptionCount),
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish batch throttling event: %v", err)
+		}
 	}
 
 	// Apply delay if throttled
@@ -1083,7 +1101,7 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 }
 
 func (s *ScannerService) emitProgress(p *ScanProgress) {
-	s.eventBus.Publish(domain.Event{
+	if err := s.eventBus.Publish(domain.Event{
 		AggregateType: "scan",
 		AggregateID:   p.ID,
 		EventType:     "ScanProgress",
@@ -1097,7 +1115,9 @@ func (s *ScannerService) emitProgress(p *ScanProgress) {
 			"status":       p.Status,
 			"start_time":   p.StartTime,
 		},
-	})
+	}); err != nil {
+		logger.Debugf("Failed to emit scan progress: %v", err)
+	}
 }
 
 func (s *ScannerService) GetActiveScans() []ScanProgress {
@@ -1546,7 +1566,7 @@ func (s *ScannerService) processPendingRescans() {
 		autoRemediate, dryRun, _ := s.getScanPathConfig(f.filePath)
 
 		// Emit corruption event
-		s.eventBus.Publish(domain.Event{
+		if err := s.eventBus.Publish(domain.Event{
 			AggregateType: "corruption",
 			AggregateID:   uuid.New().String(),
 			EventType:     domain.CorruptionDetected,
@@ -1559,7 +1579,9 @@ func (s *ScannerService) processPendingRescans() {
 				"auto_remediate":  autoRemediate,
 				"dry_run":         dryRun,
 			},
-		})
+		}); err != nil {
+			logger.Errorf("Failed to publish corruption event for rescan: %v", err)
+		}
 	}
 }
 

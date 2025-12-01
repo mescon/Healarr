@@ -7,9 +7,51 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/mescon/Healarr/internal/logger"
 )
+
+// validMediaPathPattern matches safe file paths for media files.
+// Allows alphanumeric, spaces, common punctuation used in media filenames,
+// and path separators. Disallows shell metacharacters that could be used
+// for command injection.
+var validMediaPathPattern = regexp.MustCompile(`^[a-zA-Z0-9\s\-_./()[\]',&!@#%+=~]+$`)
+
+// validateMediaPath ensures a file path is safe to pass to subprocess commands.
+// This prevents command injection by rejecting paths with shell metacharacters.
+func validateMediaPath(path string) error {
+	// Path must be absolute to prevent relative path attacks
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("path must be absolute: %s", path)
+	}
+
+	// Clean the path to resolve any .. or . components
+	cleanPath := filepath.Clean(path)
+
+	// Reject if cleaning changed the path significantly (could indicate traversal attempt)
+	if cleanPath != filepath.Clean(path) {
+		return fmt.Errorf("path contains suspicious components: %s", path)
+	}
+
+	// Check for dangerous shell metacharacters
+	// These could be used for command injection: $, `, ;, |, &, <, >, \, ", {, }
+	dangerousChars := []string{"$", "`", ";", "|", "&", "<", ">", "\\", "\"", "{", "}", "\n", "\r", "\x00"}
+	for _, char := range dangerousChars {
+		if strings.Contains(path, char) {
+			return fmt.Errorf("path contains dangerous character %q: %s", char, path)
+		}
+	}
+
+	// Additional check: path must match safe pattern
+	if !validMediaPathPattern.MatchString(path) {
+		return fmt.Errorf("path contains invalid characters: %s", path)
+	}
+
+	return nil
+}
 
 type DetectionMethod string
 
@@ -51,6 +93,14 @@ func (hc *CmdHealthChecker) Check(path string, mode string) (bool, *HealthCheckE
 }
 
 func (hc *CmdHealthChecker) CheckWithConfig(path string, config DetectionConfig) (bool, *HealthCheckError) {
+	// 0. Validate path to prevent command injection before any subprocess execution
+	if err := validateMediaPath(path); err != nil {
+		return false, &HealthCheckError{
+			Type:    ErrorTypeInvalidConfig,
+			Message: fmt.Sprintf("invalid media path: %v", err),
+		}
+	}
+
 	// 1. Zero byte check (if requested)
 	if config.Method == DetectionZeroByte {
 		return hc.checkZeroByte(path)
@@ -344,8 +394,14 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 	select {
 	case <-time.After(timeout):
 		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait() // Reap the zombie process
+			// Kill the process - errors expected if process already exited
+			if killErr := cmd.Process.Kill(); killErr != nil {
+				logger.Debugf("Process kill returned: %v (may be already exited)", killErr)
+			}
+			// Wait to reap the zombie process - error expected since we killed it
+			if waitErr := cmd.Wait(); waitErr != nil {
+				logger.Debugf("Process wait after kill: %v", waitErr)
+			}
 		}
 		return fmt.Errorf("%s timed out after %v", cmdName, timeout)
 	case err := <-done:
@@ -405,8 +461,12 @@ func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []strin
 	select {
 	case <-time.After(timeout):
 		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait() // Reap the zombie process
+			if killErr := cmd.Process.Kill(); killErr != nil {
+				logger.Debugf("HandBrake process kill returned: %v", killErr)
+			}
+			if waitErr := cmd.Wait(); waitErr != nil {
+				logger.Debugf("HandBrake process wait after kill: %v", waitErr)
+			}
 		}
 		return fmt.Errorf("HandBrake scan timed out after %v", timeout)
 	case err := <-done:
@@ -473,8 +533,12 @@ func (hc *CmdHealthChecker) runMediaInfo(path string, customArgs []string, mode 
 	select {
 	case <-time.After(timeout):
 		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait() // Reap the zombie process
+			if killErr := cmd.Process.Kill(); killErr != nil {
+				logger.Debugf("mediainfo process kill returned: %v", killErr)
+			}
+			if waitErr := cmd.Wait(); waitErr != nil {
+				logger.Debugf("mediainfo process wait after kill: %v", waitErr)
+			}
 		}
 		return fmt.Errorf("mediainfo timed out after %v", timeout)
 	case err := <-done:

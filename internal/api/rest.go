@@ -146,7 +146,9 @@ func (s *RESTServer) setupRoutes() {
 		api.GET("/config/runtime", func(c *gin.Context) {
 			// Get saved base path from database (if any)
 			var savedBasePath sql.NullString
-			s.db.QueryRow("SELECT value FROM settings WHERE key = 'base_path'").Scan(&savedBasePath)
+			if err := s.db.QueryRow("SELECT value FROM settings WHERE key = 'base_path'").Scan(&savedBasePath); err != nil && err != sql.ErrNoRows {
+				logger.Debugf("Failed to query base_path setting: %v", err)
+			}
 
 			// Determine source: env var takes precedence, then database, then default
 			envBasePath := os.Getenv("HEALARR_BASE_PATH")

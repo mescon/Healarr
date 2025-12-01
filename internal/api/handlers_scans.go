@@ -279,8 +279,12 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 	scan.CompletedAt = completedAt.String
 
 	// Get file counts from scan_files table
-	s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'healthy'", scanID).Scan(&scan.HealthyFiles)
-	s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'corrupt'", scanID).Scan(&scan.CorruptFiles)
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'healthy'", scanID).Scan(&scan.HealthyFiles); err != nil {
+		logger.Debugf("Failed to query healthy files count: %v", err)
+	}
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'corrupt'", scanID).Scan(&scan.CorruptFiles); err != nil {
+		logger.Debugf("Failed to query corrupt files count: %v", err)
+	}
 
 	c.JSON(http.StatusOK, scan)
 }
