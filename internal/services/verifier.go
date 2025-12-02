@@ -118,6 +118,7 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 	attempt := 0
 	lastStatus := ""
 	lastProgress := float64(0)
+	wasInQueue := false // Track if we've seen item in queue before
 
 	logger.Infof("Starting download monitoring for corruption %s (media ID: %d)", corruptionID, mediaID)
 
@@ -157,6 +158,7 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 
 		if len(queueItems) > 0 {
 			// Found in queue - track progress
+			wasInQueue = true
 			item := queueItems[0] // Use first matching item
 			currentStatus := item.TrackedDownloadState
 
@@ -177,6 +179,35 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 					logger.Errorf("Failed to publish DownloadFailed event: %v", err)
 				}
 				return
+			}
+
+			// Check for importBlocked state - this requires manual intervention in *arr
+			// Common causes: file already exists, disk full, permissions, corrupt download
+			if item.TrackedDownloadState == "importBlocked" {
+				errMsg := item.ErrorMessage
+				if len(item.StatusMessages) > 0 {
+					errMsg = strings.Join(item.StatusMessages, "; ")
+				}
+
+				logger.Warnf("Import blocked for %s: %s - requires manual intervention in *arr", corruptionID, errMsg)
+				if err := v.eventBus.Publish(domain.Event{
+					AggregateID:   corruptionID,
+					AggregateType: "corruption",
+					EventType:     domain.ImportBlocked,
+					EventData: map[string]interface{}{
+						"error":            errMsg,
+						"status":           item.TrackedDownloadStatus,
+						"state":            item.TrackedDownloadState,
+						"queue_id":         item.ID,
+						"download_id":      item.DownloadID,
+						"title":            item.Title,
+						"status_messages":  item.StatusMessages,
+						"requires_manual":  true,
+					},
+				}); err != nil {
+					logger.Errorf("Failed to publish ImportBlocked event: %v", err)
+				}
+				// Continue monitoring - user might fix the issue in *arr
 			}
 
 			// Check for warning/error status (stalled downloads, import issues, etc.)
@@ -248,6 +279,24 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 		// Step 2: Not in queue - check history for completed import
 		if v.checkHistoryForImport(corruptionID, arrPath, mediaID, filePath, metadata) {
 			return // Import found and handled
+		}
+
+		// Step 2.5: If item WAS in queue but now gone and not in history, it was manually removed
+		if wasInQueue {
+			logger.Warnf("Item for %s was in queue but is now gone without import history - manually removed from *arr", corruptionID)
+			if err := v.eventBus.Publish(domain.Event{
+				AggregateID:   corruptionID,
+				AggregateType: "corruption",
+				EventType:     domain.ManuallyRemoved,
+				EventData: map[string]interface{}{
+					"message":         "Download was manually removed from *arr queue without being imported",
+					"requires_manual": true,
+					"last_status":     lastStatus,
+				},
+			}); err != nil {
+				logger.Errorf("Failed to publish ManuallyRemoved event: %v", err)
+			}
+			return // Stop monitoring - user needs to manually handle this
 		}
 
 		// Step 3: Fallback - check if file(s) exist via *arr API

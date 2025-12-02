@@ -108,7 +108,7 @@ type ScanProgress struct {
 	CurrentFile      string             `json:"current_file"`
 	Status           string             `json:"status"` // "enumerating", "scanning", "paused", "interrupted", "cancelled"
 	StartTime        string             `json:"start_time"`
-	ScanDBID         int64              `json:"-"` // Database scan record ID
+	ScanDBID         int64              `json:"scan_db_id,omitempty"` // Database scan record ID for navigation
 	cancel           context.CancelFunc `json:"-"` // Don't export in JSON
 	pauseChan        chan struct{}      `json:"-"` // Channel to signal pause
 	resumeChan       chan struct{}      `json:"-"` // Channel to signal resume

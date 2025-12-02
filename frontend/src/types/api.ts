@@ -7,6 +7,7 @@ export interface DashboardStats {
     ignored_corruptions: number;
     in_progress_corruptions: number;
     failed_corruptions: number;      // *Failed states
+    manual_intervention_corruptions: number; // ImportBlocked or ManuallyRemoved - requires user action in *arr
     successful_remediations: number;
     active_scans: number;
     total_scans: number;

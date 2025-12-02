@@ -117,11 +117,13 @@ export interface ScanProgress {
     id: string;
     type: string;
     path: string;
+    path_id?: number;
     total_files: number;
     files_done: number;
     current_file: string;
     status: string;
     start_time: string;
+    scan_db_id?: number; // Database scan record ID for navigation
 }
 
 export const getActiveScans = async (): Promise<ScanProgress[]> => {

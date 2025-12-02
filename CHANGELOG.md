@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2025-12-02
+
+### Added
+- **Manual Intervention Detection**: New states to track when *arr requires user action
+  - `ImportBlocked` event when Sonarr/Radarr blocks import (e.g., quality cutoff, existing file issues)
+  - `ManuallyRemoved` event when user removes item from *arr queue without importing
+- **Dashboard Manual Action Card**: New stat card showing corruptions requiring manual intervention
+  - Orange "Manual Action" card with HandMetal icon in Corruption Status breakdown
+  - Clickable to filter corruptions list to manual intervention items
+- **Clickable Active Scans**: Dashboard active scan table rows now navigate to scan details page
+  - Click any running scan row to view `/scans/{id}` details
+  - Cancel button properly isolated with stopPropagation
+- **Clickable Scan Details Stats**: Stat cards on scan details page now filter the file list
+  - Click "Files Scanned", "Healthy Files", or "Corruptions Found" to filter
+  - Active filter highlighted with ring indicator
+- **Scan Duration Display**: New duration/elapsed stat card on scan details page
+  - Shows elapsed time for running scans
+  - Shows total duration for completed scans
+  - Human-readable format (e.g., "2h 15m", "45m 30s")
+- **Notification Support**: New "Manual Intervention Required" event group for notifications
+  - Subscribe to ImportBlocked and ManuallyRemoved events
+  - Rich notification messages with context about the issue
+
+### Changed
+- Dashboard stats API now returns `manual_intervention_corruptions` count
+- Corruptions filter now supports `status=manual_intervention` parameter
+- Scanner service exposes `scan_db_id` in progress updates for navigation
+
 ## [1.0.2] - 2025-12-01
 
 ### Fixed

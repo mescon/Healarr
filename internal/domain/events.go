@@ -22,6 +22,8 @@ const (
 	DownloadTimeout      EventType = "DownloadTimeout"
 	DownloadProgress     EventType = "DownloadProgress"
 	DownloadFailed       EventType = "DownloadFailed"
+	ImportBlocked        EventType = "ImportBlocked"        // *arr import blocked - requires manual intervention
+	ManuallyRemoved      EventType = "ManuallyRemoved"      // Item manually removed from *arr queue
 	RetryScheduled       EventType = "RetryScheduled"
 	MaxRetriesReached    EventType = "MaxRetriesReached"
 	ScanStarted          EventType = "ScanStarted"

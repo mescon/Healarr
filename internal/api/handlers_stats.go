@@ -10,27 +10,28 @@ import (
 
 func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	var stats struct {
-		TotalCorruptions       int `json:"total_corruptions"`
-		ActiveCorruptions      int `json:"active_corruptions"`  // Deprecated: use pending_corruptions instead
-		PendingCorruptions     int `json:"pending_corruptions"` // Just CorruptionDetected state
-		ResolvedCorruptions    int `json:"resolved_corruptions"`
-		OrphanedCorruptions    int `json:"orphaned_corruptions"`
-		IgnoredCorruptions     int `json:"ignored_corruptions"`
-		InProgressCorruptions  int `json:"in_progress_corruptions"`
-		FailedCorruptions      int `json:"failed_corruptions"` // *Failed states (not MaxRetriesReached)
-		SuccessfulRemediations int `json:"successful_remediations"`
-		ActiveScans            int `json:"active_scans"`
-		TotalScans             int `json:"total_scans"`
-		FilesScannedToday      int `json:"files_scanned_today"`
-		FilesScannedWeek       int `json:"files_scanned_week"`
-		CorruptionsToday       int `json:"corruptions_today"`
-		SuccessRate            int `json:"success_rate"`
+		TotalCorruptions              int `json:"total_corruptions"`
+		ActiveCorruptions             int `json:"active_corruptions"`  // Deprecated: use pending_corruptions instead
+		PendingCorruptions            int `json:"pending_corruptions"` // Just CorruptionDetected state
+		ResolvedCorruptions           int `json:"resolved_corruptions"`
+		OrphanedCorruptions           int `json:"orphaned_corruptions"`
+		IgnoredCorruptions            int `json:"ignored_corruptions"`
+		InProgressCorruptions         int `json:"in_progress_corruptions"`
+		FailedCorruptions             int `json:"failed_corruptions"`              // *Failed states (not MaxRetriesReached)
+		ManualInterventionCorruptions int `json:"manual_intervention_corruptions"` // ImportBlocked or ManuallyRemoved
+		SuccessfulRemediations        int `json:"successful_remediations"`
+		ActiveScans                   int `json:"active_scans"`
+		TotalScans                    int `json:"total_scans"`
+		FilesScannedToday             int `json:"files_scanned_today"`
+		FilesScannedWeek              int `json:"files_scanned_week"`
+		CorruptionsToday              int `json:"corruptions_today"`
+		SuccessRate                   int `json:"success_rate"`
 	}
 
 	// Get corruption stats from view
-	var active, resolved, orphaned, inProgress int
-	err := s.db.QueryRow("SELECT active_corruptions, resolved_corruptions, orphaned_corruptions, in_progress FROM dashboard_stats").Scan(
-		&active, &resolved, &orphaned, &inProgress,
+	var active, resolved, orphaned, inProgress, manualIntervention int
+	err := s.db.QueryRow("SELECT active_corruptions, resolved_corruptions, orphaned_corruptions, in_progress, COALESCE(manual_intervention_required, 0) FROM dashboard_stats").Scan(
+		&active, &resolved, &orphaned, &inProgress, &manualIntervention,
 	)
 	if err != nil {
 		// If view is empty, ignore error (defaults to 0)
@@ -40,8 +41,9 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	stats.ResolvedCorruptions = resolved
 	stats.OrphanedCorruptions = orphaned
 	stats.InProgressCorruptions = inProgress
+	stats.ManualInterventionCorruptions = manualIntervention
 	// Total corruptions excludes ignored - they're not part of active remediation
-	stats.TotalCorruptions = active + resolved + orphaned
+	stats.TotalCorruptions = active + resolved + orphaned + manualIntervention
 	stats.SuccessfulRemediations = resolved
 
 	// Get pending count (just CorruptionDetected state - waiting to be processed)

@@ -69,6 +69,9 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 			whereClause += "current_state = 'MaxRetriesReached'"
 		case "ignored":
 			whereClause += "current_state = 'CorruptionIgnored'"
+		case "manual_intervention":
+			// Items that require manual intervention in *arr (import blocked, manually removed from queue)
+			whereClause += "(current_state = 'ImportBlocked' OR current_state = 'ManuallyRemoved')"
 		default:
 			whereClause = "" // Ignore invalid filter
 		}

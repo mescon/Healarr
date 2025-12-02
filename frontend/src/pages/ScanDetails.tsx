@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, FileCheck, FileX, Loader2, Filter, HardDrive, Clock, FolderOpen, AlertCircle, X, RefreshCw } from 'lucide-react';
+import { ArrowLeft, FileCheck, FileX, Loader2, Filter, HardDrive, Clock, FolderOpen, AlertCircle, X, RefreshCw, Timer } from 'lucide-react';
+import clsx from 'clsx';
 import { getScanDetails, getScanFiles, cancelScan, rescanPath, type ScanFile } from '../lib/api';
 import DataGrid from '../components/ui/DataGrid';
 import { useDateFormat } from '../lib/useDateFormat';
@@ -13,6 +14,27 @@ const formatFileSize = (bytes: number): string => {
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+const formatDuration = (startedAt: string, completedAt: string | null): string => {
+    if (!startedAt) return '-';
+    const start = new Date(startedAt);
+    const end = completedAt ? new Date(completedAt) : new Date();
+    const durationMs = end.getTime() - start.getTime();
+
+    if (durationMs < 0) return '-';
+
+    const seconds = Math.floor(durationMs / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+
+    if (hours > 0) {
+        return `${hours}h ${minutes % 60}m`;
+    } else if (minutes > 0) {
+        return `${minutes}m ${seconds % 60}s`;
+    } else {
+        return `${seconds}s`;
+    }
 };
 
 const ScanDetails = () => {
@@ -203,8 +225,14 @@ const ScanDetails = () => {
             </div>
 
             {/* Stats Cards */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                <div
+                    onClick={() => { setStatusFilter('all'); setPage(1); }}
+                    className={clsx(
+                        "rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5 cursor-pointer transition-all hover:scale-[1.02]",
+                        statusFilter === 'all' && "ring-2 ring-blue-500/50"
+                    )}
+                >
                     <div className="flex items-center gap-3">
                         <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20">
                             <HardDrive className="w-5 h-5 text-blue-400" />
@@ -216,7 +244,13 @@ const ScanDetails = () => {
                     </div>
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5">
+                <div
+                    onClick={() => { setStatusFilter('healthy'); setPage(1); }}
+                    className={clsx(
+                        "rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5 cursor-pointer transition-all hover:scale-[1.02]",
+                        statusFilter === 'healthy' && "ring-2 ring-emerald-500/50"
+                    )}
+                >
                     <div className="flex items-center gap-3">
                         <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
                             <FileCheck className="w-5 h-5 text-emerald-400" />
@@ -228,7 +262,13 @@ const ScanDetails = () => {
                     </div>
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5">
+                <div
+                    onClick={() => { setStatusFilter('corrupt'); setPage(1); }}
+                    className={clsx(
+                        "rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5 cursor-pointer transition-all hover:scale-[1.02]",
+                        statusFilter === 'corrupt' && "ring-2 ring-red-500/50"
+                    )}
+                >
                     <div className="flex items-center gap-3">
                         <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20">
                             <FileX className="w-5 h-5 text-red-400" />
@@ -250,6 +290,22 @@ const ScanDetails = () => {
                                 {formatCompact(scanDetails.started_at)}
                             </p>
                             <p className="text-xs text-slate-600 dark:text-slate-400">Started At</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                            <Timer className="w-5 h-5 text-amber-400" />
+                        </div>
+                        <div>
+                            <p className="text-sm font-medium text-slate-900 dark:text-white">
+                                {formatDuration(scanDetails.started_at, scanDetails.completed_at || null)}
+                            </p>
+                            <p className="text-xs text-slate-600 dark:text-slate-400">
+                                {scanDetails.status === 'running' ? 'Elapsed' : 'Duration'}
+                            </p>
                         </div>
                     </div>
                 </div>

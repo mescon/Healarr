@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { ShieldCheck, AlertOctagon, Loader2, X, Clock, AlertTriangle, EyeOff, CheckCircle2, FileSearch, TrendingUp } from 'lucide-react';
+import { ShieldCheck, AlertOctagon, Loader2, X, Clock, AlertTriangle, EyeOff, CheckCircle2, FileSearch, TrendingUp, HandMetal } from 'lucide-react';
 import clsx from 'clsx';
 import { useQuery } from '@tanstack/react-query';
 import { getDashboardStats, getActiveScans, cancelScan, type ScanProgress } from '../lib/api';
@@ -60,6 +60,7 @@ const ActiveScansTable = () => {
     const [scans, setScans] = useState<Record<string, ScanProgress>>({});
     const { lastMessage } = useWebSocket();
     const toast = useToast();
+    const navigate = useNavigate();
 
     // Fetch active scans on mount
     useEffect(() => {
@@ -121,7 +122,18 @@ const ActiveScansTable = () => {
                     </thead>
                     <tbody className="divide-y divide-slate-200 dark:divide-slate-800/50">
                         {activeScansList.map(scan => (
-                            <tr key={scan.id} className="hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors">
+                            <tr
+                                key={scan.id}
+                                className={clsx(
+                                    "hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors",
+                                    scan.scan_db_id && "cursor-pointer"
+                                )}
+                                onClick={() => {
+                                    if (scan.scan_db_id) {
+                                        navigate(`/scans/${scan.scan_db_id}`);
+                                    }
+                                }}
+                            >
                                 <td className="px-4 py-4">
                                     <span className={clsx(
                                         "px-2 py-1 rounded text-xs font-medium uppercase",
@@ -163,7 +175,8 @@ const ActiveScansTable = () => {
                                 </td>
                                 <td className="px-4 py-4">
                                     <button
-                                        onClick={() => {
+                                        onClick={(e) => {
+                                            e.stopPropagation(); // Prevent row click when clicking cancel
                                             cancelScan(scan.id).then(() => {
                                                 // Remove from local state immediately
                                                 setScans(prev => {
@@ -244,7 +257,7 @@ const Dashboard = () => {
                         View All →
                     </button>
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
                     <MiniStatCard
                         title="Awaiting Action"
                         value={stats?.pending_corruptions ?? 0}
@@ -260,6 +273,13 @@ const Dashboard = () => {
                         onClick={() => navigate('/corruptions?status=in_progress')}
                     />
                     <MiniStatCard
+                        title="Manual Action"
+                        value={stats?.manual_intervention_corruptions ?? 0}
+                        icon={HandMetal}
+                        colorClass="text-orange-400"
+                        onClick={() => navigate('/corruptions?status=manual_intervention')}
+                    />
+                    <MiniStatCard
                         title="Resolved"
                         value={stats?.resolved_corruptions ?? 0}
                         icon={CheckCircle2}
@@ -267,7 +287,7 @@ const Dashboard = () => {
                         onClick={() => navigate('/corruptions?status=resolved')}
                     />
                     <MiniStatCard
-                        title="Max Retries Reached"
+                        title="Max Retries"
                         value={stats?.orphaned_corruptions ?? 0}
                         icon={AlertTriangle}
                         colorClass="text-red-400"

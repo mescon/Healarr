@@ -226,6 +226,13 @@ func GetEventGroups() []EventGroup {
 			},
 		},
 		{
+			Name: "Manual Intervention Required",
+			Events: []string{
+				string(domain.ImportBlocked),
+				string(domain.ManuallyRemoved),
+			},
+		},
+		{
 			Name: "Retry Events",
 			Events: []string{
 				string(domain.RetryScheduled),
@@ -641,6 +648,10 @@ func (n *Notifier) formatMessage(eventType string, data map[string]interface{}) 
 		return fmt.Sprintf("❌ Verification failed: %s\n⚠️ %s", fileName, errorMsg)
 	case string(domain.DownloadTimeout):
 		return fmt.Sprintf("⏰ Download timeout: %s", fileName)
+	case string(domain.ImportBlocked):
+		return fmt.Sprintf("🚫 Import blocked in *arr: %s\n⚠️ %s\n👉 Manual intervention required in Sonarr/Radarr", fileName, errorMsg)
+	case string(domain.ManuallyRemoved):
+		return fmt.Sprintf("🗑️ Download manually removed: %s\n👉 Item was removed from *arr queue without being imported", fileName)
 	case string(domain.RetryScheduled):
 		return fmt.Sprintf("🔄 Retry scheduled (%d/%d): %s", retryCount, maxRetries, fileName)
 	case string(domain.MaxRetriesReached):
@@ -831,6 +842,10 @@ func (n *Notifier) formatTitle(eventType string, fileName string) string {
 		return "❌ Verification Failed"
 	case string(domain.DownloadTimeout):
 		return "⏰ Download Timeout"
+	case string(domain.ImportBlocked):
+		return "🚫 Import Blocked - Manual Action Required"
+	case string(domain.ManuallyRemoved):
+		return "🗑️ Download Manually Removed"
 	case string(domain.RetryScheduled):
 		return "🔄 Retry Scheduled"
 	case string(domain.MaxRetriesReached):

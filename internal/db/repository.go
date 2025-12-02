@@ -185,6 +185,8 @@ func (r *Repository) recreateViews() error {
 				WHEN current_state != 'VerificationSuccess'
 				AND current_state != 'MaxRetriesReached'
 				AND current_state != 'CorruptionIgnored'
+				AND current_state != 'ImportBlocked'
+				AND current_state != 'ManuallyRemoved'
 				THEN corruption_id END) as active_corruptions,
 			COUNT(DISTINCT CASE
 				WHEN current_state = 'VerificationSuccess'
@@ -200,7 +202,11 @@ func (r *Repository) recreateViews() error {
 				OR current_state = 'DeletionCompleted'
 				OR current_state = 'FileDetected')
 				AND current_state != 'CorruptionIgnored'
-				THEN corruption_id END) as in_progress
+				THEN corruption_id END) as in_progress,
+			COUNT(DISTINCT CASE
+				WHEN current_state = 'ImportBlocked'
+				OR current_state = 'ManuallyRemoved'
+				THEN corruption_id END) as manual_intervention_required
 		FROM corruption_status
 		WHERE current_state != 'CorruptionIgnored'
 	`)
