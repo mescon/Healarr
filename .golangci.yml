@@ -1,0 +1,71 @@
+# golangci-lint configuration v2
+# Run with: golangci-lint run ./...
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+
+linters:
+  # Explicitly enable linters (don't use defaults to avoid errcheck noise)
+  default: none
+  enable:
+    - govet         # Report suspicious constructs
+    - ineffassign   # Detect unused assignments
+    - staticcheck   # Static analysis
+    - unused        # Check for unused code
+    - misspell      # Find common spelling mistakes
+    - unconvert     # Remove unnecessary type conversions
+
+formatters:
+  enable:
+    - gofmt         # Check formatting
+    - goimports     # Check imports
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment  # Too strict for existing codebase
+      - shadow          # Too many false positives
+
+  staticcheck:
+    checks:
+      - all
+      - -SA1019  # Ignore deprecated warnings
+
+  goimports:
+    local-prefixes: github.com/mescon/Healarr
+
+  misspell:
+    locale: US
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 10
+
+  exclude-rules:
+    # Exclude linters from ALL test files
+    - path: ".*_test\\.go"
+      linters:
+        - ineffassign
+        - staticcheck
+
+    # Exclude web package (build tag constraints)
+    - path: internal/web/
+      linters:
+        - unused
+
+    # "hardlinked" is correct terminology
+    - linters:
+        - misspell
+      text: "hardlinked"
+
+output:
+  formats:
+    text:
+      path: stdout
+      print-issued-lines: true
+      print-linter-name: true
+  sort-results: true

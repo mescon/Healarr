@@ -66,8 +66,12 @@ func (h *HealthMonitorService) runHealthChecks() {
 	ticker := time.NewTicker(h.checkInterval)
 	defer ticker.Stop()
 
-	// Run initial check after short delay
-	time.Sleep(30 * time.Second)
+	// Run initial check after short delay - interruptible for graceful shutdown
+	select {
+	case <-h.shutdownCh:
+		return
+	case <-time.After(30 * time.Second):
+	}
 	h.performHealthChecks()
 
 	for {
@@ -254,8 +258,12 @@ func (h *HealthMonitorService) runInstanceHealthChecks() {
 	ticker := time.NewTicker(h.instanceHealthInterval)
 	defer ticker.Stop()
 
-	// Run initial check after short delay
-	time.Sleep(60 * time.Second)
+	// Run initial check after short delay - interruptible for graceful shutdown
+	select {
+	case <-h.shutdownCh:
+		return
+	case <-time.After(60 * time.Second):
+	}
 	h.checkInstanceHealth()
 
 	for {

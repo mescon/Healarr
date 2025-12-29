@@ -95,15 +95,11 @@ func (s *RESTServer) updateSchedule(c *gin.Context) {
 	// Let's enforce Enabled is present for now, or handle it carefully.
 	// In the service, we require enabled boolean.
 
+	// Default enabled to true; if provided, use the provided value
+	// Note: Service signature requires explicit enabled, so client must send full state
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
-	} else {
-		// If not provided, we need to fetch existing?
-		// For now let's assume the frontend sends the full object or at least the enabled state.
-		// Or we can change the service to accept optional enabled.
-		// Let's stick to the service signature: UpdateSchedule(id, cron, enabled)
-		// If the user just wants to update cron, they must send enabled status too.
 	}
 
 	if err := s.scheduler.UpdateSchedule(id, req.CronExpression, enabled); err != nil {

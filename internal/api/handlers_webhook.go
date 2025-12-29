@@ -120,7 +120,7 @@ func (s *RESTServer) handleWebhook(c *gin.Context) {
 	// Trigger single file scan
 	go func() {
 		if err := s.scanner.ScanFile(localPath); err != nil {
-			// Log error
+			logger.Warnf("Webhook-triggered scan failed for %s: %v", localPath, err)
 		}
 	}()
 

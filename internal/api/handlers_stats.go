@@ -30,12 +30,10 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 
 	// Get corruption stats from view
 	var active, resolved, orphaned, inProgress, manualIntervention int
-	err := s.db.QueryRow("SELECT active_corruptions, resolved_corruptions, orphaned_corruptions, in_progress, COALESCE(manual_intervention_required, 0) FROM dashboard_stats").Scan(
+	// Query dashboard stats; on error, values default to zero
+	_ = s.db.QueryRow("SELECT active_corruptions, resolved_corruptions, orphaned_corruptions, in_progress, COALESCE(manual_intervention_required, 0) FROM dashboard_stats").Scan(
 		&active, &resolved, &orphaned, &inProgress, &manualIntervention,
 	)
-	if err != nil {
-		// If view is empty, ignore error (defaults to 0)
-	}
 
 	stats.ActiveCorruptions = active
 	stats.ResolvedCorruptions = resolved

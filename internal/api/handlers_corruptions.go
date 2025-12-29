@@ -152,14 +152,14 @@ func (s *RESTServer) getRemediations(c *gin.Context) {
 
 	// Get total count
 	var total int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM corruption_status WHERE current_state = 'resolved'").Scan(&total)
+	err := s.db.QueryRow("SELECT COUNT(*) FROM corruption_status WHERE current_state = ?", string(domain.VerificationSuccess)).Scan(&total)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	// Get paginated data
-	rows, err := s.db.Query("SELECT corruption_id, file_path, last_updated_at FROM corruption_status WHERE current_state = 'resolved' ORDER BY last_updated_at DESC LIMIT ? OFFSET ?", limit, offset)
+	rows, err := s.db.Query("SELECT corruption_id, file_path, last_updated_at FROM corruption_status WHERE current_state = ? ORDER BY last_updated_at DESC LIMIT ? OFFSET ?", string(domain.VerificationSuccess), limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

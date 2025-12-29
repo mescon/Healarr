@@ -2,6 +2,7 @@ package services
 
 import (
 	"database/sql"
+	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -195,19 +196,40 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 					AggregateType: "corruption",
 					EventType:     domain.ImportBlocked,
 					EventData: map[string]interface{}{
-						"error":            errMsg,
-						"status":           item.TrackedDownloadStatus,
-						"state":            item.TrackedDownloadState,
-						"queue_id":         item.ID,
-						"download_id":      item.DownloadID,
-						"title":            item.Title,
-						"status_messages":  item.StatusMessages,
-						"requires_manual":  true,
+						"error":           errMsg,
+						"status":          item.TrackedDownloadStatus,
+						"state":           item.TrackedDownloadState,
+						"queue_id":        item.ID,
+						"download_id":     item.DownloadID,
+						"title":           item.Title,
+						"status_messages": item.StatusMessages,
+						"requires_manual": true,
 					},
 				}); err != nil {
 					logger.Errorf("Failed to publish ImportBlocked event: %v", err)
 				}
 				// Continue monitoring - user might fix the issue in *arr
+			}
+
+			// Check for ignored state - user explicitly ignored this download in *arr
+			// This is a terminal state - stop monitoring and notify
+			if item.TrackedDownloadState == "ignored" {
+				logger.Warnf("Download ignored by user in *arr for %s: %s", corruptionID, item.Title)
+				if err := v.eventBus.Publish(domain.Event{
+					AggregateID:   corruptionID,
+					AggregateType: "corruption",
+					EventType:     domain.DownloadIgnored,
+					EventData: map[string]interface{}{
+						"reason":          "User ignored download in *arr",
+						"queue_id":        item.ID,
+						"download_id":     item.DownloadID,
+						"title":           item.Title,
+						"requires_manual": true,
+					},
+				}); err != nil {
+					logger.Errorf("Failed to publish DownloadIgnored event: %v", err)
+				}
+				return // Stop monitoring - user made deliberate choice
 			}
 
 			// Check for warning/error status (stalled downloads, import issues, etc.)
@@ -263,16 +285,22 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 				}
 			}
 
-			// If import is pending or completed in queue, check history
-			if item.TrackedDownloadState == "importPending" || item.TrackedDownloadState == "imported" {
+			// If import is pending, in progress, or completed in queue, check history
+			// Note: "importing" is a transient state during active import - include it to catch fast imports
+			if item.TrackedDownloadState == "importPending" || item.TrackedDownloadState == "importing" || item.TrackedDownloadState == "imported" {
 				// Check history to see if import completed
 				if v.checkHistoryForImport(corruptionID, arrPath, mediaID, filePath, metadata) {
 					return // Import found and handled
 				}
 			}
 
-			// Use shorter interval during active download
-			time.Sleep(pollInterval)
+			// Use shorter interval during active download - interruptible sleep
+			select {
+			case <-v.shutdownCh:
+				logger.Infof("Verifier: stopping download monitoring for %s due to shutdown", corruptionID)
+				return
+			case <-time.After(pollInterval):
+			}
 			continue
 		}
 
@@ -326,23 +354,42 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 					v.emitFilesDetected(corruptionID, existingPaths)
 					return
 				}
+
+				// Partial replacement detection: some files exist but not all
+				// This can happen when a multi-episode file is replaced with single episodes
+				// and not all episodes were found/grabbed by *arr
+				if len(existingPaths) > 0 && len(existingPaths) < len(allPaths) {
+					// Wait a bit longer before accepting partial replacement
+					// to give *arr more time to download remaining episodes
+					if elapsed > timeout/2 {
+						logger.Warnf("Partial replacement detected for %s: %d of %d files exist after %s",
+							corruptionID, len(existingPaths), len(allPaths), elapsed)
+						v.emitPartialReplacement(corruptionID, existingPaths, len(allPaths))
+						return
+					}
+				}
 			}
 		}
 
-		// Use exponential backoff when not actively downloading
+		// Use exponential backoff when not actively downloading - interruptible sleep
 		backoff := calculateBackoffInterval(attempt, pollInterval, 10*time.Minute)
 		if attempt%10 == 0 {
 			logger.Debugf("Verification poll #%d for %s, no queue activity, next check in %s", attempt, corruptionID, backoff)
 		}
-		time.Sleep(backoff)
+		select {
+		case <-v.shutdownCh:
+			logger.Infof("Verifier: stopping download monitoring for %s due to shutdown", corruptionID)
+			return
+		case <-time.After(backoff):
+		}
 	}
 }
 
 // checkHistoryForImport checks *arr history for import completion
 func (v *VerifierService) checkHistoryForImport(corruptionID, arrPath string, mediaID int64, referencePath string, metadata map[string]interface{}) bool {
-	historyItems, err := v.arrClient.GetRecentHistoryForMediaByPath(arrPath, mediaID, 20)
+	historyItems, err := v.getHistoryWithRetry(arrPath, mediaID, 20, 3)
 	if err != nil {
-		logger.Debugf("History check error for %s: %v", corruptionID, err)
+		logger.Debugf("History check error for %s after retries: %v", corruptionID, err)
 		return false
 	}
 
@@ -386,10 +433,49 @@ func (v *VerifierService) checkHistoryForImport(corruptionID, arrPath string, me
 				v.emitFilesDetected(corruptionID, existingPaths)
 				return true
 			}
+
+			// Partial replacement: import events exist but not all files are present
+			// This can happen when only some episodes were grabbed
+			if len(existingPaths) > 0 {
+				logger.Warnf("Partial import detected for %s via history: %d of %d files exist",
+					corruptionID, len(existingPaths), len(allPaths))
+				v.emitPartialReplacement(corruptionID, existingPaths, len(allPaths))
+				return true
+			}
 		}
 	}
 
 	return false
+}
+
+// getHistoryWithRetry attempts to fetch history with exponential backoff retries
+// This handles transient API failures that could cause missed import detections
+func (v *VerifierService) getHistoryWithRetry(arrPath string, mediaID int64, limit, maxRetries int) ([]integration.HistoryItemInfo, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Check for shutdown between retries
+		if v.isShuttingDown() {
+			return nil, fmt.Errorf("shutdown in progress")
+		}
+
+		historyItems, err := v.arrClient.GetRecentHistoryForMediaByPath(arrPath, mediaID, limit)
+		if err == nil {
+			return historyItems, nil
+		}
+
+		lastErr = err
+		if attempt < maxRetries-1 {
+			// Exponential backoff: 1s, 2s, 4s - interruptible for graceful shutdown
+			backoff := time.Duration(1<<uint(attempt)) * time.Second
+			logger.Debugf("History API failed (attempt %d/%d), retrying in %v: %v", attempt+1, maxRetries, backoff, err)
+			select {
+			case <-v.shutdownCh:
+				return nil, fmt.Errorf("shutdown in progress")
+			case <-time.After(backoff):
+			}
+		}
+	}
+	return nil, fmt.Errorf("history API failed after %d attempts: %w", maxRetries, lastErr)
 }
 
 // pollForFileWithBackoff is the fallback method when *arr tracking isn't available
@@ -434,7 +520,13 @@ func (v *VerifierService) pollForFileWithBackoff(corruptionID string, referenceP
 			logger.Debugf("Verification poll #%d for %s, next check in %s", attempt, corruptionID, currentInterval)
 		}
 
-		time.Sleep(currentInterval)
+		// Interruptible sleep for graceful shutdown
+		select {
+		case <-v.shutdownCh:
+			logger.Infof("Verifier: stopping file polling for %s due to shutdown", corruptionID)
+			return
+		case <-time.After(currentInterval):
+		}
 		attempt++
 
 		var foundPaths []string
@@ -501,6 +593,33 @@ func (v *VerifierService) getVerificationTimeout(pathID int64) time.Duration {
 	}
 
 	return time.Duration(timeoutHours.Int64) * time.Hour
+}
+
+// emitPartialReplacement handles the case where only some files were replaced
+// This prevents waiting forever when *arr only finds/grabs some of the expected files
+func (v *VerifierService) emitPartialReplacement(corruptionID string, existingPaths []string, expectedCount int) {
+	logger.Infof("Processing partial replacement for %s: %d of %d files found",
+		corruptionID, len(existingPaths), expectedCount)
+
+	// Emit a warning event about partial replacement
+	if err := v.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.FileDetected,
+		EventData: map[string]interface{}{
+			"file_path":           existingPaths[0], // Primary path for compatibility
+			"file_paths":          existingPaths,
+			"file_count":          len(existingPaths),
+			"expected_count":      expectedCount,
+			"partial_replacement": true,
+			"missing_count":       expectedCount - len(existingPaths),
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish FileDetected event for partial replacement: %v", err)
+	}
+
+	// Verify the files that DO exist
+	v.verifyHealthMultiple(corruptionID, existingPaths)
 }
 
 // emitFilesDetected handles verification of one or more files (for multi-episode replacements)
