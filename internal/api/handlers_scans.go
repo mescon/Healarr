@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mescon/Healarr/internal/logger"
@@ -44,35 +43,21 @@ func (s *RESTServer) triggerScan(c *gin.Context) {
 }
 
 func (s *RESTServer) getScans(c *gin.Context) {
-	// Parse pagination parameters
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	if page < 1 {
-		page = 1
+	// Parse pagination with config
+	cfg := PaginationConfig{
+		DefaultLimit:     50,
+		MaxLimit:         500,
+		DefaultSortBy:    "started_at",
+		DefaultSortOrder: "desc",
+		AllowedSortBy: map[string]bool{
+			"started_at":        true,
+			"path":              true,
+			"status":            true,
+			"files_scanned":     true,
+			"corruptions_found": true,
+		},
 	}
-	if limit < 1 || limit > 500 {
-		limit = 50
-	}
-	offset := (page - 1) * limit
-
-	// Parse sorting parameters
-	sortBy := c.DefaultQuery("sort_by", "started_at")
-	sortOrder := c.DefaultQuery("sort_order", "desc")
-
-	// Validate sort column to prevent SQL injection
-	validSortColumns := map[string]bool{
-		"started_at":        true,
-		"path":              true,
-		"status":            true,
-		"files_scanned":     true,
-		"corruptions_found": true,
-	}
-	if !validSortColumns[sortBy] {
-		sortBy = "started_at"
-	}
-	if sortOrder != "asc" && sortOrder != "desc" {
-		sortOrder = "desc"
-	}
+	p := ParsePagination(c, cfg)
 
 	// Get total count
 	var total int
@@ -83,8 +68,8 @@ func (s *RESTServer) getScans(c *gin.Context) {
 	}
 
 	// Get paginated data with dynamic sorting
-	query := fmt.Sprintf("SELECT id, path, status, files_scanned, corruptions_found, started_at, completed_at FROM scans ORDER BY %s %s LIMIT ? OFFSET ?", sortBy, sortOrder)
-	rows, err := s.db.Query(query, limit, offset)
+	query := fmt.Sprintf("SELECT id, path, status, files_scanned, corruptions_found, started_at, completed_at FROM scans ORDER BY %s %s LIMIT ? OFFSET ?", p.SortBy, p.SortOrder)
+	rows, err := s.db.Query(query, p.Limit, p.Offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -113,15 +98,9 @@ func (s *RESTServer) getScans(c *gin.Context) {
 		})
 	}
 
-	totalPages := (total + limit - 1) / limit
 	c.JSON(http.StatusOK, gin.H{
-		"data": scans,
-		"pagination": gin.H{
-			"page":        page,
-			"limit":       limit,
-			"total":       total,
-			"total_pages": totalPages,
-		},
+		"data":       scans,
+		"pagination": NewPaginationResponse(p, total),
 	})
 }
 
@@ -291,19 +270,10 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 
 func (s *RESTServer) getScanFiles(c *gin.Context) {
 	scanID := c.Param("scan_id")
-
-	// Parse pagination parameters
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	statusFilter := c.DefaultQuery("status", "all") // 'all', 'healthy', 'corrupt'
 
-	if page < 1 {
-		page = 1
-	}
-	if limit < 1 || limit > 500 {
-		limit = 50
-	}
-	offset := (page - 1) * limit
+	// Parse pagination (no sorting - fixed order by status DESC, file_path ASC)
+	p := ParsePagination(c, DefaultPaginationConfig())
 
 	// Verify scan exists
 	var scanExists int
@@ -338,7 +308,7 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 		ORDER BY status DESC, file_path ASC
 		LIMIT ? OFFSET ?
 	`, whereClause)
-	args = append(args, limit, offset)
+	args = append(args, p.Limit, p.Offset)
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -369,15 +339,9 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 		})
 	}
 
-	totalPages := (total + limit - 1) / limit
 	c.JSON(http.StatusOK, gin.H{
-		"data": files,
-		"pagination": gin.H{
-			"page":        page,
-			"limit":       limit,
-			"total":       total,
-			"total_pages": totalPages,
-		},
+		"data":       files,
+		"pagination": NewPaginationResponse(p, total),
 	})
 }
 

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -14,36 +13,22 @@ import (
 )
 
 func (s *RESTServer) getCorruptions(c *gin.Context) {
-	// Parse pagination parameters
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	if page < 1 {
-		page = 1
+	// Parse pagination with config
+	cfg := PaginationConfig{
+		DefaultLimit:     50,
+		MaxLimit:         1000,
+		DefaultSortBy:    "last_updated_at",
+		DefaultSortOrder: "desc",
+		AllowedSortBy: map[string]bool{
+			"detected_at":     true,
+			"last_updated_at": true,
+			"file_path":       true,
+			"state":           true,
+			"corruption_type": true,
+		},
 	}
-	if limit < 1 || limit > 1000 {
-		limit = 50
-	}
-	offset := (page - 1) * limit
-
-	// Parse sorting and filtering parameters
-	sortBy := c.DefaultQuery("sort_by", "last_updated_at")
-	sortOrder := c.DefaultQuery("sort_order", "desc")
+	p := ParsePagination(c, cfg)
 	statusFilter := c.DefaultQuery("status", "all")
-
-	// Validate sort parameters to prevent SQL injection
-	allowedSortFields := map[string]bool{
-		"detected_at":     true,
-		"last_updated_at": true,
-		"file_path":       true,
-		"state":           true,
-		"corruption_type": true,
-	}
-	if !allowedSortFields[sortBy] {
-		sortBy = "last_updated_at"
-	}
-	if sortOrder != "asc" && sortOrder != "desc" {
-		sortOrder = "desc"
-	}
 
 	// Build query
 	baseQuery := "FROM corruption_status"
@@ -88,13 +73,13 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 
 	// Get paginated data with filter and sort
 	// Map frontend sort keys to DB columns
-	dbSortField := sortBy
-	if sortBy == "state" {
+	dbSortField := p.SortBy
+	if p.SortBy == "state" {
 		dbSortField = "current_state"
 	}
 
-	query := fmt.Sprintf("SELECT corruption_id, current_state, retry_count, file_path, last_error, detected_at, last_updated_at, corruption_type %s%s ORDER BY %s %s LIMIT ? OFFSET ?", baseQuery, whereClause, dbSortField, strings.ToUpper(sortOrder))
-	args = append(args, limit, offset)
+	query := fmt.Sprintf("SELECT corruption_id, current_state, retry_count, file_path, last_error, detected_at, last_updated_at, corruption_type %s%s ORDER BY %s %s LIMIT ? OFFSET ?", baseQuery, whereClause, dbSortField, strings.ToUpper(p.SortOrder))
+	args = append(args, p.Limit, p.Offset)
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -126,29 +111,15 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 		})
 	}
 
-	totalPages := (total + limit - 1) / limit
 	c.JSON(http.StatusOK, gin.H{
-		"data": corruptions,
-		"pagination": gin.H{
-			"page":        page,
-			"limit":       limit,
-			"total":       total,
-			"total_pages": totalPages,
-		},
+		"data":       corruptions,
+		"pagination": NewPaginationResponse(p, total),
 	})
 }
 
 func (s *RESTServer) getRemediations(c *gin.Context) {
-	// Parse pagination parameters
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	if page < 1 {
-		page = 1
-	}
-	if limit < 1 || limit > 500 {
-		limit = 50
-	}
-	offset := (page - 1) * limit
+	// Parse pagination (no sorting - fixed order by last_updated_at DESC)
+	p := ParsePagination(c, DefaultPaginationConfig())
 
 	// Get total count
 	var total int
@@ -159,7 +130,7 @@ func (s *RESTServer) getRemediations(c *gin.Context) {
 	}
 
 	// Get paginated data
-	rows, err := s.db.Query("SELECT corruption_id, file_path, last_updated_at FROM corruption_status WHERE current_state = ? ORDER BY last_updated_at DESC LIMIT ? OFFSET ?", string(domain.VerificationSuccess), limit, offset)
+	rows, err := s.db.Query("SELECT corruption_id, file_path, last_updated_at FROM corruption_status WHERE current_state = ? ORDER BY last_updated_at DESC LIMIT ? OFFSET ?", string(domain.VerificationSuccess), p.Limit, p.Offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -180,15 +151,9 @@ func (s *RESTServer) getRemediations(c *gin.Context) {
 		})
 	}
 
-	totalPages := (total + limit - 1) / limit
 	c.JSON(http.StatusOK, gin.H{
-		"data": remediations,
-		"pagination": gin.H{
-			"page":        page,
-			"limit":       limit,
-			"total":       total,
-			"total_pages": totalPages,
-		},
+		"data":       remediations,
+		"pagination": NewPaginationResponse(p, total),
 	})
 }
 

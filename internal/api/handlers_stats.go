@@ -10,30 +10,36 @@ import (
 
 func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	var stats struct {
-		TotalCorruptions              int `json:"total_corruptions"`
-		ActiveCorruptions             int `json:"active_corruptions"`  // Deprecated: use pending_corruptions instead
-		PendingCorruptions            int `json:"pending_corruptions"` // Just CorruptionDetected state
-		ResolvedCorruptions           int `json:"resolved_corruptions"`
-		OrphanedCorruptions           int `json:"orphaned_corruptions"`
-		IgnoredCorruptions            int `json:"ignored_corruptions"`
-		InProgressCorruptions         int `json:"in_progress_corruptions"`
-		FailedCorruptions             int `json:"failed_corruptions"`              // *Failed states (not MaxRetriesReached)
-		ManualInterventionCorruptions int `json:"manual_intervention_corruptions"` // ImportBlocked or ManuallyRemoved
-		SuccessfulRemediations        int `json:"successful_remediations"`
-		ActiveScans                   int `json:"active_scans"`
-		TotalScans                    int `json:"total_scans"`
-		FilesScannedToday             int `json:"files_scanned_today"`
-		FilesScannedWeek              int `json:"files_scanned_week"`
-		CorruptionsToday              int `json:"corruptions_today"`
-		SuccessRate                   int `json:"success_rate"`
+		TotalCorruptions              int      `json:"total_corruptions"`
+		ActiveCorruptions             int      `json:"active_corruptions"`  // Deprecated: use pending_corruptions instead. Will be removed in v2.0.
+		PendingCorruptions            int      `json:"pending_corruptions"` // Just CorruptionDetected state
+		ResolvedCorruptions           int      `json:"resolved_corruptions"`
+		OrphanedCorruptions           int      `json:"orphaned_corruptions"`
+		IgnoredCorruptions            int      `json:"ignored_corruptions"`
+		InProgressCorruptions         int      `json:"in_progress_corruptions"`
+		FailedCorruptions             int      `json:"failed_corruptions"`              // *Failed states (not MaxRetriesReached)
+		ManualInterventionCorruptions int      `json:"manual_intervention_corruptions"` // ImportBlocked or ManuallyRemoved
+		SuccessfulRemediations        int      `json:"successful_remediations"`
+		ActiveScans                   int      `json:"active_scans"`
+		TotalScans                    int      `json:"total_scans"`
+		FilesScannedToday             int      `json:"files_scanned_today"`
+		FilesScannedWeek              int      `json:"files_scanned_week"`
+		CorruptionsToday              int      `json:"corruptions_today"`
+		SuccessRate                   int      `json:"success_rate"`
+		Warnings                      []string `json:"warnings,omitempty"` // Query failures (partial results returned)
 	}
+
+	// Collect warnings for failed queries (stats still return partial data)
+	var warnings []string
 
 	// Get corruption stats from view
 	var active, resolved, orphaned, inProgress, manualIntervention int
-	// Query dashboard stats; on error, values default to zero
-	_ = s.db.QueryRow("SELECT active_corruptions, resolved_corruptions, orphaned_corruptions, in_progress, COALESCE(manual_intervention_required, 0) FROM dashboard_stats").Scan(
+	if err := s.db.QueryRow("SELECT active_corruptions, resolved_corruptions, orphaned_corruptions, in_progress, COALESCE(manual_intervention_required, 0) FROM dashboard_stats").Scan(
 		&active, &resolved, &orphaned, &inProgress, &manualIntervention,
-	)
+	); err != nil {
+		warnings = append(warnings, "failed to query dashboard_stats view")
+		logger.Debugf("Failed to query dashboard_stats: %v", err)
+	}
 
 	stats.ActiveCorruptions = active
 	stats.ResolvedCorruptions = resolved
@@ -50,6 +56,7 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 		SELECT COUNT(*) FROM corruption_status
 		WHERE current_state = 'CorruptionDetected'
 	`).Scan(&stats.PendingCorruptions); err != nil {
+		warnings = append(warnings, "failed to query pending corruptions")
 		logger.Debugf("Failed to query pending corruptions: %v", err)
 	}
 
@@ -60,6 +67,7 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 		AND current_state != 'MaxRetriesReached'
 		AND current_state != 'CorruptionIgnored'
 	`).Scan(&stats.FailedCorruptions); err != nil {
+		warnings = append(warnings, "failed to query failed corruptions")
 		logger.Debugf("Failed to query failed corruptions: %v", err)
 	}
 
@@ -68,16 +76,19 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 		SELECT COUNT(*) FROM corruption_status
 		WHERE current_state = 'CorruptionIgnored'
 	`).Scan(&stats.IgnoredCorruptions); err != nil {
+		warnings = append(warnings, "failed to query ignored corruptions")
 		logger.Debugf("Failed to query ignored corruptions: %v", err)
 	}
 
 	// Get active scans from scans table
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM scans WHERE status = 'running'").Scan(&stats.ActiveScans); err != nil {
+		warnings = append(warnings, "failed to query active scans")
 		logger.Debugf("Failed to query active scans: %v", err)
 	}
 
 	// Get total scans
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM scans").Scan(&stats.TotalScans); err != nil {
+		warnings = append(warnings, "failed to query total scans")
 		logger.Debugf("Failed to query total scans: %v", err)
 	}
 
@@ -87,6 +98,7 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 		SELECT COALESCE(SUM(files_scanned), 0) FROM scans
 		WHERE substr(started_at, 1, 10) = date('now')
 	`).Scan(&stats.FilesScannedToday); err != nil {
+		warnings = append(warnings, "failed to query files scanned today")
 		logger.Debugf("Failed to query files scanned today: %v", err)
 	}
 
@@ -95,6 +107,7 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 		SELECT COALESCE(SUM(files_scanned), 0) FROM scans
 		WHERE substr(started_at, 1, 10) >= date('now', '-7 days')
 	`).Scan(&stats.FilesScannedWeek); err != nil {
+		warnings = append(warnings, "failed to query files scanned this week")
 		logger.Debugf("Failed to query files scanned this week: %v", err)
 	}
 
@@ -110,6 +123,7 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 			AND cs.current_state = 'CorruptionIgnored'
 		)
 	`).Scan(&stats.CorruptionsToday); err != nil {
+		warnings = append(warnings, "failed to query corruptions today")
 		logger.Debugf("Failed to query corruptions today: %v", err)
 	}
 
@@ -126,6 +140,9 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 		// No remediations at all - show 100% (no failures)
 		stats.SuccessRate = 100
 	}
+
+	// Include warnings if any queries failed (partial results)
+	stats.Warnings = warnings
 
 	c.JSON(http.StatusOK, stats)
 }
