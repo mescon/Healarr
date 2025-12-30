@@ -99,22 +99,22 @@ const (
 )
 
 type ScanProgress struct {
-	ID               string             `json:"id"`
-	Type             string             `json:"type"` // "path" or "file"
-	Path             string             `json:"path"`
-	PathID           int64              `json:"path_id,omitempty"` // Database path ID for resumable scans
-	TotalFiles       int                `json:"total_files"`
-	FilesDone        int                `json:"files_done"`
-	CurrentFile      string             `json:"current_file"`
-	Status           string             `json:"status"` // "enumerating", "scanning", "paused", "interrupted", "cancelled"
-	StartTime        string             `json:"start_time"`
-	ScanDBID         int64              `json:"scan_db_id,omitempty"` // Database scan record ID for navigation
-	cancel           context.CancelFunc `json:"-"` // Don't export in JSON
-	pauseChan        chan struct{}      `json:"-"` // Channel to signal pause
-	resumeChan       chan struct{}      `json:"-"` // Channel to signal resume
-	isPaused         bool               `json:"-"` // Track pause state
-	corruptionCount  int                `json:"-"` // Track corruptions found in this scan for throttling
-	isThrottled      bool               `json:"-"` // Whether this scan is being throttled
+	ID              string             `json:"id"`
+	Type            string             `json:"type"` // "path" or "file"
+	Path            string             `json:"path"`
+	PathID          int64              `json:"path_id,omitempty"` // Database path ID for resumable scans
+	TotalFiles      int                `json:"total_files"`
+	FilesDone       int                `json:"files_done"`
+	CurrentFile     string             `json:"current_file"`
+	Status          string             `json:"status"` // "enumerating", "scanning", "paused", "interrupted", "cancelled"
+	StartTime       string             `json:"start_time"`
+	ScanDBID        int64              `json:"scan_db_id,omitempty"` // Database scan record ID for navigation
+	cancel          context.CancelFunc `json:"-"`                    // Don't export in JSON
+	pauseChan       chan struct{}      `json:"-"`                    // Channel to signal pause
+	resumeChan      chan struct{}      `json:"-"`                    // Channel to signal resume
+	isPaused        bool               `json:"-"`                    // Track pause state
+	corruptionCount int                `json:"-"`                    // Track corruptions found in this scan for throttling
+	isThrottled     bool               `json:"-"`                    // Whether this scan is being throttled
 }
 
 // scanPathConfig holds cached scan path configuration
@@ -122,6 +122,20 @@ type scanPathConfig struct {
 	LocalPath     string
 	AutoRemediate bool
 	DryRun        bool
+}
+
+// Scanner defines the interface for scan operations.
+// This interface enables mocking in tests while allowing the concrete
+// ScannerService to be used in production.
+type Scanner interface {
+	ScanFile(localPath string) error
+	ScanPath(pathID int64, localPath string) error
+	IsPathBeingScanned(path string) bool
+	GetActiveScans() []ScanProgress
+	CancelScan(scanID string) error
+	PauseScan(scanID string) error
+	ResumeScan(scanID string) error
+	Shutdown()
 }
 
 type ScannerService struct {
@@ -583,7 +597,7 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 			return err
 		}
 
-		// Skip symlinks to avoid potential issues with hardlinked seeding files
+		// Skip symlinks to avoid potential issues with hardline seeding files
 		// and to prevent scanning the same file multiple times via different paths
 		if info.Mode()&os.ModeSymlink != 0 {
 			symlinkCount++
@@ -641,7 +655,11 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 	if err != nil {
 		logger.Errorf("Failed to record scan start: %v", err)
 	} else {
-		scanDBID, _ = result.LastInsertId()
+		var lastIDErr error
+		scanDBID, lastIDErr = result.LastInsertId()
+		if lastIDErr != nil {
+			logger.Warnf("Failed to get scan ID after insert: %v", lastIDErr)
+		}
 		progress.ScanDBID = scanDBID
 	}
 

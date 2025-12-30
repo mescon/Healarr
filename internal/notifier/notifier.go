@@ -1039,7 +1039,9 @@ func (n *Notifier) DeleteConfig(id int64) error {
 	}
 
 	// Also delete related logs
-	_, _ = n.db.Exec(`DELETE FROM notification_log WHERE notification_id = ?`, id)
+	if _, logErr := n.db.Exec(`DELETE FROM notification_log WHERE notification_id = ?`, id); logErr != nil {
+		logger.Warnf("Failed to cleanup notification logs for id=%d: %v", id, logErr)
+	}
 
 	// Clean up lastSent map to prevent memory leak
 	n.mu.Lock()

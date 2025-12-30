@@ -3,7 +3,6 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -169,7 +168,12 @@ func (s *RESTServer) createScanPath(c *gin.Context) {
 	// Marshal detection args to JSON
 	var detectionArgsJSON []byte
 	if len(req.DetectionArgs) > 0 {
-		detectionArgsJSON, _ = json.Marshal(req.DetectionArgs)
+		var marshalErr error
+		detectionArgsJSON, marshalErr = json.Marshal(req.DetectionArgs)
+		if marshalErr != nil {
+			logger.Warnf("Failed to marshal detection_args: %v, using empty object", marshalErr)
+			detectionArgsJSON = []byte("{}")
+		}
 	}
 
 	_, err := s.db.Exec(`INSERT INTO scan_paths
@@ -182,9 +186,7 @@ func (s *RESTServer) createScanPath(c *gin.Context) {
 		return
 	}
 	if err := s.pathMapper.Reload(); err != nil {
-		// Log error but don't fail the request? Or warn?
-		// For now, just log to stdout
-		fmt.Printf("Failed to reload path mappings: %v\n", err)
+		logger.Errorf("Failed to reload path mappings: %v", err)
 	}
 	c.Status(http.StatusCreated)
 }
@@ -197,7 +199,7 @@ func (s *RESTServer) deleteScanPath(c *gin.Context) {
 		return
 	}
 	if err := s.pathMapper.Reload(); err != nil {
-		fmt.Printf("Failed to reload path mappings: %v\n", err)
+		logger.Errorf("Failed to reload path mappings: %v", err)
 	}
 	c.Status(http.StatusNoContent)
 }
@@ -321,7 +323,12 @@ func (s *RESTServer) updateScanPath(c *gin.Context) {
 	// Marshal detection args to JSON
 	var detectionArgsJSON []byte
 	if len(req.DetectionArgs) > 0 {
-		detectionArgsJSON, _ = json.Marshal(req.DetectionArgs)
+		var marshalErr error
+		detectionArgsJSON, marshalErr = json.Marshal(req.DetectionArgs)
+		if marshalErr != nil {
+			logger.Warnf("Failed to marshal detection_args: %v, using empty object", marshalErr)
+			detectionArgsJSON = []byte("{}")
+		}
 	}
 
 	_, err := s.db.Exec(`UPDATE scan_paths SET
