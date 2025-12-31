@@ -1,0 +1,250 @@
+<h1>Healarr Goals &amp; Design Philosophy</h1>
+<h2>Executive Summary</h2>
+<p>Healarr (<strong>H</strong>ealth <strong>E</strong>valuation <strong>A</strong>nd <strong>L</strong>ibrary <strong>A</strong>uto-<strong>R</strong>ecovery for *<strong>aRR</strong>) solves the silent data corruption problem in self-hosted media libraries by providing automated detection, remediation, and verification integrated with the *arr ecosystem.</p>
+<p><strong>Current Version</strong>: v1.0.3
+<strong>Status</strong>: Production-ready, feature-complete for v1.x scope</p>
+<hr />
+<h2>The Problem Space</h2>
+<h3>Core Problem</h3>
+<p>Media files stored on home servers and NAS devices suffer from silent corruption due to:</p>
+<p>| Cause | Impact |
+|-------|--------|
+| <strong>Bitrot</strong> | Gradual data decay on spinning disks and flash storage |
+| <strong>Network transfer errors</strong> | Incomplete or corrupted downloads marked as complete |
+| <strong>Storage system issues</strong> | NFS/SMB/MergerFS protocol errors, mount failures |
+| <strong>Disk failures</strong> | Sector errors, controller malfunctions |
+| <strong>Power events</strong> | Incomplete writes during outages |</p>
+<h3>Why This Matters</h3>
+<ul>
+<li>Users often discover corruption only when attempting playback</li>
+<li>Manual detection requires scanning every file with ffprobe/MediaInfo</li>
+<li>Manual remediation requires:
+<ol>
+<li>Identifying the media in Sonarr/Radarr</li>
+<li>Deleting the corrupt file</li>
+<li>Triggering a re-search</li>
+<li>Monitoring for successful replacement</li>
+<li>Verifying the new file is healthy</li>
+</ol>
+</li>
+<li>This process is tedious, error-prone, and doesn't scale</li>
+</ul>
+<h3>Target Users</h3>
+<p>Self-hosted media enthusiasts running:</p>
+<ul>
+<li>Sonarr (TV shows)</li>
+<li>Radarr (Movies)</li>
+<li>Whisparr v2/v3 (Adult content)</li>
+<li>Large media libraries (10,000+ files)</li>
+<li>Network-attached storage (NAS, SAN, cloud mounts)</li>
+</ul>
+<hr />
+<h2>Solution Philosophy</h2>
+<h3>1. Automation with Control</h3>
+<p><strong>Principle</strong>: Automate the tedious, but give users control over when and how automation happens.</p>
+<p>| Feature | Control Mechanism |
+|---------|-------------------|
+| Detection | Scheduled scans (cron), on-demand, webhook-triggered |
+| Remediation | Per-path <code>auto_remediate</code> toggle |
+| Testing | Per-path <code>dry_run</code> mode (detect without action) |
+| Retry limits | Per-path <code>max_retries</code> configuration |
+| Timeouts | Per-path <code>verification_timeout</code> |</p>
+<p><strong>Why</strong>: Users need to trust the system before enabling full automation. Dry-run mode and per-path controls let them validate behavior before committing.</p>
+<h3>2. Event-Driven Architecture</h3>
+<p><strong>Principle</strong>: Every state change is an event, creating a complete audit trail.</p>
+<pre><code>User action → Event published → Services react → New events → Database persisted
+</code></pre>
+<p><strong>Benefits</strong>:</p>
+<ul>
+<li><strong>Auditability</strong>: Complete history of every corruption from detection to resolution</li>
+<li><strong>Debuggability</strong>: Trace any issue through the event log</li>
+<li><strong>Loose coupling</strong>: Services don't know about each other, only events</li>
+<li><strong>Extensibility</strong>: Add features by subscribing to existing events</li>
+<li><strong>Resilience</strong>: Failed operations retry via events, not in-band</li>
+</ul>
+<h3>3. Distinguish Corruption from Accessibility</h3>
+<p><strong>Principle</strong>: Don't delete files just because the storage is temporarily unavailable.</p>
+<p>| Error Type | Action | Examples |
+|------------|--------|----------|
+| <strong>Corruption</strong> | Remediate | Zero-byte, corrupt header, invalid stream |
+| <strong>Accessibility</strong> | Skip, log warning | Mount lost, permission denied, timeout |</p>
+<p><strong>Why</strong>: NFS mounts drop, Docker volumes unmount during restarts, permissions change. These are infrastructure issues, not file corruption. Aggressive remediation would cause data loss.</p>
+<h3>4. Respect the *arr Ecosystem</h3>
+<p><strong>Principle</strong>: Play nice with Sonarr/Radarr - don't monopolize their APIs.</p>
+<ul>
+<li><strong>Rate limiting</strong>: 5 requests/second with burst of 10</li>
+<li><strong>Queue-based verification</strong>: Use *arr's queue/history APIs instead of filesystem polling</li>
+<li><strong>Path mapping</strong>: Explicit mappings handle Docker volume differences</li>
+</ul>
+<p><strong>Why</strong>: Users are actively using *arr UIs. Hammering the API degrades their experience and could cause *arr to throttle or fail.</p>
+<h3>5. Zero Dependencies, Simple Deployment</h3>
+<p><strong>Principle</strong>: One binary, one database file, no external services.</p>
+<p>| Component | Choice | Rationale |
+|-----------|--------|-----------|
+| Database | SQLite (embedded) | No PostgreSQL/MySQL to manage |
+| Backend | Go single binary | No runtime dependencies |
+| Frontend | Embedded in binary | No separate web server |
+| Detection | ffprobe/MediaInfo (optional) | User provides, or use Docker image |</p>
+<p><strong>Why</strong>: Self-hosted users want minimal operational burden. Every external dependency is a potential failure point.</p>
+<hr />
+<h2>Design Decisions</h2>
+<h3>Architecture Choices</h3>
+<p>| Decision | Choice | Alternatives Considered |
+|----------|--------|------------------------|
+| <strong>Event sourcing</strong> | Append-only events table | Direct state mutation |
+| <strong>Service decomposition</strong> | Scanner, Remediator, Verifier, Monitor, Scheduler | Monolithic processor |
+| <strong>API framework</strong> | Gin (Go) | Echo, Fiber, net/http |
+| <strong>Frontend framework</strong> | React 19 + TanStack Query | Vue, Svelte, HTMX |
+| <strong>State management</strong> | Server state via TanStack Query | Redux, Zustand |
+| <strong>Styling</strong> | Tailwind CSS v4 | CSS modules, Styled Components |
+| <strong>Real-time updates</strong> | WebSocket | Server-Sent Events, polling |</p>
+<h3>Verification Strategy</h3>
+<p>Multi-stage verification ensures accurate detection of successful remediation:</p>
+<pre><code>1. Check *arr queue → Is download in progress?
+   └── Yes → Monitor download progress events
+   └── No → Step 2
+
+2. Check *arr history → Was file imported recently?
+   └── Yes → Health check the imported file
+   └── No → Step 3
+
+3. Query *arr API → What's the current file path?
+   └── Different from corrupt file → Health check new file
+   └── Same → Fallback
+
+4. Filesystem polling (fallback) → Does file exist?
+   └── Yes → Health check
+   └── No → Wait (up to verification_timeout)
+</code></pre>
+<p><strong>Why multiple stages</strong>: *arr's import process is async. The file might be downloading, importing, or already imported. Each stage catches a different state.</p>
+<hr />
+<h2>Current Capabilities (v1.0.x)</h2>
+<h3>Core Features</h3>
+<ul>
+<li>Multi-method detection (ffprobe, MediaInfo, HandBrake)</li>
+<li>Automatic remediation via *arr APIs</li>
+<li>Queue-based verification with progress tracking</li>
+<li>Per-path configuration (auto-remediate, dry-run, max-retries)</li>
+<li>Scheduled and on-demand scanning</li>
+<li>Webhook integration for immediate post-download scanning</li>
+</ul>
+<h3>User Interface</h3>
+<ul>
+<li>Real-time dashboard with stats and charts</li>
+<li>Corruption lifecycle visualization (&quot;Remediation Journey&quot;)</li>
+<li>Scan management (pause, resume, cancel - individual and bulk)</li>
+<li>Configuration export/import for backup/migration</li>
+<li>Built-in help and troubleshooting documentation</li>
+</ul>
+<h3>Notifications</h3>
+<ul>
+<li>Discord, Slack, custom webhooks</li>
+<li>Telegram, Pushover, Gotify, ntfy, Email (SMTP)</li>
+<li>Per-notification event filtering</li>
+</ul>
+<h3>Operations</h3>
+<ul>
+<li>Automatic database maintenance (daily at 3 AM)</li>
+<li>Database backup (on startup, every 6 hours)</li>
+<li>Log rotation (100MB max, 7 days retention)</li>
+<li>Configurable data retention (default: 90 days)</li>
+</ul>
+<hr />
+<h2>Future Considerations</h2>
+<h3>Short-term Enhancements (v1.x)</h3>
+<p>| Feature | Value | Complexity |
+|---------|-------|------------|
+| <strong>Sample-based scanning</strong> | Faster scans for huge libraries | Medium |
+| <strong>Parallel file checking</strong> | Faster scans with multiple ffprobe workers | Low |
+| <strong>Detection config presets</strong> | Quick vs thorough scan templates | Low |
+| <strong>Corruption trend analytics</strong> | Identify problematic storage/paths | Medium |</p>
+<h3>Medium-term Features (v2.x)</h3>
+<p>| Feature | Value | Complexity |
+|---------|-------|------------|
+| <strong>Prometheus metrics export</strong> | Integration with existing monitoring | Medium |
+| <strong>Multi-user support</strong> | Role-based access for families/friends | High |
+| <strong>Bazarr integration</strong> | Scan/remediate subtitles | Medium |
+| <strong>Custom ffprobe arguments</strong> | Advanced detection tuning | Low |</p>
+<h3>Long-term Vision</h3>
+<p>| Feature | Value | Complexity |
+|---------|-------|------------|
+| <strong>Cluster mode</strong> | Distributed scanning across multiple hosts | Very High |
+| <strong>Plugin system</strong> | User-defined detection/remediation methods | High |
+| <strong>Machine learning detection</strong> | Detect corruption without full decode | Very High |
+| <strong>Plex/Jellyfin direct integration</strong> | Skip *arr for non-managed libraries | Medium |</p>
+<hr />
+<h2>Non-Goals</h2>
+<p>Healarr explicitly does <strong>not</strong> aim to:</p>
+<p>| Anti-goal | Reason |
+|-----------|--------|
+| <strong>Replace Sonarr/Radarr</strong> | Complement, don't compete |
+| <strong>Transcode media</strong> | Tdarr, Handbrake exist for this |
+| <strong>Organize/rename files</strong> | *arr apps handle this |
+| <strong>Download management</strong> | SABnzbd, qBittorrent, Deluge exist |
+| <strong>Streaming</strong> | Plex, Jellyfin, Emby exist |
+| <strong>Backup</strong> | Duplicati, Restic, Borg exist |</p>
+<hr />
+<h2>Quality Standards</h2>
+<h3>Code Quality</h3>
+<ul>
+<li>Type safety: Go's static typing, TypeScript for frontend</li>
+<li>Testing: Unit tests for services, integration tests for API</li>
+<li>Error handling: Explicit error propagation, structured logging</li>
+<li>Concurrency: Proper mutex usage, no data races</li>
+</ul>
+<h3>Operational Quality</h3>
+<ul>
+<li>Graceful shutdown: Complete in-progress operations</li>
+<li>Recovery: Resume scans after restart</li>
+<li>Observability: Structured JSON logs, event audit trail</li>
+<li>Security: Bcrypt passwords, rate limiting, encrypted backups</li>
+</ul>
+<h3>User Experience</h3>
+<ul>
+<li>Responsive design: Mobile-friendly dashboard</li>
+<li>Accessibility: Semantic HTML, ARIA labels</li>
+<li>Progressive disclosure: Advanced options behind accordions</li>
+<li>Real-time feedback: WebSocket updates for all operations</li>
+</ul>
+<hr />
+<h2>Success Metrics</h2>
+<p>Healarr succeeds when users can:</p>
+<ol>
+<li><strong>Set and forget</strong>: Configure paths, enable auto-remediate, trust it works</li>
+<li><strong>Sleep soundly</strong>: Know their library is being monitored 24/7</li>
+<li><strong>Investigate easily</strong>: Trace any corruption from detection to resolution</li>
+<li><strong>Stay informed</strong>: Receive notifications about important events</li>
+<li><strong>Recover quickly</strong>: Handle mount failures without data loss</li>
+</ol>
+<hr />
+<h2>Development Principles</h2>
+<h3>For Contributors</h3>
+<ol>
+<li><strong>Prefer editing over creating</strong>: Modify existing files before adding new ones</li>
+<li><strong>Keep handlers thin</strong>: Business logic lives in services, not API handlers</li>
+<li><strong>Emit events for state changes</strong>: Don't mutate state silently</li>
+<li><strong>Test the happy path and the error path</strong>: Both matter equally</li>
+<li><strong>Document decisions</strong>: Explain <em>why</em>, not just <em>what</em></li>
+</ol>
+<h3>For AI Agents</h3>
+<ol>
+<li><strong>Read ARCHITECTURE.md first</strong>: Understand the event flow before making changes</li>
+<li><strong>Check handler organization</strong>: API handlers are split by domain (handlers_*.go)</li>
+<li><strong>Route ordering matters</strong>: Literal routes before parameterized routes in Gin</li>
+<li><strong>Per-path settings</strong>: Many features are configured per-path, not globally</li>
+<li><strong>Accessibility vs corruption</strong>: Understand the distinction before modifying detection</li>
+</ol>
+<hr />
+<h2>Version History Context</h2>
+<p>| Version | Milestone |
+|---------|-----------|
+| v0.1 | Initial prototype with ffprobe detection |
+| v0.5 | Event-driven architecture, Sonarr/Radarr integration |
+| v0.8 | React frontend, WebSocket real-time updates |
+| v0.9 | Per-path configuration, dry-run mode |
+| v1.0 | Queue-based verification, Whisparr v2/v3 support |
+| v1.0.3 | <strong>Current</strong> - Stability improvements, accessibility error separation |</p>
+<hr />
+<h2>Summary</h2>
+<p>Healarr transforms media library health management from a manual, reactive process into an automated, proactive system. By respecting user control, providing complete observability, and integrating seamlessly with the *arr ecosystem, it gives self-hosters confidence that their libraries are protected against silent corruption.</p>
+<p>The event-driven architecture ensures every action is auditable, the per-path configuration enables gradual trust-building, and the accessibility error distinction prevents false positives from causing data loss. This is a tool built for the paranoid data hoarder who wants automation without sacrificing control.</p>
