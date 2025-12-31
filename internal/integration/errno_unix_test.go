@@ -10,10 +10,10 @@ import (
 
 func TestClassifySyscallError(t *testing.T) {
 	tests := []struct {
-		name         string
-		err          error
-		wantType     string
-		wantMessage  string
+		name        string
+		err         error
+		wantType    string
+		wantMessage string
 	}{
 		{
 			name:        "nil error returns empty",

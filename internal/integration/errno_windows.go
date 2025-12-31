@@ -10,17 +10,17 @@ import (
 
 // Windows error codes
 const (
-	ERROR_PATH_NOT_FOUND      syscall.Errno = 3
-	ERROR_ACCESS_DENIED       syscall.Errno = 5
-	ERROR_BAD_NETPATH         syscall.Errno = 53
-	ERROR_NETWORK_BUSY        syscall.Errno = 54
-	ERROR_DEV_NOT_EXIST       syscall.Errno = 55
-	ERROR_NETNAME_DELETED     syscall.Errno = 64
+	ERROR_PATH_NOT_FOUND        syscall.Errno = 3
+	ERROR_ACCESS_DENIED         syscall.Errno = 5
+	ERROR_BAD_NETPATH           syscall.Errno = 53
+	ERROR_NETWORK_BUSY          syscall.Errno = 54
+	ERROR_DEV_NOT_EXIST         syscall.Errno = 55
+	ERROR_NETNAME_DELETED       syscall.Errno = 64
 	ERROR_NETWORK_ACCESS_DENIED syscall.Errno = 65
-	ERROR_BAD_NET_NAME        syscall.Errno = 67
-	ERROR_SEM_TIMEOUT         syscall.Errno = 121
-	ERROR_UNEXP_NET_ERR       syscall.Errno = 59
-	ERROR_REM_NOT_LIST        syscall.Errno = 51
+	ERROR_BAD_NET_NAME          syscall.Errno = 67
+	ERROR_SEM_TIMEOUT           syscall.Errno = 121
+	ERROR_UNEXP_NET_ERR         syscall.Errno = 59
+	ERROR_REM_NOT_LIST          syscall.Errno = 51
 )
 
 // classifySyscallError checks for Windows-specific syscall errors and returns

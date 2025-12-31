@@ -1053,14 +1053,14 @@ func TestTriggerScan_BadRequest(t *testing.T) {
 // scansMockScanner implements services.Scanner with controllable behavior for testing
 // pause/resume/cancel handlers with active scans.
 type scansMockScanner struct {
-	activeScans      []services.ScanProgress
-	pauseCalled      map[string]bool
-	resumeCalled     map[string]bool
-	cancelCalled     map[string]bool
-	scanFilePath     string
-	scanPathPath     string
-	scanPathID       int64
-	isPathScanning   bool
+	activeScans    []services.ScanProgress
+	pauseCalled    map[string]bool
+	resumeCalled   map[string]bool
+	cancelCalled   map[string]bool
+	scanFilePath   string
+	scanPathPath   string
+	scanPathID     int64
+	isPathScanning bool
 }
 
 func newScansMockScanner() *scansMockScanner {
