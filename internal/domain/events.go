@@ -22,8 +22,9 @@ const (
 	DownloadTimeout      EventType = "DownloadTimeout"
 	DownloadProgress     EventType = "DownloadProgress"
 	DownloadFailed       EventType = "DownloadFailed"
-	ImportBlocked        EventType = "ImportBlocked"        // *arr import blocked - requires manual intervention
-	ManuallyRemoved      EventType = "ManuallyRemoved"      // Item manually removed from *arr queue
+	ImportBlocked        EventType = "ImportBlocked"   // *arr import blocked - requires manual intervention
+	ManuallyRemoved      EventType = "ManuallyRemoved" // Item manually removed from *arr queue
+	DownloadIgnored      EventType = "DownloadIgnored" // *arr marked download as ignored by user
 	RetryScheduled       EventType = "RetryScheduled"
 	MaxRetriesReached    EventType = "MaxRetriesReached"
 	ScanStarted          EventType = "ScanStarted"
@@ -172,14 +173,14 @@ func (e *Event) GetStringSlice(key string) ([]string, bool) {
 
 // CorruptionEventData contains data for CorruptionDetected events.
 type CorruptionEventData struct {
-	FilePath        string `json:"file_path"`
-	PathID          int64  `json:"path_id,omitempty"`
-	CorruptionType  string `json:"corruption_type"`
-	ErrorDetails    string `json:"error_details,omitempty"`
-	Source          string `json:"source,omitempty"` // "webhook", "scan", "rescan_worker"
-	AutoRemediate   bool   `json:"auto_remediate"`
-	DryRun          bool   `json:"dry_run"`
-	BatchThrottled  bool   `json:"batch_throttled,omitempty"`
+	FilePath       string `json:"file_path"`
+	PathID         int64  `json:"path_id,omitempty"`
+	CorruptionType string `json:"corruption_type"`
+	ErrorDetails   string `json:"error_details,omitempty"`
+	Source         string `json:"source,omitempty"` // "webhook", "scan", "rescan_worker"
+	AutoRemediate  bool   `json:"auto_remediate"`
+	DryRun         bool   `json:"dry_run"`
+	BatchThrottled bool   `json:"batch_throttled,omitempty"`
 }
 
 // ParseCorruptionEventData extracts typed corruption data from an event.
@@ -189,14 +190,14 @@ func (e *Event) ParseCorruptionEventData() (CorruptionEventData, bool) {
 		return CorruptionEventData{}, false
 	}
 	return CorruptionEventData{
-		FilePath:        filePath,
-		PathID:          e.GetInt64Or("path_id", 0),
-		CorruptionType:  e.GetStringOr("corruption_type", ""),
-		ErrorDetails:    e.GetStringOr("error_details", ""),
-		Source:          e.GetStringOr("source", ""),
-		AutoRemediate:   e.GetBoolOr("auto_remediate", false),
-		DryRun:          e.GetBoolOr("dry_run", false),
-		BatchThrottled:  e.GetBoolOr("batch_throttled", false),
+		FilePath:       filePath,
+		PathID:         e.GetInt64Or("path_id", 0),
+		CorruptionType: e.GetStringOr("corruption_type", ""),
+		ErrorDetails:   e.GetStringOr("error_details", ""),
+		Source:         e.GetStringOr("source", ""),
+		AutoRemediate:  e.GetBoolOr("auto_remediate", false),
+		DryRun:         e.GetBoolOr("dry_run", false),
+		BatchThrottled: e.GetBoolOr("batch_throttled", false),
 	}, true
 }
 

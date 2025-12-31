@@ -18,6 +18,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/metrics"
 	"github.com/mescon/Healarr/internal/notifier"
 	"github.com/mescon/Healarr/internal/services"
 	"github.com/mescon/Healarr/internal/web"
@@ -28,15 +29,16 @@ type RESTServer struct {
 	httpServer *http.Server
 	db         *sql.DB
 	eventBus   *eventbus.EventBus
-	scanner    *services.ScannerService
+	scanner    services.Scanner
 	pathMapper integration.PathMapper
-	scheduler  *services.SchedulerService
+	scheduler  services.Scheduler
 	notifier   *notifier.Notifier
+	metrics    *metrics.MetricsService
 	hub        *WebSocketHub
 	startTime  time.Time
 }
 
-func NewRESTServer(db *sql.DB, eb *eventbus.EventBus, scanner *services.ScannerService, pm integration.PathMapper, scheduler *services.SchedulerService, n *notifier.Notifier) *RESTServer {
+func NewRESTServer(db *sql.DB, eb *eventbus.EventBus, scanner services.Scanner, pm integration.PathMapper, scheduler services.Scheduler, n *notifier.Notifier, m *metrics.MetricsService) *RESTServer {
 	// Set Gin to release mode for production (suppresses debug warnings)
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -106,6 +108,7 @@ func NewRESTServer(db *sql.DB, eb *eventbus.EventBus, scanner *services.ScannerS
 		pathMapper: pm,
 		scheduler:  scheduler,
 		notifier:   n,
+		metrics:    m,
 		hub:        NewWebSocketHub(eb),
 		startTime:  time.Now(),
 	}
@@ -127,6 +130,10 @@ func mustSub(fsys fs.FS, dir string) fs.FS {
 func (s *RESTServer) setupRoutes() {
 	cfg := config.Get()
 	basePath := cfg.BasePath
+
+	// Prometheus metrics endpoint at root level (standard convention, not behind base path)
+	// This makes it easy for Prometheus to discover and scrape without knowing the base path
+	s.router.GET("/metrics", gin.WrapH(s.metrics.Handler()))
 
 	// Create a group for the base path (or use root if basePath is "/")
 	var base *gin.RouterGroup
@@ -169,6 +176,9 @@ func (s *RESTServer) setupRoutes() {
 
 		// Health check endpoint (no authentication required)
 		api.GET("/health", s.handleHealth)
+
+		// Prometheus metrics endpoint (no authentication required for scraping)
+		api.GET("/metrics", gin.WrapH(s.metrics.Handler()))
 
 		// Public auth endpoints with rate limiting
 		api.POST("/auth/setup", SetupLimiter.Middleware(), s.handleAuthSetup)

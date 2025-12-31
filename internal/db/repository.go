@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
+	_ "modernc.org/sqlite"
 )
 
 // MaxRetries is the number of times to retry a database operation on SQLITE_BUSY
@@ -463,7 +463,7 @@ func (r *Repository) Backup(dbPath string) (string, error) {
 
 	_, err = io.Copy(dstFile, srcFile)
 	if err != nil {
-		_ = dstFile.Close() // Ignore close error since we're already returning an error
+		_ = dstFile.Close()       // Ignore close error since we're already returning an error
 		_ = os.Remove(backupPath) // Clean up partial backup, ignore error
 		return "", fmt.Errorf("failed to copy database: %w", err)
 	}

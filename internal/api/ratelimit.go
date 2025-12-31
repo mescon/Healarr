@@ -15,6 +15,7 @@ type RateLimiter struct {
 	rate     int           // tokens per interval
 	interval time.Duration // refill interval
 	burst    int           // max tokens (bucket size)
+	shutdown chan struct{}
 }
 
 type clientBucket struct {
@@ -29,6 +30,7 @@ func NewRateLimiter(rate int, interval time.Duration, burst int) *RateLimiter {
 		rate:     rate,
 		interval: interval,
 		burst:    burst,
+		shutdown: make(chan struct{}),
 	}
 
 	// Cleanup old entries periodically
@@ -74,16 +76,27 @@ func (rl *RateLimiter) Allow(ip string) bool {
 // cleanup removes stale entries older than 10 minutes
 func (rl *RateLimiter) cleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
-	for range ticker.C {
-		rl.mu.Lock()
-		threshold := time.Now().Add(-10 * time.Minute)
-		for ip, bucket := range rl.clients {
-			if bucket.lastCheck.Before(threshold) {
-				delete(rl.clients, ip)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-rl.shutdown:
+			return
+		case <-ticker.C:
+			rl.mu.Lock()
+			threshold := time.Now().Add(-10 * time.Minute)
+			for ip, bucket := range rl.clients {
+				if bucket.lastCheck.Before(threshold) {
+					delete(rl.clients, ip)
+				}
 			}
+			rl.mu.Unlock()
 		}
-		rl.mu.Unlock()
 	}
+}
+
+// Shutdown stops the rate limiter's cleanup goroutine
+func (rl *RateLimiter) Shutdown() {
+	close(rl.shutdown)
 }
 
 // Middleware returns a Gin middleware that rate limits requests

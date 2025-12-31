@@ -547,3 +547,81 @@ func TestDetectionMethods(t *testing.T) {
 		t.Errorf("DetectionHandBrake = %q, want 'handbrake'", DetectionHandBrake)
 	}
 }
+
+func TestGetCommandPreview(t *testing.T) {
+	hc := NewHealthChecker()
+
+	tests := []struct {
+		method DetectionMethod
+		mode   string
+		want   string
+	}{
+		{DetectionZeroByte, "quick", "stat <file> (checks if file size == 0)"},
+		{DetectionFFprobe, "quick", "ffprobe"},
+		{DetectionFFprobe, "thorough", "ffmpeg"},
+		{DetectionMediaInfo, "quick", "mediainfo"},
+		{DetectionHandBrake, "quick", "HandBrakeCLI"},
+		{"unknown", "quick", "unknown detection method"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.method)+"-"+tt.mode, func(t *testing.T) {
+			preview := hc.GetCommandPreview(tt.method, tt.mode, nil)
+			if preview == "" {
+				t.Error("Expected non-empty preview")
+			}
+			// Check that the expected pattern is in the result
+			if tt.want != "" && !contains(preview, tt.want) {
+				t.Errorf("GetCommandPreview(%s, %s) = %q, want to contain %q", tt.method, tt.mode, preview, tt.want)
+			}
+		})
+	}
+
+	// Test with custom args
+	customPreview := hc.GetCommandPreview(DetectionFFprobe, "quick", []string{"-extra", "arg"})
+	if customPreview == "" {
+		t.Error("Expected non-empty preview with custom args")
+	}
+}
+
+func TestGetTimeoutDescription(t *testing.T) {
+	hc := NewHealthChecker()
+
+	tests := []struct {
+		method DetectionMethod
+		mode   string
+		want   string
+	}{
+		{DetectionZeroByte, "quick", "instant"},
+		{DetectionFFprobe, "quick", "30 seconds"},
+		{DetectionFFprobe, "thorough", "10 minutes"},
+		{DetectionMediaInfo, "quick", "30 seconds"},
+		{DetectionMediaInfo, "thorough", "2 minutes"},
+		{DetectionHandBrake, "quick", "2 minutes"},
+		{DetectionHandBrake, "thorough", "10 minutes"},
+		{"unknown", "quick", "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.method)+"-"+tt.mode, func(t *testing.T) {
+			desc := hc.GetTimeoutDescription(tt.method, tt.mode)
+			if desc == "" {
+				t.Error("Expected non-empty description")
+			}
+			if !contains(desc, tt.want) {
+				t.Errorf("GetTimeoutDescription(%s, %s) = %q, want to contain %q", tt.method, tt.mode, desc, tt.want)
+			}
+		})
+	}
+
+	// Test with empty mode (defaults to quick)
+	desc := hc.GetTimeoutDescription(DetectionFFprobe, "")
+	if !contains(desc, "30 seconds") {
+		t.Errorf("Expected default mode to be quick, got %q", desc)
+	}
+}
+
+// contains checks if s contains substr (case-insensitive)
+func contains(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}

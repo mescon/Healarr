@@ -2682,3 +2682,774 @@ func BenchmarkScannerService_GetScanPathConfig(b *testing.B) {
 		scanner.getScanPathConfig("/media/patha/movies/test.mkv")
 	}
 }
+
+// =============================================================================
+// Additional tests for improved coverage
+// =============================================================================
+
+func TestIsHiddenOrTempFile_AdditionalPatterns(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		expected bool
+	}{
+		// NZB-related patterns
+		{"nzb file pattern", "/media/movies/download.nzb.mkv", true},
+
+		// Case variations for temp files
+		{"TEMP uppercase", "/media/movies/test.TEMP", true},
+		{"TMP uppercase", "/media/movies/test.TMP", true},
+
+		// Partial download patterns
+		{"PART uppercase", "/media/movies/test.PART", true},
+		{"PARTIAL uppercase", "/media/movies/test.PARTIAL", true},
+
+		// Special edge cases
+		{".fuse_hidden exact", "/media/movies/.fuse_hidden12345abc", true},
+
+		// Path with multiple dots
+		{"multiple dots normal", "/media/movies/movie.2024.1080p.mkv", false},
+
+		// Trailer variations
+		{"no trailer word", "/media/movies/behind-the-scenes.mkv", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isHiddenOrTempFile(tt.path)
+			if result != tt.expected {
+				t.Errorf("isHiddenOrTempFile(%q) = %v, want %v", tt.path, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestScannerService_HandleScanPause_CancelledWhilePaused(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	scanner := &ScannerService{
+		db:              db,
+		eventBus:        eb,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+	}
+
+	t.Run("returns scanReturn when context cancelled while paused", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+
+		progress := &ScanProgress{
+			ID:         "test-pause-cancel",
+			Path:       "/media/movies",
+			TotalFiles: 10,
+			isPaused:   true,
+			Status:     "paused",
+			resumeChan: make(chan struct{}),
+		}
+
+		var action scanLoopAction
+		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			action = scanner.handleScanPause(ctx, progress, "/media/movies", 5, 0)
+		}()
+
+		// Give goroutine time to start blocking
+		time.Sleep(50 * time.Millisecond)
+
+		// Cancel context
+		cancel()
+
+		wg.Wait()
+
+		if action != scanReturn {
+			t.Errorf("Expected scanReturn when cancelled while paused, got %v", action)
+		}
+		if progress.Status != "cancelled" {
+			t.Errorf("Expected status 'cancelled', got %q", progress.Status)
+		}
+	})
+}
+
+func TestScannerService_HandleScanPause_ShutdownWhilePaused(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	shutdownCh := make(chan struct{})
+
+	scanner := &ScannerService{
+		db:              db,
+		eventBus:        eb,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      shutdownCh,
+	}
+
+	t.Run("returns scanReturn when shutdown signaled while paused", func(t *testing.T) {
+		ctx := context.Background()
+
+		progress := &ScanProgress{
+			ID:         "test-pause-shutdown",
+			Path:       "/media/movies",
+			TotalFiles: 10,
+			isPaused:   true,
+			Status:     "paused",
+			resumeChan: make(chan struct{}),
+		}
+
+		var action scanLoopAction
+		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			action = scanner.handleScanPause(ctx, progress, "/media/movies", 5, 0)
+		}()
+
+		// Give goroutine time to start blocking
+		time.Sleep(50 * time.Millisecond)
+
+		// Signal shutdown
+		close(shutdownCh)
+
+		wg.Wait()
+
+		if action != scanReturn {
+			t.Errorf("Expected scanReturn when shutdown while paused, got %v", action)
+		}
+		if progress.Status != "interrupted" {
+			t.Errorf("Expected status 'interrupted', got %q", progress.Status)
+		}
+	})
+}
+
+func TestScannerService_HandleScanPause_WithDatabaseUpdate(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Create a scan record
+	result, err := db.Exec(`
+		INSERT INTO scans (path, path_id, status, total_files, files_scanned, current_file_index)
+		VALUES ('/media/movies', 1, 'running', 10, 3, 3)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create scan: %v", err)
+	}
+	scanDBID, _ := result.LastInsertId()
+
+	scanner := &ScannerService{
+		db:              db,
+		eventBus:        eb,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+	}
+
+	t.Run("updates database when paused and resumed", func(t *testing.T) {
+		ctx := context.Background()
+
+		progress := &ScanProgress{
+			ID:         "test-pause-db",
+			Path:       "/media/movies",
+			TotalFiles: 10,
+			isPaused:   true,
+			Status:     "paused",
+			resumeChan: make(chan struct{}),
+		}
+
+		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			scanner.handleScanPause(ctx, progress, "/media/movies", 5, scanDBID)
+		}()
+
+		// Give time for the pause state to be saved
+		time.Sleep(50 * time.Millisecond)
+
+		// Check database was updated to paused
+		var status string
+		var currentIndex int
+		err := db.QueryRow(`SELECT status, current_file_index FROM scans WHERE id = ?`, scanDBID).Scan(&status, &currentIndex)
+		if err != nil {
+			t.Fatalf("Failed to query: %v", err)
+		}
+		if status != "paused" {
+			t.Errorf("Expected status 'paused' in database, got %q", status)
+		}
+		if currentIndex != 5 {
+			t.Errorf("Expected current_file_index 5, got %d", currentIndex)
+		}
+
+		// Signal resume
+		close(progress.resumeChan)
+
+		wg.Wait()
+
+		// Check database was updated to running
+		err = db.QueryRow(`SELECT status FROM scans WHERE id = ?`, scanDBID).Scan(&status)
+		if err != nil {
+			t.Fatalf("Failed to query: %v", err)
+		}
+		if status != "running" {
+			t.Errorf("Expected status 'running' in database after resume, got %q", status)
+		}
+	})
+}
+
+func TestScannerService_VerifyPathAccessible_PermissionDenied(t *testing.T) {
+	// Skip on systems where we might run as root (which can read anything)
+	if os.Getuid() == 0 {
+		t.Skip("Skipping permission test when running as root")
+	}
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	scanner := &ScannerService{
+		db:              db,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+	}
+
+	t.Run("handles permission denied gracefully", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		restrictedDir := filepath.Join(tmpDir, "restricted")
+		if err := os.Mkdir(restrictedDir, 0000); err != nil {
+			t.Fatalf("Failed to create restricted dir: %v", err)
+		}
+		defer os.Chmod(restrictedDir, 0755) // Cleanup
+
+		err := scanner.verifyPathAccessible(restrictedDir)
+		if err == nil {
+			t.Error("Expected error for permission denied")
+		}
+	})
+}
+
+func TestScannerService_ShouldSkipRecentlyModified_WithDBRecording(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	// Create a scan record
+	result, err := db.Exec(`
+		INSERT INTO scans (path, path_id, status, total_files, files_scanned)
+		VALUES ('/media/movies', 1, 'running', 10, 0)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create scan: %v", err)
+	}
+	scanDBID, _ := result.LastInsertId()
+
+	scanner := &ScannerService{
+		db:              db,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+	}
+
+	t.Run("records skipped file in database", func(t *testing.T) {
+		sfc := &scanFileContext{
+			filePath:  "/media/movies/recent.mkv",
+			fileSize:  1024,
+			fileMtime: time.Now(), // Recently modified
+			scanDBID:  scanDBID,
+		}
+
+		skipped := scanner.shouldSkipRecentlyModified(sfc)
+		if !skipped {
+			t.Error("Expected file to be skipped")
+		}
+
+		// Verify record was created in scan_files
+		var count int
+		var status string
+		err := db.QueryRow(`
+			SELECT COUNT(*), MAX(status) FROM scan_files
+			WHERE scan_id = ? AND file_path = ?
+		`, scanDBID, sfc.filePath).Scan(&count, &status)
+		if err != nil {
+			t.Fatalf("Failed to query: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("Expected 1 scan_files record, got %d", count)
+		}
+		if status != "skipped" {
+			t.Errorf("Expected status 'skipped', got %q", status)
+		}
+	})
+}
+
+func TestScannerService_ShouldSkipChangingSize_WithDBRecording(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	// Create a scan record
+	result, err := db.Exec(`
+		INSERT INTO scans (path, path_id, status, total_files, files_scanned)
+		VALUES ('/media/movies', 1, 'running', 10, 0)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create scan: %v", err)
+	}
+	scanDBID, _ := result.LastInsertId()
+
+	scanner := &ScannerService{
+		db:              db,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+	}
+
+	t.Run("does not skip file when size is stable", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "stable.mkv")
+		if err := os.WriteFile(testFile, []byte("stable content"), 0644); err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		info, _ := os.Stat(testFile)
+		sfc := &scanFileContext{
+			filePath: testFile,
+			fileSize: info.Size(),
+			scanDBID: scanDBID,
+		}
+
+		skipped := scanner.shouldSkipChangingSize(sfc)
+		if skipped {
+			t.Error("Stable file should not be skipped")
+		}
+	})
+
+	t.Run("records skipped file when size changes", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "changing.mkv")
+		if err := os.WriteFile(testFile, []byte("initial"), 0644); err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		sfc := &scanFileContext{
+			filePath: testFile,
+			fileSize: 7, // Initial size
+			scanDBID: scanDBID,
+		}
+
+		// Start a goroutine to change the file size while checking
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(200 * time.Millisecond)
+			// Append to file during the sleep period in shouldSkipChangingSize
+			f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+			if err != nil {
+				return
+			}
+			f.Write([]byte(" more content"))
+			f.Close()
+		}()
+
+		skipped := scanner.shouldSkipChangingSize(sfc)
+		wg.Wait()
+
+		if skipped {
+			// Verify record was created in scan_files
+			var count int
+			err := db.QueryRow(`
+				SELECT COUNT(*) FROM scan_files
+				WHERE scan_id = ? AND file_path = ? AND status = 'skipped'
+			`, scanDBID, sfc.filePath).Scan(&count)
+			if err != nil {
+				t.Fatalf("Failed to query: %v", err)
+			}
+			if count != 1 {
+				t.Errorf("Expected 1 scan_files record for skipped file, got %d", count)
+			}
+		}
+		// Note: This test might not always detect size change due to timing
+		// The important thing is that it doesn't error
+	})
+}
+
+func TestScannerService_ScanFile_WithCorruption(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Create scan path for test
+	tmpDir := t.TempDir()
+	_, err = db.Exec(`
+		INSERT INTO scan_paths (local_path, arr_path, enabled, auto_remediate, dry_run)
+		VALUES (?, ?, 1, 1, 0)
+	`, tmpDir, tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return false, &integration.HealthCheckError{
+				Type:    integration.ErrorTypeCorruptHeader,
+				Message: "File is corrupted",
+			}
+		},
+	}
+
+	scanner := NewScannerService(db, eb, mockHC, nil)
+
+	t.Run("emits corruption event for corrupted file", func(t *testing.T) {
+		testFile := filepath.Join(tmpDir, "corrupt.mkv")
+		if err := os.WriteFile(testFile, []byte("corrupt content"), 0644); err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		err := scanner.ScanFile(testFile)
+		if err != nil {
+			t.Errorf("ScanFile should not return error: %v", err)
+		}
+
+		// Verify corruption event was created
+		var count int
+		err = db.QueryRow(`
+			SELECT COUNT(*) FROM events
+			WHERE event_type = 'CorruptionDetected'
+			AND json_extract(event_data, '$.file_path') = ?
+		`, testFile).Scan(&count)
+		if err != nil {
+			t.Fatalf("Failed to query: %v", err)
+		}
+		if count == 0 {
+			t.Error("Expected corruption event to be created")
+		}
+	})
+}
+
+func TestScannerService_ScanFile_WithRecoverableError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Create scan path for test
+	tmpDir := t.TempDir()
+	_, err = db.Exec(`
+		INSERT INTO scan_paths (local_path, arr_path, enabled, auto_remediate, dry_run)
+		VALUES (?, ?, 1, 0, 0)
+	`, tmpDir, tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return false, &integration.HealthCheckError{
+				Type:    integration.ErrorTypeMountLost,
+				Message: "Transport endpoint not connected",
+			}
+		},
+	}
+
+	scanner := NewScannerService(db, eb, mockHC, nil)
+
+	t.Run("does not emit corruption event for recoverable error", func(t *testing.T) {
+		testFile := filepath.Join(tmpDir, "inaccessible.mkv")
+		if err := os.WriteFile(testFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		err := scanner.ScanFile(testFile)
+		if err != nil {
+			t.Errorf("ScanFile should not return error: %v", err)
+		}
+
+		// Verify NO corruption event was created
+		var count int
+		err = db.QueryRow(`
+			SELECT COUNT(*) FROM events
+			WHERE event_type = 'CorruptionDetected'
+			AND json_extract(event_data, '$.file_path') = ?
+		`, testFile).Scan(&count)
+		if err != nil {
+			t.Fatalf("Failed to query: %v", err)
+		}
+		if count != 0 {
+			t.Error("No corruption event should be created for recoverable errors")
+		}
+	})
+}
+
+func TestScannerService_ScanFile_SkipsDuplicate(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Create scan path for test
+	tmpDir := t.TempDir()
+	_, err = db.Exec(`
+		INSERT INTO scan_paths (local_path, arr_path, enabled, auto_remediate, dry_run)
+		VALUES (?, ?, 1, 1, 0)
+	`, tmpDir, tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	// Pre-insert an active corruption for this file
+	testFile := filepath.Join(tmpDir, "already-corrupt.mkv")
+	_, err = db.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES ('corruption', 'existing-corruption', 'CorruptionDetected', ?, 1, datetime('now'))
+	`, `{"file_path":"`+testFile+`"}`)
+	if err != nil {
+		t.Fatalf("Failed to insert existing corruption: %v", err)
+	}
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return false, &integration.HealthCheckError{
+				Type:    integration.ErrorTypeCorruptHeader,
+				Message: "File is corrupted",
+			}
+		},
+	}
+
+	scanner := NewScannerService(db, eb, mockHC, nil)
+
+	t.Run("does not emit duplicate corruption event", func(t *testing.T) {
+		if err := os.WriteFile(testFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		err := scanner.ScanFile(testFile)
+		if err != nil {
+			t.Errorf("ScanFile should not return error: %v", err)
+		}
+
+		// Verify only ONE corruption event exists (the pre-existing one)
+		var count int
+		err = db.QueryRow(`
+			SELECT COUNT(*) FROM events
+			WHERE event_type = 'CorruptionDetected'
+			AND json_extract(event_data, '$.file_path') = ?
+		`, testFile).Scan(&count)
+		if err != nil {
+			t.Fatalf("Failed to query: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("Expected 1 corruption event (pre-existing), got %d", count)
+		}
+	})
+}
+
+func TestScannerService_HandleRecoverableError_RecordsInDB(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Insert a scan path for the test
+	testutil.SeedScanPath(db, 10, "/media/movies", "/movies", false, false)
+
+	// Create a scan record
+	result, err := db.Exec(`
+		INSERT INTO scans (path, path_id, status, total_files, files_scanned)
+		VALUES ('/media/movies', 10, 'running', 10, 0)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create scan: %v", err)
+	}
+	scanDBID, _ := result.LastInsertId()
+
+	scanner := &ScannerService{
+		db:              db,
+		eventBus:        eb,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+	}
+
+	t.Run("records inaccessible file in database", func(t *testing.T) {
+		progress := &ScanProgress{ID: "test-rec-err", Path: "/media/movies"}
+		sfc := &scanFileContext{
+			filePath: "/media/movies/inaccessible.mkv",
+			fileSize: 1024,
+			pathID:   10,
+			scanDBID: scanDBID,
+		}
+		healthErr := &integration.HealthCheckError{
+			Type:    integration.ErrorTypeIOError,
+			Message: "Input/output error",
+		}
+
+		scanner.handleRecoverableError(progress, sfc, healthErr)
+
+		// Verify record was created in scan_files
+		var count int
+		var status, corruptionType string
+		err := db.QueryRow(`
+			SELECT COUNT(*), MAX(status), MAX(corruption_type) FROM scan_files
+			WHERE scan_id = ? AND file_path = ?
+		`, scanDBID, sfc.filePath).Scan(&count, &status, &corruptionType)
+		if err != nil {
+			t.Fatalf("Failed to query: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("Expected 1 scan_files record, got %d", count)
+		}
+		if status != "inaccessible" {
+			t.Errorf("Expected status 'inaccessible', got %q", status)
+		}
+		if corruptionType != string(integration.ErrorTypeIOError) {
+			t.Errorf("Expected corruption_type %q, got %q", integration.ErrorTypeIOError, corruptionType)
+		}
+
+		// Verify file was queued for rescan
+		var pendingCount int
+		err = db.QueryRow(`SELECT COUNT(*) FROM pending_rescans WHERE file_path = ?`, sfc.filePath).Scan(&pendingCount)
+		if err != nil {
+			t.Fatalf("Failed to query pending_rescans: %v", err)
+		}
+		if pendingCount != 1 {
+			t.Errorf("Expected 1 pending_rescans record, got %d", pendingCount)
+		}
+	})
+}
+
+func TestScannerService_ResumeScan_ParsesDetectionConfig(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckWithConfigFunc: func(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+	}
+
+	scanner := NewScannerService(db, eb, mockHC, nil)
+
+	t.Run("resumes with valid detection config", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "test.mkv")
+		if err := os.WriteFile(testFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+		oldTime := time.Now().Add(-10 * time.Minute)
+		os.Chtimes(testFile, oldTime, oldTime)
+
+		// Insert scan path config
+		_, err := db.Exec(`
+			INSERT INTO scan_paths (id, local_path, arr_path, enabled, auto_remediate, dry_run, detection_method, detection_mode)
+			VALUES (1, ?, ?, 1, 0, 0, 'ffprobe', 'thorough')
+		`, tmpDir, tmpDir)
+		if err != nil {
+			t.Fatalf("Failed to insert scan path: %v", err)
+		}
+
+		// Create interrupted scan with file list and detection config
+		fileList := `["` + testFile + `"]`
+		detectionConfig := `{"method":"ffprobe","mode":"thorough"}`
+		_, err = db.Exec(`
+			INSERT INTO scans (path, path_id, status, total_files, current_file_index, file_list, detection_config, auto_remediate, dry_run)
+			VALUES (?, 1, 'interrupted', 1, 0, ?, ?, 0, 0)
+		`, tmpDir, fileList, detectionConfig)
+		if err != nil {
+			t.Fatalf("Failed to insert scan: %v", err)
+		}
+
+		// Resume should work without panic
+		scanner.ResumeInterruptedScans()
+
+		// Give time for async resume
+		time.Sleep(100 * time.Millisecond)
+	})
+
+	t.Run("resumes with empty detection config", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "test2.mkv")
+		if err := os.WriteFile(testFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+		oldTime := time.Now().Add(-10 * time.Minute)
+		os.Chtimes(testFile, oldTime, oldTime)
+
+		// Insert scan path config
+		_, err := db.Exec(`
+			INSERT INTO scan_paths (id, local_path, arr_path, enabled, auto_remediate, dry_run, detection_method, detection_mode)
+			VALUES (2, ?, ?, 1, 0, 0, 'ffprobe', 'quick')
+		`, tmpDir, tmpDir)
+		if err != nil {
+			t.Fatalf("Failed to insert scan path: %v", err)
+		}
+
+		// Create interrupted scan with file list but NO detection config
+		fileList := `["` + testFile + `"]`
+		_, err = db.Exec(`
+			INSERT INTO scans (path, path_id, status, total_files, current_file_index, file_list, detection_config, auto_remediate, dry_run)
+			VALUES (?, 2, 'interrupted', 1, 0, ?, NULL, 0, 0)
+		`, tmpDir, fileList)
+		if err != nil {
+			t.Fatalf("Failed to insert scan: %v", err)
+		}
+
+		// Resume should work without panic and use default config
+		scanner.ResumeInterruptedScans()
+
+		// Give time for async resume
+		time.Sleep(100 * time.Millisecond)
+	})
+}

@@ -17,6 +17,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/metrics"
 	"github.com/mescon/Healarr/internal/notifier"
 	"github.com/mescon/Healarr/internal/services"
 	"github.com/mescon/Healarr/internal/web"
@@ -220,6 +221,12 @@ func main() {
 		logger.Infof("✓ Notification Service (alerts for events)")
 	}
 
+	// Initialize Metrics Service (Prometheus metrics)
+	logger.Infof("Initializing Metrics Service...")
+	metricsService := metrics.NewMetricsService(eb)
+	metricsService.Start()
+	logger.Infof("✓ Metrics Service (Prometheus endpoint at /metrics)")
+
 	// Start Services
 	logger.Infof("Starting background services...")
 	remediatorService.Start()
@@ -237,7 +244,7 @@ func main() {
 
 	// Start API Server
 	logger.Infof("Initializing REST API and WebSocket server...")
-	apiServer := api.NewRESTServer(repo.DB, eb, scannerService, pathMapper, schedulerService, notifierService)
+	apiServer := api.NewRESTServer(repo.DB, eb, scannerService, pathMapper, schedulerService, notifierService, metricsService)
 	go func() {
 		addr := ":" + cfg.Port
 		if err := apiServer.Start(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {

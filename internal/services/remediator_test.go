@@ -500,3 +500,461 @@ func TestRemediatorService_Concurrency(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// RemediatorService Start tests
+// =============================================================================
+
+func TestRemediatorService_Start(t *testing.T) {
+	t.Run("subscribes to events", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		mockArrClient := &testutil.MockArrClient{}
+		mockPathMapper := &testutil.MockPathMapper{}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+		// Before Start, should have no subscribers
+		if len(mockEventBus.Subscribers) != 0 {
+			t.Error("Expected no subscribers before Start()")
+		}
+
+		remediator.Start()
+
+		// After Start, should have subscribers for CorruptionDetected and RetryScheduled
+		if len(mockEventBus.Subscribers[domain.CorruptionDetected]) != 1 {
+			t.Errorf("Expected 1 subscriber for CorruptionDetected, got %d",
+				len(mockEventBus.Subscribers[domain.CorruptionDetected]))
+		}
+		if len(mockEventBus.Subscribers[domain.RetryScheduled]) != 1 {
+			t.Errorf("Expected 1 subscriber for RetryScheduled, got %d",
+				len(mockEventBus.Subscribers[domain.RetryScheduled]))
+		}
+	})
+}
+
+// =============================================================================
+// extractEpisodeIDs tests
+// =============================================================================
+
+func TestExtractEpisodeIDs(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata map[string]interface{}
+		expected []int64
+	}{
+		{
+			name:     "nil metadata",
+			metadata: nil,
+			expected: nil,
+		},
+		{
+			name:     "empty metadata",
+			metadata: map[string]interface{}{},
+			expected: nil,
+		},
+		{
+			name:     "no episode_ids key",
+			metadata: map[string]interface{}{"series_id": 123},
+			expected: nil,
+		},
+		{
+			name: "episode_ids as []int64",
+			metadata: map[string]interface{}{
+				"episode_ids": []int64{101, 102, 103},
+			},
+			expected: []int64{101, 102, 103},
+		},
+		{
+			name: "episode_ids as []interface{} with float64",
+			metadata: map[string]interface{}{
+				"episode_ids": []interface{}{float64(201), float64(202)},
+			},
+			expected: []int64{201, 202},
+		},
+		{
+			name: "episode_ids as []interface{} with int64",
+			metadata: map[string]interface{}{
+				"episode_ids": []interface{}{int64(301), int64(302), int64(303)},
+			},
+			expected: []int64{301, 302, 303},
+		},
+		{
+			name: "episode_ids as []interface{} with mixed types",
+			metadata: map[string]interface{}{
+				"episode_ids": []interface{}{float64(401), int64(402)},
+			},
+			expected: []int64{401, 402},
+		},
+		{
+			name: "episode_ids as []interface{} with unsupported types",
+			metadata: map[string]interface{}{
+				"episode_ids": []interface{}{"not_a_number", true},
+			},
+			expected: nil, // Nothing extracted
+		},
+		{
+			name: "episode_ids as wrong type (string)",
+			metadata: map[string]interface{}{
+				"episode_ids": "501,502",
+			},
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractEpisodeIDs(tt.metadata)
+
+			if len(result) != len(tt.expected) {
+				t.Errorf("extractEpisodeIDs() returned %d items, want %d", len(result), len(tt.expected))
+				return
+			}
+
+			for i, v := range result {
+				if v != tt.expected[i] {
+					t.Errorf("extractEpisodeIDs()[%d] = %d, want %d", i, v, tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+// =============================================================================
+// retrySearchOnly tests
+// =============================================================================
+
+func TestRemediatorService_RetrySearchOnly(t *testing.T) {
+	t.Run("missing file_path publishes error", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		mockArrClient := &testutil.MockArrClient{}
+		mockPathMapper := &testutil.MockPathMapper{}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+		// Event without file_path
+		event := domain.Event{
+			AggregateType: "corruption",
+			AggregateID:   "retry-test-missing-path",
+			EventType:     domain.RetryScheduled,
+			EventData:     map[string]interface{}{}, // Missing file_path
+		}
+
+		remediator.retrySearchOnly(event, 0, nil)
+
+		// Wait for async processing
+		time.Sleep(100 * time.Millisecond)
+
+		// Should have SearchFailed event
+		if mockEventBus.EventCount(domain.SearchFailed) != 1 {
+			t.Errorf("Expected 1 SearchFailed event, got %d", mockEventBus.EventCount(domain.SearchFailed))
+		}
+	})
+
+	t.Run("path mapping failure publishes error", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		mockArrClient := &testutil.MockArrClient{}
+		mockPathMapper := &testutil.MockPathMapper{
+			ToArrPathFunc: func(localPath string) (string, error) {
+				return "", errPathNotConfigured
+			},
+		}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+		event := domain.Event{
+			AggregateType: "corruption",
+			AggregateID:   "retry-test-path-fail",
+			EventType:     domain.RetryScheduled,
+			EventData: map[string]interface{}{
+				"file_path": "/media/movies/test.mkv",
+			},
+		}
+
+		remediator.retrySearchOnly(event, 0, nil)
+
+		// Wait for async processing
+		time.Sleep(100 * time.Millisecond)
+
+		if mockEventBus.EventCount(domain.SearchFailed) != 1 {
+			t.Errorf("Expected 1 SearchFailed event, got %d", mockEventBus.EventCount(domain.SearchFailed))
+		}
+	})
+
+	t.Run("media lookup failure publishes error", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		mockArrClient := &testutil.MockArrClient{
+			FindMediaByPathFunc: func(path string) (int64, error) {
+				return 0, errors.New("media not found")
+			},
+		}
+		mockPathMapper := &testutil.MockPathMapper{}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+		event := domain.Event{
+			AggregateType: "corruption",
+			AggregateID:   "retry-test-media-fail",
+			EventType:     domain.RetryScheduled,
+			EventData: map[string]interface{}{
+				"file_path": "/media/movies/test.mkv",
+			},
+		}
+
+		// Pass mediaID=0 to trigger FindMediaByPath lookup
+		remediator.retrySearchOnly(event, 0, nil)
+
+		// Wait for async processing
+		time.Sleep(200 * time.Millisecond)
+
+		if mockEventBus.EventCount(domain.SearchFailed) != 1 {
+			t.Errorf("Expected 1 SearchFailed event, got %d", mockEventBus.EventCount(domain.SearchFailed))
+		}
+	})
+
+	t.Run("search trigger failure publishes error", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		mockArrClient := &testutil.MockArrClient{
+			TriggerSearchFunc: func(mediaID int64, path string, episodeIDs []int64) error {
+				return errors.New("search API error")
+			},
+		}
+		mockPathMapper := &testutil.MockPathMapper{}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+		event := domain.Event{
+			AggregateType: "corruption",
+			AggregateID:   "retry-test-search-fail",
+			EventType:     domain.RetryScheduled,
+			EventData: map[string]interface{}{
+				"file_path": "/media/movies/test.mkv",
+			},
+		}
+
+		// Pass mediaID to skip FindMediaByPath
+		remediator.retrySearchOnly(event, 456, nil)
+
+		// Wait for async processing
+		time.Sleep(200 * time.Millisecond)
+
+		// Should have SearchStarted + SearchFailed
+		if mockEventBus.EventCount(domain.SearchStarted) != 1 {
+			t.Errorf("Expected 1 SearchStarted event, got %d", mockEventBus.EventCount(domain.SearchStarted))
+		}
+		if mockEventBus.EventCount(domain.SearchFailed) != 1 {
+			t.Errorf("Expected 1 SearchFailed event, got %d", mockEventBus.EventCount(domain.SearchFailed))
+		}
+	})
+
+	t.Run("successful retry with episode_ids", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+
+		var capturedEpisodeIDs []int64
+		mockArrClient := &testutil.MockArrClient{
+			TriggerSearchFunc: func(mediaID int64, path string, episodeIDs []int64) error {
+				capturedEpisodeIDs = episodeIDs
+				return nil
+			},
+		}
+		mockPathMapper := &testutil.MockPathMapper{}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+		event := domain.Event{
+			AggregateType: "corruption",
+			AggregateID:   "retry-test-with-episodes",
+			EventType:     domain.RetryScheduled,
+			EventData: map[string]interface{}{
+				"file_path": "/media/tv/show/episode.mkv",
+				"path_id":   float64(1),
+			},
+		}
+
+		// Pass metadata with episode_ids
+		metadata := map[string]interface{}{
+			"episode_ids": []interface{}{float64(101), float64(102)},
+		}
+		remediator.retrySearchOnly(event, 789, metadata)
+
+		// Wait for async processing
+		time.Sleep(200 * time.Millisecond)
+
+		// Should have SearchStarted + SearchCompleted
+		if mockEventBus.EventCount(domain.SearchStarted) != 1 {
+			t.Errorf("Expected 1 SearchStarted event, got %d", mockEventBus.EventCount(domain.SearchStarted))
+		}
+		if mockEventBus.EventCount(domain.SearchCompleted) != 1 {
+			t.Errorf("Expected 1 SearchCompleted event, got %d", mockEventBus.EventCount(domain.SearchCompleted))
+		}
+
+		// Verify episode IDs were passed to TriggerSearch
+		if len(capturedEpisodeIDs) != 2 {
+			t.Errorf("Expected 2 episode IDs, got %d", len(capturedEpisodeIDs))
+		}
+		if capturedEpisodeIDs[0] != 101 || capturedEpisodeIDs[1] != 102 {
+			t.Errorf("Expected episode IDs [101, 102], got %v", capturedEpisodeIDs)
+		}
+	})
+}
+
+// =============================================================================
+// isInfrastructureError tests
+// =============================================================================
+
+func TestRemediatorService_IsInfrastructureError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	mockEventBus := testutil.NewMockEventBus()
+	remediator := NewRemediatorService(mockEventBus, nil, nil, db)
+
+	infraErrors := []string{
+		integration.ErrorTypeAccessDenied,
+		integration.ErrorTypePathNotFound,
+		integration.ErrorTypeMountLost,
+		integration.ErrorTypeIOError,
+		integration.ErrorTypeTimeout,
+		integration.ErrorTypeInvalidConfig,
+	}
+
+	for _, errType := range infraErrors {
+		t.Run("infrastructure_"+errType, func(t *testing.T) {
+			if !remediator.isInfrastructureError(errType) {
+				t.Errorf("Expected %s to be identified as infrastructure error", errType)
+			}
+		})
+	}
+
+	nonInfraErrors := []string{
+		integration.ErrorTypeCorruptHeader,
+		integration.ErrorTypeCorruptStream,
+		integration.ErrorTypeZeroByte,
+		integration.ErrorTypeInvalidFormat,
+		"unknown_error",
+		"",
+	}
+
+	for _, errType := range nonInfraErrors {
+		t.Run("not_infrastructure_"+errType, func(t *testing.T) {
+			if remediator.isInfrastructureError(errType) {
+				t.Errorf("Expected %s to NOT be identified as infrastructure error", errType)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// checkDeletionCompleted tests
+// =============================================================================
+
+func TestRemediatorService_CheckDeletionCompleted(t *testing.T) {
+	t.Run("returns false with nil db", func(t *testing.T) {
+		mockEventBus := testutil.NewMockEventBus()
+		remediator := NewRemediatorService(mockEventBus, nil, nil, nil)
+
+		completed, mediaID, metadata := remediator.checkDeletionCompleted("test-id")
+
+		if completed {
+			t.Error("Expected false with nil db")
+		}
+		if mediaID != 0 {
+			t.Errorf("Expected mediaID 0, got %d", mediaID)
+		}
+		if metadata != nil {
+			t.Error("Expected nil metadata")
+		}
+	})
+
+	t.Run("returns false when no DeletionCompleted event exists", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		remediator := NewRemediatorService(mockEventBus, nil, nil, db)
+
+		completed, mediaID, _ := remediator.checkDeletionCompleted("nonexistent-id")
+
+		if completed {
+			t.Error("Expected false when no DeletionCompleted event exists")
+		}
+		if mediaID != 0 {
+			t.Errorf("Expected mediaID 0, got %d", mediaID)
+		}
+	})
+
+	t.Run("returns true with mediaID when DeletionCompleted exists", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		// Seed a DeletionCompleted event
+		aggregateID := "deletion-completed-test"
+		_, err = testutil.SeedEvent(db, domain.Event{
+			AggregateType: "corruption",
+			AggregateID:   aggregateID,
+			EventType:     domain.DeletionCompleted,
+			EventData: map[string]interface{}{
+				"media_id": float64(12345),
+			},
+		})
+		if err != nil {
+			t.Fatalf("Failed to seed event: %v", err)
+		}
+
+		mockEventBus := testutil.NewMockEventBus()
+		remediator := NewRemediatorService(mockEventBus, nil, nil, db)
+
+		completed, mediaID, _ := remediator.checkDeletionCompleted(aggregateID)
+
+		if !completed {
+			t.Error("Expected true when DeletionCompleted event exists")
+		}
+		if mediaID != 12345 {
+			t.Errorf("Expected mediaID 12345, got %d", mediaID)
+		}
+	})
+}

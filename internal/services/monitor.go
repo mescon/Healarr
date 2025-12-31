@@ -5,6 +5,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/mescon/Healarr/internal/clock"
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
@@ -14,12 +15,20 @@ import (
 type MonitorService struct {
 	eventBus *eventbus.EventBus
 	db       *sql.DB
+	clk      clock.Clock
 }
 
-func NewMonitorService(eb *eventbus.EventBus, db *sql.DB) *MonitorService {
+// NewMonitorService creates a new MonitorService.
+// An optional Clock can be provided for testing; if none is provided, RealClock is used.
+func NewMonitorService(eb *eventbus.EventBus, db *sql.DB, clocks ...clock.Clock) *MonitorService {
+	var c clock.Clock = clock.NewRealClock()
+	if len(clocks) > 0 && clocks[0] != nil {
+		c = clocks[0]
+	}
 	return &MonitorService{
 		eventBus: eb,
 		db:       db,
+		clk:      c,
 	}
 }
 
@@ -62,7 +71,7 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 	// Exponential backoff: 15m, 30m, 60m
 	delay := time.Duration(math.Pow(2, float64(retryCount))) * 15 * time.Minute
 
-	time.AfterFunc(delay, func() {
+	m.clk.AfterFunc(delay, func() {
 		if err := m.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",

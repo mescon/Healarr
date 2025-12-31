@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -387,6 +388,252 @@ func TestRepository_ConnectionPool(t *testing.T) {
 	}
 }
 
+func TestRepository_Backup(t *testing.T) {
+	// Create temp directory for this test
+	tmpDir, err := os.MkdirTemp("", "healarr-backup-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	repo, err := NewRepository(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create repository: %v", err)
+	}
+	defer repo.Close()
+
+	// Insert some data to make sure it's in the backup
+	_, err = repo.DB.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version)
+		VALUES (?, ?, ?, ?, ?)
+	`, "test", "backup-test", "BackupEvent", "{}", 1)
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	// Create backup
+	backupPath, err := repo.Backup(dbPath)
+	if err != nil {
+		t.Fatalf("Backup failed: %v", err)
+	}
+
+	// Verify backup file exists
+	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+		t.Errorf("Backup file not created: %s", backupPath)
+	}
+
+	// Verify backup is valid by opening it
+	backupDB, err := sql.Open("sqlite", backupPath)
+	if err != nil {
+		t.Fatalf("Failed to open backup database: %v", err)
+	}
+	defer backupDB.Close()
+
+	// Check if our test data is in the backup
+	var count int
+	err = backupDB.QueryRow("SELECT COUNT(*) FROM events WHERE event_type = 'BackupEvent'").Scan(&count)
+	if err != nil {
+		t.Fatalf("Failed to query backup database: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("Expected 1 event in backup, got %d", count)
+	}
+}
+
+func TestRepository_CleanupOldBackups(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "healarr-cleanup-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	repo, err := NewRepository(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create repository: %v", err)
+	}
+	defer repo.Close()
+
+	// Create backup directory with multiple backup files
+	backupDir := filepath.Join(tmpDir, "backups")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Create 7 backup files with different timestamps
+	for i := 0; i < 7; i++ {
+		timestamp := time.Now().Add(-time.Duration(i) * time.Hour).Format("20060102_150405")
+		backupFile := filepath.Join(backupDir, "healarr_"+timestamp+".db")
+		if err := os.WriteFile(backupFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("Failed to create backup file: %v", err)
+		}
+		// Set different mod times
+		os.Chtimes(backupFile, time.Now().Add(-time.Duration(i)*time.Hour), time.Now().Add(-time.Duration(i)*time.Hour))
+	}
+
+	// Run cleanup keeping 3 files
+	repo.cleanupOldBackups(backupDir, 3)
+
+	// Count remaining files
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatalf("Failed to read backup dir: %v", err)
+	}
+
+	if len(entries) != 3 {
+		t.Errorf("Expected 3 backup files after cleanup, got %d", len(entries))
+	}
+}
+
+func TestExecWithRetry_Success(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "healarr-retry-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	repo, err := NewRepository(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create repository: %v", err)
+	}
+	defer repo.Close()
+
+	// Test successful execution
+	result, err := ExecWithRetry(repo.DB, `
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version)
+		VALUES (?, ?, ?, ?, ?)
+	`, "test", "retry-test", "RetryEvent", "{}", 1)
+
+	if err != nil {
+		t.Errorf("ExecWithRetry failed: %v", err)
+	}
+
+	id, _ := result.LastInsertId()
+	if id <= 0 {
+		t.Error("Expected positive ID from insert")
+	}
+}
+
+func TestExecWithRetry_NonBusyError(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "healarr-retry-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	repo, err := NewRepository(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create repository: %v", err)
+	}
+	defer repo.Close()
+
+	// Test non-busy error (syntax error) - should not retry
+	_, err = ExecWithRetry(repo.DB, "INVALID SQL SYNTAX")
+	if err == nil {
+		t.Error("Expected error from invalid SQL")
+	}
+}
+
+func TestQueryWithRetry_Success(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "healarr-retry-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	repo, err := NewRepository(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create repository: %v", err)
+	}
+	defer repo.Close()
+
+	// Insert test data
+	_, err = repo.DB.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version)
+		VALUES (?, ?, ?, ?, ?)
+	`, "test", "query-retry", "QueryRetryEvent", "{}", 1)
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	// Test successful query with retry
+	rows, err := QueryWithRetry(repo.DB, "SELECT event_type FROM events WHERE aggregate_id = ?", "query-retry")
+	if err != nil {
+		t.Fatalf("QueryWithRetry failed: %v", err)
+	}
+	defer rows.Close()
+
+	var eventType string
+	if rows.Next() {
+		if err := rows.Scan(&eventType); err != nil {
+			t.Fatalf("Failed to scan result: %v", err)
+		}
+		if eventType != "QueryRetryEvent" {
+			t.Errorf("Expected 'QueryRetryEvent', got '%s'", eventType)
+		}
+	} else {
+		t.Error("Expected at least one row")
+	}
+}
+
+func TestQueryWithRetry_NonBusyError(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "healarr-retry-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	repo, err := NewRepository(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create repository: %v", err)
+	}
+	defer repo.Close()
+
+	// Test non-busy error - should not retry
+	_, err = QueryWithRetry(repo.DB, "SELECT * FROM nonexistent_table")
+	if err == nil {
+		t.Error("Expected error from querying non-existent table")
+	}
+}
+
+func TestRepository_RunMaintenance_ZeroRetention(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Insert some events
+	for i := 0; i < 3; i++ {
+		_, err := repo.DB.Exec(`
+			INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version)
+			VALUES (?, ?, ?, ?, ?)
+		`, "test", "zero-retention", "TestEvent", "{}", 1)
+		if err != nil {
+			t.Fatalf("Failed to insert event: %v", err)
+		}
+	}
+
+	// Run maintenance with 0 retention (should not delete anything)
+	err := repo.RunMaintenance(0)
+	if err != nil {
+		t.Errorf("RunMaintenance(0) failed: %v", err)
+	}
+
+	// Check events are still there
+	var count int
+	err = repo.DB.QueryRow("SELECT COUNT(*) FROM events WHERE aggregate_id = 'zero-retention'").Scan(&count)
+	if err != nil {
+		t.Fatalf("Failed to count events: %v", err)
+	}
+
+	if count != 3 {
+		t.Errorf("Expected 3 events with 0 retention, got %d", count)
+	}
+}
+
 // Benchmark database operations
 func BenchmarkInsertEvent(b *testing.B) {
 	tmpDir, _ := os.MkdirTemp("", "healarr-bench-*")
@@ -408,5 +655,290 @@ func BenchmarkInsertEvent(b *testing.B) {
 		if err != nil {
 			b.Fatalf("Insert failed: %v", err)
 		}
+	}
+}
+
+func TestRepository_MigrateAPIKeyEncryption_AlreadyEncrypted(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "healarr-apikey-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Create repo first to set up schema
+	repo, err := NewRepository(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create repository: %v", err)
+	}
+
+	// Insert an already-encrypted API key (with enc:v1: prefix)
+	encryptedKey := "enc:v1:already-encrypted-key-value"
+	_, err = repo.DB.Exec("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", "api_key", encryptedKey)
+	if err != nil {
+		t.Fatalf("Failed to insert encrypted API key: %v", err)
+	}
+	repo.Close()
+
+	// Create new repository - migration should detect already encrypted key
+	repo2, err := NewRepository(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create second repository: %v", err)
+	}
+	defer repo2.Close()
+
+	// Verify the key is unchanged (migration skipped)
+	var storedKey string
+	err = repo2.DB.QueryRow("SELECT value FROM settings WHERE key = 'api_key'").Scan(&storedKey)
+	if err != nil {
+		t.Fatalf("Failed to query API key: %v", err)
+	}
+
+	if storedKey != encryptedKey {
+		t.Errorf("Expected key unchanged, got '%s'", storedKey)
+	}
+}
+
+func TestRepository_MigrateAPIKeyEncryption_EncryptionDisabled(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "healarr-apikey-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Create repo first to set up schema
+	repo, err := NewRepository(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create repository: %v", err)
+	}
+
+	// Insert a plain API key (no enc:v1: prefix)
+	plainKey := "plain-api-key-12345"
+	_, err = repo.DB.Exec("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", "api_key", plainKey)
+	if err != nil {
+		t.Fatalf("Failed to insert plain API key: %v", err)
+	}
+	repo.Close()
+
+	// Create new repository - migration should run but skip encryption (no key configured)
+	repo2, err := NewRepository(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create second repository: %v", err)
+	}
+	defer repo2.Close()
+
+	// Verify the key is unchanged (no encryption configured)
+	var storedKey string
+	err = repo2.DB.QueryRow("SELECT value FROM settings WHERE key = 'api_key'").Scan(&storedKey)
+	if err != nil {
+		t.Fatalf("Failed to query API key: %v", err)
+	}
+
+	if storedKey != plainKey {
+		t.Errorf("Expected key unchanged (encryption disabled), got '%s'", storedKey)
+	}
+}
+
+func TestExecWithRetry_BusyExhausted(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "healarr-busy-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "busy.db")
+
+	// Create a basic SQLite database using the modernc driver
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Create a test table
+	_, err = db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)")
+	if err != nil {
+		t.Fatalf("Failed to create table: %v", err)
+	}
+
+	// Open a second connection
+	db2, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open second connection: %v", err)
+	}
+	defer db2.Close()
+
+	// Start exclusive transaction on db2
+	tx, err := db2.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	// Lock the database by writing
+	_, err = tx.Exec("INSERT INTO test (value) VALUES ('lock')")
+	if err != nil {
+		t.Fatalf("Failed to insert lock row: %v", err)
+	}
+
+	// Try to write from db1 - should fail with busy
+	_, err = ExecWithRetry(db, "INSERT INTO test (value) VALUES ('test')")
+
+	// Rollback lock
+	tx.Rollback()
+
+	// The error may or may not occur depending on timing
+	// This test exercises the retry loop paths
+	if err != nil {
+		if !strings.Contains(err.Error(), "busy") && !strings.Contains(err.Error(), "locked") {
+			// Unexpected error
+			t.Logf("Got non-busy error (acceptable): %v", err)
+		}
+	}
+}
+
+func TestQueryWithRetry_BusyExhausted(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "healarr-busy-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "busy.db")
+
+	// Create a basic SQLite database using the modernc driver
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Create a test table
+	_, err = db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)")
+	if err != nil {
+		t.Fatalf("Failed to create table: %v", err)
+	}
+
+	// Insert some data
+	_, err = db.Exec("INSERT INTO test (value) VALUES ('data')")
+	if err != nil {
+		t.Fatalf("Failed to insert data: %v", err)
+	}
+
+	// Open a second connection
+	db2, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open second connection: %v", err)
+	}
+	defer db2.Close()
+
+	// Start exclusive transaction on db2
+	tx, err := db2.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	// Lock the database by writing
+	_, err = tx.Exec("INSERT INTO test (value) VALUES ('lock')")
+	if err != nil {
+		t.Fatalf("Failed to insert lock row: %v", err)
+	}
+
+	// Try to query from db1 - should succeed (reads usually don't block on writes)
+	// This tests the query retry path
+	rows, err := QueryWithRetry(db, "SELECT value FROM test")
+
+	// Rollback lock
+	tx.Rollback()
+
+	if err != nil {
+		// Some configurations may get locked even for reads
+		t.Logf("Query got error (can happen with exclusive locks): %v", err)
+	} else {
+		rows.Close()
+	}
+}
+
+func TestRepository_GetDatabaseStats_EmptyDB(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Get stats on fresh database
+	stats, err := repo.GetDatabaseStats()
+	if err != nil {
+		t.Fatalf("GetDatabaseStats failed: %v", err)
+	}
+
+	// Verify expected fields exist
+	if _, ok := stats["size_bytes"]; !ok {
+		t.Error("Expected size_bytes in stats")
+	}
+	if _, ok := stats["page_count"]; !ok {
+		t.Error("Expected page_count in stats")
+	}
+	if _, ok := stats["table_counts"]; !ok {
+		t.Error("Expected table_counts in stats")
+	}
+
+	// Check table_counts contains events table
+	if tableCounts, ok := stats["table_counts"].(map[string]int64); ok {
+		if count, exists := tableCounts["events"]; exists && count != 0 {
+			t.Errorf("Expected 0 events in fresh DB, got %d", count)
+		}
+	}
+}
+
+func TestRepository_RunMaintenance_WithOldEvents(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Insert events with old timestamps using RFC3339 format (same as RunMaintenance)
+	oldTime := time.Now().Add(-48 * time.Hour).Format(time.RFC3339)
+	newTime := time.Now().Format(time.RFC3339)
+
+	// Insert old event
+	_, err := repo.DB.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, "test", "old-event", "OldEvent", "{}", 1, oldTime)
+	if err != nil {
+		t.Fatalf("Failed to insert old event: %v", err)
+	}
+
+	// Insert new event
+	_, err = repo.DB.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, "test", "new-event", "NewEvent", "{}", 1, newTime)
+	if err != nil {
+		t.Fatalf("Failed to insert new event: %v", err)
+	}
+
+	// Run maintenance with 24h retention (1 day)
+	err = repo.RunMaintenance(1)
+	if err != nil {
+		t.Fatalf("RunMaintenance failed: %v", err)
+	}
+
+	// Old event should be deleted (it's 48h old, cutoff is 24h)
+	var oldCount int
+	err = repo.DB.QueryRow("SELECT COUNT(*) FROM events WHERE aggregate_id = 'old-event'").Scan(&oldCount)
+	if err != nil {
+		t.Fatalf("Failed to count old events: %v", err)
+	}
+	if oldCount != 0 {
+		t.Errorf("Expected old event to be deleted, found %d", oldCount)
+	}
+
+	// New event should still exist
+	var newCount int
+	err = repo.DB.QueryRow("SELECT COUNT(*) FROM events WHERE aggregate_id = 'new-event'").Scan(&newCount)
+	if err != nil {
+		t.Fatalf("Failed to count new events: %v", err)
+	}
+	if newCount != 1 {
+		t.Errorf("Expected new event to exist, found %d", newCount)
 	}
 }

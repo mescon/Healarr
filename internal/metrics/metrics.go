@@ -24,22 +24,22 @@ type MetricsService struct {
 	notificationsTotal  *prometheus.CounterVec
 
 	// Gauges
-	activeRemediations   prometheus.Gauge
-	queuedRemediations   prometheus.Gauge
-	stuckRemediations    prometheus.Gauge
-	unhealthyInstances   prometheus.Gauge
-	currentScanProgress  prometheus.Gauge
+	activeRemediations  prometheus.Gauge
+	queuedRemediations  prometheus.Gauge
+	stuckRemediations   prometheus.Gauge
+	unhealthyInstances  prometheus.Gauge
+	currentScanProgress prometheus.Gauge
 
 	// Histograms
 	remediationDuration *prometheus.HistogramVec
 	scanDuration        prometheus.Histogram
 
 	// Internal tracking
-	mu                      sync.Mutex
-	activeRemediationCount  int
-	queuedRemediationCount  int
-	stuckRemediationCount   int
-	unhealthyInstanceCount  int
+	mu                     sync.Mutex
+	activeRemediationCount int
+	queuedRemediationCount int
+	stuckRemediationCount  int
+	unhealthyInstanceCount int
 }
 
 // NewMetricsService creates and registers Prometheus metrics

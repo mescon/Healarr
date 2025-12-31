@@ -73,9 +73,10 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 }
 
 type HTTPArrClient struct {
-	db          *sql.DB
-	httpClient  *http.Client
-	rateLimiter *RateLimiter
+	db              *sql.DB
+	httpClient      *http.Client
+	rateLimiter     *RateLimiter
+	circuitBreakers *CircuitBreakerRegistry
 }
 
 func NewArrClient(db *sql.DB) *HTTPArrClient {
@@ -85,8 +86,25 @@ func NewArrClient(db *sql.DB) *HTTPArrClient {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		rateLimiter: NewRateLimiter(cfg.ArrRateLimitRPS, cfg.ArrRateLimitBurst),
+		rateLimiter:     NewRateLimiter(cfg.ArrRateLimitRPS, cfg.ArrRateLimitBurst),
+		circuitBreakers: NewCircuitBreakerRegistry(DefaultCircuitBreakerConfig()),
 	}
+}
+
+// GetCircuitBreakerStats returns statistics for all circuit breakers.
+// This is useful for monitoring the health of *arr instances.
+func (c *HTTPArrClient) GetCircuitBreakerStats() map[int64]CircuitBreakerStats {
+	return c.circuitBreakers.AllStats()
+}
+
+// ResetCircuitBreaker resets the circuit breaker for a specific instance.
+func (c *HTTPArrClient) ResetCircuitBreaker(instanceID int64) {
+	c.circuitBreakers.Get(instanceID).Reset()
+}
+
+// ResetAllCircuitBreakers resets all circuit breakers.
+func (c *HTTPArrClient) ResetAllCircuitBreakers() {
+	c.circuitBreakers.ResetAll()
 }
 
 type ArrInstance struct {
@@ -269,8 +287,16 @@ func (c *HTTPArrClient) doRequest(instance *ArrInstance, method, endpoint string
 	return c.doRequestWithRetry(instance, method, endpoint, bodyData, 3)
 }
 
-// doRequestWithRetry performs an HTTP request with automatic retry for transient errors
+// doRequestWithRetry performs an HTTP request with automatic retry for transient errors.
+// Integrates with circuit breaker to prevent hammering unhealthy instances.
 func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoint string, bodyData interface{}, maxRetries int) (*http.Response, error) {
+	// Check circuit breaker before making any requests
+	cb := c.circuitBreakers.Get(instance.ID)
+	if !cb.Allow() {
+		logger.Warnf("Circuit breaker OPEN for %s (%s) - rejecting request to %s", instance.Name, instance.Type, endpoint)
+		return nil, fmt.Errorf("%w: %s is unhealthy", ErrCircuitOpen, instance.Name)
+	}
+
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -279,6 +305,7 @@ func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoi
 
 		if err := c.rateLimiter.Wait(ctx); err != nil {
 			cancel()
+			cb.RecordFailure()
 			return nil, fmt.Errorf("rate limiter timeout: %w", err)
 		}
 		cancel()
@@ -307,7 +334,12 @@ func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoi
 		resp, err := c.httpClient.Do(req)
 		if err == nil {
 			// Check for server errors (5xx) that might be retryable
-			if resp.StatusCode >= 500 && resp.StatusCode < 600 && attempt < maxRetries-1 {
+			if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+				// 5xx errors count as failures for circuit breaker
+				if attempt >= maxRetries-1 {
+					cb.RecordFailure()
+					logger.Warnf("*arr API %s returned %d after %d attempts - recording circuit breaker failure", instance.Name, resp.StatusCode, maxRetries)
+				}
 				// Drain and close body to allow connection reuse
 				if _, discardErr := io.Copy(io.Discard, resp.Body); discardErr != nil {
 					logger.Debugf("Failed to drain response body during retry: %v", discardErr)
@@ -315,10 +347,15 @@ func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoi
 				if closeErr := resp.Body.Close(); closeErr != nil {
 					logger.Debugf("Failed to close response body during retry: %v", closeErr)
 				}
-				logger.Infof("*arr API returned %d, retrying (%d/%d)...", resp.StatusCode, attempt+1, maxRetries)
-				time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
-				continue
+				if attempt < maxRetries-1 {
+					logger.Infof("*arr API returned %d, retrying (%d/%d)...", resp.StatusCode, attempt+1, maxRetries)
+					time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+					continue
+				}
+				return nil, fmt.Errorf("*arr API returned %d after %d attempts", resp.StatusCode, maxRetries)
 			}
+			// Success - record it
+			cb.RecordSuccess()
 			return resp, nil
 		}
 
@@ -326,6 +363,7 @@ func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoi
 
 		// Check if error is retryable
 		if !isRetryableError(err) {
+			cb.RecordFailure()
 			return nil, err
 		}
 
@@ -335,6 +373,8 @@ func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoi
 		}
 	}
 
+	// All retries exhausted - record failure
+	cb.RecordFailure()
 	return nil, fmt.Errorf("*arr API unavailable after %d attempts: %w", maxRetries, lastErr)
 }
 
@@ -583,11 +623,11 @@ func (c *HTTPArrClient) findMissingEpisodesForPath(instance *ArrInstance, series
 	}
 
 	type Episode struct {
-		ID            int64  `json:"id"`
-		SeasonNumber  int    `json:"seasonNumber"`
-		EpisodeNumber int    `json:"episodeNumber"`
-		HasFile       bool   `json:"hasFile"`
-		Monitored     bool   `json:"monitored"`
+		ID            int64 `json:"id"`
+		SeasonNumber  int   `json:"seasonNumber"`
+		EpisodeNumber int   `json:"episodeNumber"`
+		HasFile       bool  `json:"hasFile"`
+		Monitored     bool  `json:"monitored"`
 	}
 	var episodes []Episode
 	if err := json.NewDecoder(resp.Body).Decode(&episodes); err != nil {

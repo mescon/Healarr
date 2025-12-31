@@ -5,9 +5,21 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/robfig/cron/v3"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/robfig/cron/v3"
 )
+
+// Scheduler defines the interface for schedule management operations.
+// This interface enables mocking in tests while allowing the concrete
+// SchedulerService to be used in production.
+type Scheduler interface {
+	Start()
+	Stop()
+	LoadSchedules() error
+	AddSchedule(scanPathID int, cronExpr string) (int64, error)
+	DeleteSchedule(id int) error
+	UpdateSchedule(id int, cronExpr string, enabled bool) error
+}
 
 type SchedulerService struct {
 	db      *sql.DB

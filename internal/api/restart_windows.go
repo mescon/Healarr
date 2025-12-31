@@ -9,9 +9,18 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
-// restartProcess starts a new instance and exits the current one.
-// On Windows, syscall.Exec doesn't exist, so we spawn a new process instead.
+// restartProcessFunc is a variable that can be overridden in tests to prevent
+// the restart from spawning a new process and exiting.
+var restartProcessFunc = restartProcessImpl
+
+// restartProcess calls the restart function (can be mocked in tests).
 func restartProcess() {
+	restartProcessFunc()
+}
+
+// restartProcessImpl starts a new instance and exits the current one.
+// On Windows, syscall.Exec doesn't exist, so we spawn a new process instead.
+func restartProcessImpl() {
 	executable, err := os.Executable()
 	if err != nil {
 		logger.Errorf("Failed to get executable path: %v", err)

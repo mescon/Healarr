@@ -56,6 +56,8 @@ type WebSocketHub struct {
 	broadcast  chan interface{}
 	register   chan *websocket.Conn
 	unregister chan *websocket.Conn
+	shutdown   chan struct{}
+	logCh      chan logger.LogEntry
 	mu         sync.Mutex
 	eventBus   *eventbus.EventBus
 }
@@ -65,6 +67,7 @@ func NewWebSocketHub(eventBus *eventbus.EventBus) *WebSocketHub {
 		broadcast:  make(chan interface{}),
 		register:   make(chan *websocket.Conn),
 		unregister: make(chan *websocket.Conn),
+		shutdown:   make(chan struct{}),
 		clients:    make(map[*websocket.Conn]bool),
 		eventBus:   eventBus,
 	}
@@ -92,12 +95,24 @@ func NewWebSocketHub(eventBus *eventbus.EventBus) *WebSocketHub {
 	}
 
 	// Subscribe to logs
-	logCh := logger.Subscribe()
+	h.logCh = logger.Subscribe()
 	go func() {
-		for entry := range logCh {
-			h.broadcast <- map[string]interface{}{
-				"type": "log",
-				"data": entry,
+		for {
+			select {
+			case <-h.shutdown:
+				return
+			case entry, ok := <-h.logCh:
+				if !ok {
+					return // Channel closed
+				}
+				select {
+				case h.broadcast <- map[string]interface{}{
+					"type": "log",
+					"data": entry,
+				}:
+				case <-h.shutdown:
+					return
+				}
 			}
 		}
 	}()
@@ -109,6 +124,18 @@ func NewWebSocketHub(eventBus *eventbus.EventBus) *WebSocketHub {
 func (h *WebSocketHub) run() {
 	for {
 		select {
+		case <-h.shutdown:
+			// Close all clients on shutdown
+			h.mu.Lock()
+			for client := range h.clients {
+				if err := client.Close(); err != nil {
+					logger.Debugf("WebSocket close error during shutdown: %v", err)
+				}
+				delete(h.clients, client)
+			}
+			h.mu.Unlock()
+			return
+
 		case client := <-h.register:
 			h.mu.Lock()
 			h.clients[client] = true
@@ -140,6 +167,15 @@ func (h *WebSocketHub) run() {
 			}
 			h.mu.Unlock()
 		}
+	}
+}
+
+// Shutdown stops the WebSocket hub and closes all client connections
+func (h *WebSocketHub) Shutdown() {
+	close(h.shutdown)
+	// Unsubscribe from logger to clean up the channel
+	if h.logCh != nil {
+		logger.Unsubscribe(h.logCh)
 	}
 }
 

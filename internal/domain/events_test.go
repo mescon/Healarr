@@ -463,23 +463,211 @@ func TestEvent_ParseRetryEventData(t *testing.T) {
 func TestEventType_Constants(t *testing.T) {
 	// Verify key event types are defined as expected strings
 	eventTypes := map[EventType]string{
-		CorruptionDetected:  "CorruptionDetected",
-		RemediationQueued:   "RemediationQueued",
-		DeletionStarted:     "DeletionStarted",
-		DeletionCompleted:   "DeletionCompleted",
-		DeletionFailed:      "DeletionFailed",
-		SearchStarted:       "SearchStarted",
-		SearchCompleted:     "SearchCompleted",
-		SearchFailed:        "SearchFailed",
-		VerificationSuccess: "VerificationSuccess",
-		VerificationFailed:  "VerificationFailed",
-		RetryScheduled:      "RetryScheduled",
-		MaxRetriesReached:   "MaxRetriesReached",
+		CorruptionDetected:   "CorruptionDetected",
+		RemediationQueued:    "RemediationQueued",
+		DeletionStarted:      "DeletionStarted",
+		DeletionCompleted:    "DeletionCompleted",
+		DeletionFailed:       "DeletionFailed",
+		SearchStarted:        "SearchStarted",
+		SearchCompleted:      "SearchCompleted",
+		SearchFailed:         "SearchFailed",
+		FileDetected:         "FileDetected",
+		VerificationStarted:  "VerificationStarted",
+		VerificationSuccess:  "VerificationSuccess",
+		VerificationFailed:   "VerificationFailed",
+		DownloadTimeout:      "DownloadTimeout",
+		DownloadProgress:     "DownloadProgress",
+		DownloadFailed:       "DownloadFailed",
+		ImportBlocked:        "ImportBlocked",
+		ManuallyRemoved:      "ManuallyRemoved",
+		DownloadIgnored:      "DownloadIgnored",
+		RetryScheduled:       "RetryScheduled",
+		MaxRetriesReached:    "MaxRetriesReached",
+		ScanStarted:          "ScanStarted",
+		ScanCompleted:        "ScanCompleted",
+		ScanFailed:           "ScanFailed",
+		ScanProgress:         "ScanProgress",
+		NotificationSent:     "NotificationSent",
+		NotificationFailed:   "NotificationFailed",
+		CorruptionIgnored:    "CorruptionIgnored",
+		SystemHealthDegraded: "SystemHealthDegraded",
+		StuckRemediation:     "StuckRemediation",
+		InstanceUnhealthy:    "InstanceUnhealthy",
+		InstanceHealthy:      "InstanceHealthy",
 	}
 
 	for eventType, expectedString := range eventTypes {
 		if string(eventType) != expectedString {
 			t.Errorf("EventType %v = %q, want %q", eventType, string(eventType), expectedString)
 		}
+	}
+}
+
+// TestEvent_GetInt64Or tests the GetInt64Or accessor method.
+func TestEvent_GetInt64Or(t *testing.T) {
+	tests := []struct {
+		name       string
+		eventData  map[string]interface{}
+		key        string
+		defaultVal int64
+		want       int64
+	}{
+		{
+			name:       "existing key returns value",
+			eventData:  map[string]interface{}{"media_id": int64(123)},
+			key:        "media_id",
+			defaultVal: 0,
+			want:       123,
+		},
+		{
+			name:       "missing key returns default",
+			eventData:  map[string]interface{}{},
+			key:        "media_id",
+			defaultVal: 999,
+			want:       999,
+		},
+		{
+			name:       "nil eventData returns default",
+			eventData:  nil,
+			key:        "media_id",
+			defaultVal: 42,
+			want:       42,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &Event{EventData: tt.eventData}
+			if got := e.GetInt64Or(tt.key, tt.defaultVal); got != tt.want {
+				t.Errorf("GetInt64Or() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEvent_GetBoolOr tests the GetBoolOr accessor method.
+func TestEvent_GetBoolOr(t *testing.T) {
+	tests := []struct {
+		name       string
+		eventData  map[string]interface{}
+		key        string
+		defaultVal bool
+		want       bool
+	}{
+		{
+			name:       "existing true returns true",
+			eventData:  map[string]interface{}{"enabled": true},
+			key:        "enabled",
+			defaultVal: false,
+			want:       true,
+		},
+		{
+			name:       "existing false returns false",
+			eventData:  map[string]interface{}{"enabled": false},
+			key:        "enabled",
+			defaultVal: true,
+			want:       false,
+		},
+		{
+			name:       "missing key returns default true",
+			eventData:  map[string]interface{}{},
+			key:        "enabled",
+			defaultVal: true,
+			want:       true,
+		},
+		{
+			name:       "missing key returns default false",
+			eventData:  map[string]interface{}{},
+			key:        "enabled",
+			defaultVal: false,
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &Event{EventData: tt.eventData}
+			if got := e.GetBoolOr(tt.key, tt.defaultVal); got != tt.want {
+				t.Errorf("GetBoolOr() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEvent_GetFloat64_NilEventData tests GetFloat64 with nil EventData.
+func TestEvent_GetFloat64_NilEventData(t *testing.T) {
+	e := &Event{EventData: nil}
+	got, ok := e.GetFloat64("progress")
+	if got != 0 || ok {
+		t.Errorf("GetFloat64() with nil = (%f, %v), want (0, false)", got, ok)
+	}
+}
+
+// TestEvent_GetFloat64_IntValue tests GetFloat64 with an int (non-int64) value.
+func TestEvent_GetFloat64_IntValue(t *testing.T) {
+	e := &Event{EventData: map[string]interface{}{"progress": int(50)}}
+	got, ok := e.GetFloat64("progress")
+	if got != 50.0 || !ok {
+		t.Errorf("GetFloat64() with int = (%f, %v), want (50.0, true)", got, ok)
+	}
+}
+
+// TestEvent_GetFloat64_WrongType tests GetFloat64 with wrong type.
+func TestEvent_GetFloat64_WrongType(t *testing.T) {
+	e := &Event{EventData: map[string]interface{}{"progress": "not a number"}}
+	got, ok := e.GetFloat64("progress")
+	if got != 0 || ok {
+		t.Errorf("GetFloat64() with string = (%f, %v), want (0, false)", got, ok)
+	}
+}
+
+// TestEvent_GetBool_NilEventData tests GetBool with nil EventData.
+func TestEvent_GetBool_NilEventData(t *testing.T) {
+	e := &Event{EventData: nil}
+	got, ok := e.GetBool("enabled")
+	if got != false || ok {
+		t.Errorf("GetBool() with nil = (%v, %v), want (false, false)", got, ok)
+	}
+}
+
+// TestEvent_GetMap_NilEventData tests GetMap with nil EventData.
+func TestEvent_GetMap_NilEventData(t *testing.T) {
+	e := &Event{EventData: nil}
+	got, ok := e.GetMap("metadata")
+	if got != nil || ok {
+		t.Errorf("GetMap() with nil = (%v, %v), want (nil, false)", got, ok)
+	}
+}
+
+// TestEvent_GetStringSlice_NilEventData tests GetStringSlice with nil EventData.
+func TestEvent_GetStringSlice_NilEventData(t *testing.T) {
+	e := &Event{EventData: nil}
+	got, ok := e.GetStringSlice("tags")
+	if got != nil || ok {
+		t.Errorf("GetStringSlice() with nil = (%v, %v), want (nil, false)", got, ok)
+	}
+}
+
+// TestEvent_GetStringSlice_WrongType tests GetStringSlice with wrong type.
+func TestEvent_GetStringSlice_WrongType(t *testing.T) {
+	e := &Event{EventData: map[string]interface{}{"tags": "not an array"}}
+	got, ok := e.GetStringSlice("tags")
+	if got != nil || ok {
+		t.Errorf("GetStringSlice() with string = (%v, %v), want (nil, false)", got, ok)
+	}
+}
+
+// TestEvent_ParseRetryEventData_MissingFilePath tests ParseRetryEventData when file_path is missing.
+func TestEvent_ParseRetryEventData_MissingFilePath(t *testing.T) {
+	e := &Event{
+		EventType: RetryScheduled,
+		EventData: map[string]interface{}{
+			"path_id": float64(1),
+		},
+	}
+
+	_, ok := e.ParseRetryEventData()
+	if ok {
+		t.Error("ParseRetryEventData() should return false when file_path is missing")
 	}
 }

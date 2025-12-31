@@ -181,6 +181,35 @@ func initializeSchema(db *sql.DB) error {
 		return fmt.Errorf("failed to create arr_instances table: %w", err)
 	}
 
+	// Create corruption_status view (used by MonitorService)
+	_, err = db.Exec(`
+		CREATE VIEW corruption_status AS
+		SELECT
+			aggregate_id as corruption_id,
+			(SELECT event_type FROM events e2
+			 WHERE e2.aggregate_id = e.aggregate_id
+			 ORDER BY id DESC LIMIT 1) as current_state,
+			(SELECT COUNT(*) FROM events e3
+			 WHERE e3.aggregate_id = e.aggregate_id
+			 AND e3.event_type LIKE '%Failed') as retry_count,
+			(SELECT json_extract(event_data, '$.file_path') FROM events e4
+			 WHERE e4.aggregate_id = e.aggregate_id
+			 AND e4.event_type = 'CorruptionDetected'
+			 LIMIT 1) as file_path,
+			(SELECT json_extract(event_data, '$.path_id') FROM events e7
+			 WHERE e7.aggregate_id = e.aggregate_id
+			 AND e7.event_type = 'CorruptionDetected'
+			 LIMIT 1) as path_id,
+			MIN(created_at) as detected_at,
+			MAX(created_at) as last_updated_at
+		FROM events e
+		WHERE aggregate_type = 'corruption'
+		GROUP BY aggregate_id
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create corruption_status view: %w", err)
+	}
+
 	return nil
 }
 
