@@ -101,6 +101,11 @@ const SystemStatus = () => {
 const Sidebar = () => {
     const navigate = useNavigate();
     const { theme, toggleTheme } = useTheme();
+    const { data: health } = useQuery({
+        queryKey: ['health'],
+        queryFn: getHealth,
+        refetchInterval: 30000,
+    });
     const navItems = [
         { icon: LayoutDashboard, label: 'Dashboard', to: '/' },
         { icon: Scan, label: 'Scans', to: '/scans' },
@@ -120,7 +125,7 @@ const Sidebar = () => {
                     <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-600 dark:from-white dark:to-slate-400">
                         Healarr
                     </h1>
-                    <p className="text-xs text-slate-500 font-mono">v1.0.3</p>
+                    <p className="text-xs text-slate-500 font-mono">{health?.version ? `v${health.version.replace(/^v/, '')}` : 'v...'}</p>
                 </div>
             </div>
 

@@ -63,7 +63,7 @@ Health check endpoint.
 ```json
 {
   "status": "healthy",
-  "version": "1.0.3",
+  "version": "1.x.x",
   "uptime": "2h30m",
   "database": {
     "status": "connected",

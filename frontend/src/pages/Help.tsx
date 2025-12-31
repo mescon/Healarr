@@ -1021,7 +1021,7 @@ server {
                             <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-4">
                                 <pre className="text-xs text-slate-700 dark:text-slate-300 overflow-x-auto">{`{
   "status": "healthy",        // "healthy", "degraded", or "unhealthy"
-  "version": "1.0.3",         // Healarr version
+  "version": "1.x.x",         // Healarr version (dynamic)
   "uptime": "2d 5h 30m",      // Server uptime
   "database": {
     "status": "connected",    // "connected" or "error"
