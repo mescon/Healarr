@@ -5,7 +5,7 @@
 Healarr monitors your media library for corrupted files and automatically triggers re-downloads through Sonarr, Radarr, or Whisparr. It detects issues using ffprobe, MediaInfo, or HandBrake, then orchestrates the complete remediation workflow.
 
 ![License](https://img.shields.io/badge/license-GPLv3-blue.svg)
-![Go Version](https://img.shields.io/badge/go-1.24%2B-00ADD8.svg)
+![Go Version](https://img.shields.io/badge/go-1.25%2B-00ADD8.svg)
 ![React](https://img.shields.io/badge/react-19-61DAFB.svg)
 
 ## Features
@@ -172,7 +172,7 @@ For Apple Silicon (M1/M2/M3), download `healarr-darwin-arm64.tar.gz` instead.
 ### Option 3: Build from Source
 
 ```bash
-# Prerequisites: Go 1.24+, Node.js 22+
+# Prerequisites: Go 1.25+, Node.js 22+
 
 git clone https://github.com/mescon/Healarr.git
 cd Healarr

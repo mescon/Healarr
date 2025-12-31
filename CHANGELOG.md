@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-12-31
+
+### Added
+- **Circuit Breaker Pattern**: Added resilience pattern for external service calls
+  - Protects against cascading failures when *arr instances are unavailable
+  - Configurable failure threshold, reset timeout, and success threshold
+  - Automatic state transitions: Closed → Open → HalfOpen → Closed
+- **Clock Abstraction**: New internal clock package for testable time operations
+  - `Clock` interface with `Now()` and `AfterFunc()` methods
+  - Enables deterministic testing of time-dependent code
+- **Comprehensive Test Coverage**: Added 17 new test files with 9,664 lines of test code
+  - `internal/api/handlers_*_test.go` - Full API handler coverage
+  - `internal/services/*_test.go` - Service layer tests
+  - `internal/integration/errno_*_test.go` - Platform-specific error handling tests
+  - `internal/clock/clock_test.go` - Clock abstraction tests
+  - `internal/logger/logger_test.go` - Logger package tests
+  - `internal/metrics/metrics_test.go` - Metrics service tests
+- **Pagination Support**: Standardized pagination across all list endpoints
+  - Consistent `page`, `pageSize`, `total`, `totalPages` response format
+  - Default page size of 50 with configurable limits
+
+### Changed
+- **Go Version**: Updated minimum Go version from 1.24 to 1.25
+- **Error Classification**: Platform-specific syscall error handling
+  - Unix: ESTALE, ETIMEDOUT, ENODEV, ENXIO, EIO, EHOSTDOWN, etc.
+  - Windows: ERROR_BAD_NETPATH, ERROR_SEM_TIMEOUT, ERROR_DEV_NOT_EXIST, etc.
+- **Code Quality**: Improved error handling throughout the codebase
+  - All deferred Close() calls now properly check for errors
+  - Consistent error logging patterns across all packages
+
+### Fixed
+- **gofmt Compliance**: Fixed formatting issues in 3 files
+- **Test Reliability**: Fixed flaky tests with proper synchronization
+
+### Security
+- No security changes in this release
+
 ## [1.0.3] - 2025-12-02
 
 ### Added
