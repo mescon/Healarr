@@ -190,7 +190,7 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 					errMsg = strings.Join(item.StatusMessages, "; ")
 				}
 
-				logger.Warnf("Import blocked for %s: %s - requires manual intervention in *arr", corruptionID, errMsg)
+				logger.Warnf("Import blocked for %s (%s): %s - requires manual intervention in *arr", item.Title, filePath, errMsg)
 				if err := v.eventBus.Publish(domain.Event{
 					AggregateID:   corruptionID,
 					AggregateType: "corruption",
