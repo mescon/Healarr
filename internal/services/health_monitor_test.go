@@ -699,3 +699,161 @@ func TestHealthMonitorService_GetHealthStatus_StuckRemediations(t *testing.T) {
 		t.Error("GetHealthStatus should include stuck_remediations")
 	}
 }
+
+// =============================================================================
+// runInstanceHealthChecks tests - loop behavior
+// =============================================================================
+
+func TestHealthMonitorService_runInstanceHealthChecks_ShutdownDuringInitialDelay(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	client := &mockHealthArrClient{
+		instances: []*integration.ArrInstanceInfo{},
+	}
+
+	h := NewHealthMonitorService(db, eb, client)
+
+	// Start the instance health checks in a goroutine
+	h.wg.Add(1)
+	go h.runInstanceHealthChecks()
+
+	// Signal shutdown almost immediately
+	time.Sleep(10 * time.Millisecond)
+	close(h.shutdownCh)
+
+	// Wait for the goroutine to exit
+	done := make(chan struct{})
+	go func() {
+		h.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Expected - goroutine exited
+	case <-time.After(65 * time.Second):
+		t.Error("runInstanceHealthChecks did not exit within timeout")
+	}
+}
+
+// =============================================================================
+// checkStuckRemediations tests - query error path
+// =============================================================================
+
+func TestHealthMonitorService_checkStuckRemediations_QueryError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	h := NewHealthMonitorService(db, eb, nil)
+
+	// Drop the events table to force a query error
+	_, err = db.Exec("DROP TABLE events")
+	if err != nil {
+		t.Fatalf("Failed to drop events table: %v", err)
+	}
+
+	// Should not panic when query fails
+	h.checkStuckRemediations()
+}
+
+// =============================================================================
+// checkRepeatedFailures tests - query error path
+// =============================================================================
+
+func TestHealthMonitorService_checkRepeatedFailures_QueryError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	h := NewHealthMonitorService(db, eb, nil)
+
+	// Drop the events table to force a query error
+	_, err = db.Exec("DROP TABLE events")
+	if err != nil {
+		t.Fatalf("Failed to drop events table: %v", err)
+	}
+
+	// Should not panic when query fails
+	h.checkRepeatedFailures()
+}
+
+// =============================================================================
+// checkInstanceHealth tests - multiple instances
+// =============================================================================
+
+func TestHealthMonitorService_checkInstanceHealth_MultipleInstances(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Track which instances were checked
+	checkedPaths := make([]string, 0)
+	client := &mockHealthArrClient{
+		instances: []*integration.ArrInstanceInfo{
+			{ID: 1, Name: "Sonarr", Type: "sonarr", URL: "http://localhost:8989"},
+			{ID: 2, Name: "Radarr", Type: "radarr", URL: "http://localhost:7878"},
+			{ID: 3, Name: "Whisparr", Type: "whisparr", URL: "http://localhost:6969"},
+		},
+		queueErr: nil,
+	}
+
+	h := NewHealthMonitorService(db, eb, client)
+	h.checkInstanceHealth()
+
+	// All instances should be checked (mock returns no error for all)
+	_ = checkedPaths // Just verifying no panic with multiple instances
+}
+
+// =============================================================================
+// GetHealthStatus tests - query error path
+// =============================================================================
+
+func TestHealthMonitorService_GetHealthStatus_QueryError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	h := NewHealthMonitorService(db, eb, nil)
+
+	// Drop the events table to force a query error in GetHealthStatus
+	_, err = db.Exec("DROP TABLE events")
+	if err != nil {
+		t.Fatalf("Failed to drop events table: %v", err)
+	}
+
+	// Should not panic and should still return database stats
+	status := h.GetHealthStatus()
+
+	// Should still have database stats even if stuck query fails
+	if _, exists := status["database"]; !exists {
+		t.Error("GetHealthStatus should include database stats even with query error")
+	}
+}

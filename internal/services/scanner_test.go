@@ -3453,3 +3453,87 @@ func TestScannerService_ResumeScan_ParsesDetectionConfig(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	})
 }
+
+// =============================================================================
+// hasActiveCorruption DB error tests
+// =============================================================================
+
+func TestScannerService_HasActiveCorruption_DBError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	scanner := &ScannerService{
+		db:              db,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+	}
+
+	// Drop events table to cause DB error
+	db.Exec("DROP TABLE events")
+
+	// Should return false (err on the side of processing)
+	if scanner.hasActiveCorruption("/media/movies/test.mkv") {
+		t.Error("Expected false when DB query fails")
+	}
+}
+
+// =============================================================================
+// LoadActiveCorruptionsForPath DB error tests
+// =============================================================================
+
+func TestScannerService_LoadActiveCorruptionsForPath_DBError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	scanner := &ScannerService{
+		db:              db,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+	}
+
+	// Drop events table to cause DB error
+	db.Exec("DROP TABLE events")
+
+	// Should return empty map on error
+	result := scanner.LoadActiveCorruptionsForPath("/media/movies")
+	if len(result) != 0 {
+		t.Errorf("Expected empty map on DB error, got %d entries", len(result))
+	}
+}
+
+// =============================================================================
+// queueForRescan tests
+// =============================================================================
+
+func TestScannerService_QueueForRescan_DBError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	scanner := &ScannerService{
+		db:              db,
+		eventBus:        eb,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+	}
+
+	// Drop rescan_queue table to cause DB error
+	db.Exec("DROP TABLE rescan_queue")
+
+	// Should not panic
+	scanner.queueForRescan("/media/movies/test.mkv", 1, "corrupt", "test error")
+}

@@ -504,3 +504,117 @@ func TestMockClock_AdvancePartial(t *testing.T) {
 		t.Errorf("Expected 3 timers total, got %d", len(firedOrder))
 	}
 }
+
+// =============================================================================
+// handleFailure additional error path tests
+// =============================================================================
+
+func TestMonitorService_HandleFailure_MaxRetriesReached(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockClock := testutil.NewMockClock()
+	monitor := NewMonitorService(eb, db, mockClock)
+
+	config.SetForTesting(&config.Config{
+		DefaultMaxRetries: 3,
+	})
+
+	// Insert a corruption with 3 failures (at max retries)
+	corruptionID := "max-retries-test"
+	_, err = db.Exec(`
+		INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data)
+		VALUES (?, 'corruption', 'CorruptionDetected', '{"file_path": "/test.mkv", "path_id": 1}')
+	`, corruptionID)
+	if err != nil {
+		t.Fatalf("Failed to insert detection event: %v", err)
+	}
+
+	// Insert 3 failure events
+	for i := 0; i < 3; i++ {
+		_, err = db.Exec(`
+			INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data)
+			VALUES (?, 'corruption', 'DeletionFailed', '{}')
+		`, corruptionID)
+		if err != nil {
+			t.Fatalf("Failed to insert failure event: %v", err)
+		}
+	}
+
+	// Track if MaxRetriesReached was published
+	var maxRetriesReceived bool
+	var mu sync.Mutex
+	eb.Subscribe(domain.MaxRetriesReached, func(event domain.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		if event.AggregateID == corruptionID {
+			maxRetriesReceived = true
+		}
+	})
+
+	// Handle the failure event
+	monitor.handleFailure(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DeletionFailed,
+	})
+
+	// Wait a bit for event to be processed
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	if !maxRetriesReceived {
+		t.Error("Expected MaxRetriesReached event to be published")
+	}
+	mu.Unlock()
+}
+
+func TestMonitorService_HandleFailure_DBError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockClock := testutil.NewMockClock()
+	monitor := NewMonitorService(eb, db, mockClock)
+
+	// Drop events table to cause DB error
+	db.Exec("DROP TABLE events")
+
+	// Should not panic, just log error
+	monitor.handleFailure(domain.Event{
+		AggregateID:   "test-corruption",
+		AggregateType: "corruption",
+		EventType:     domain.DeletionFailed,
+	})
+	// Test passes if no panic
+}
+
+func TestMonitorService_GetCorruptionContext_NoData(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	monitor := NewMonitorService(eb, db)
+
+	// Try to get context for non-existent corruption
+	_, _, err = monitor.getCorruptionContext("non-existent")
+	if err == nil {
+		t.Error("Expected error for non-existent corruption")
+	}
+}

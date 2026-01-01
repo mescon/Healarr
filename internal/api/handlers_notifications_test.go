@@ -127,7 +127,7 @@ func TestGetNotifications_ServiceUnavailable(t *testing.T) {
 
 	var response map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &response)
-	assert.Equal(t, "Notification service not initialized", response["error"])
+	assert.Equal(t, "Notification service not available", response["error"])
 }
 
 func TestCreateNotification_ServiceUnavailable(t *testing.T) {
@@ -742,3 +742,116 @@ func TestTestNotification_FailedSend(t *testing.T) {
 		assert.Contains(t, response, "error")
 	}
 }
+
+// =============================================================================
+// getNotifications - Error Paths
+// =============================================================================
+
+func TestGetNotifications_DBError(t *testing.T) {
+	db, cleanup := setupNotificationsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupNotificationsTestServer(t, db, true)
+	defer serverCleanup()
+
+	// Drop notifications table to cause DB error
+	db.Exec("DROP TABLE notifications")
+
+	req, _ := http.NewRequest("GET", "/api/config/notifications", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Contains(t, response, "error")
+}
+
+func TestCreateNotification_DBError(t *testing.T) {
+	db, cleanup := setupNotificationsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupNotificationsTestServer(t, db, true)
+	defer serverCleanup()
+
+	// Drop notifications table to cause DB error
+	db.Exec("DROP TABLE notifications")
+
+	body := bytes.NewBufferString(`{
+		"name": "Test",
+		"provider_type": "discord",
+		"config": {"webhook_url": "http://example.com"},
+		"events": ["corruption_detected"]
+	}`)
+	req, _ := http.NewRequest("POST", "/api/config/notifications", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestUpdateNotification_DBError(t *testing.T) {
+	db, cleanup := setupNotificationsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupNotificationsTestServer(t, db, true)
+	defer serverCleanup()
+
+	// Drop notifications table to cause DB error
+	db.Exec("DROP TABLE notifications")
+
+	body := bytes.NewBufferString(`{
+		"name": "Test",
+		"provider_type": "discord",
+		"config": {"webhook_url": "http://example.com"},
+		"events": ["corruption_detected"]
+	}`)
+	req, _ := http.NewRequest("PUT", "/api/config/notifications/1", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestDeleteNotification_DBError(t *testing.T) {
+	db, cleanup := setupNotificationsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupNotificationsTestServer(t, db, true)
+	defer serverCleanup()
+
+	// Drop notifications table to cause DB error
+	db.Exec("DROP TABLE notifications")
+
+	req, _ := http.NewRequest("DELETE", "/api/config/notifications/1", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestGetNotificationLog_DBError(t *testing.T) {
+	db, cleanup := setupNotificationsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupNotificationsTestServer(t, db, true)
+	defer serverCleanup()
+
+	// Drop notification_log table to cause DB error
+	db.Exec("DROP TABLE notification_log")
+
+	req, _ := http.NewRequest("GET", "/api/config/notifications/1/log", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+

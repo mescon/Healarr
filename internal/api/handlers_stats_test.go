@@ -788,7 +788,8 @@ func TestGetDashboardStats_CorruptionsToday(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	now := time.Now()
+	// Use UTC to match SQLite's date('now') behavior
+	now := time.Now().UTC()
 	yesterday := now.Add(-24 * time.Hour)
 
 	// Seed corruptions for today
@@ -935,5 +936,47 @@ func TestGetStatsTypes_DBError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("Expected status 500, got %d", w.Code)
+	}
+}
+
+func TestGetDashboardStats_DBError_WithWarnings(t *testing.T) {
+	// Test that getDashboardStats returns partial results with warnings when some queries fail
+	db, cleanup := setupStatsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	server := createStatsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	// Drop the corruption_status view to force errors in the corruption stats query
+	_, err := db.Exec("DROP VIEW corruption_status")
+	if err != nil {
+		t.Fatalf("Failed to drop view: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/stats/dashboard", server.getDashboardStats)
+
+	req, _ := http.NewRequest("GET", "/stats/dashboard", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Should still return 200 with partial data and warnings
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var stats map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	// Should have warnings about failed queries
+	warnings, ok := stats["warnings"].([]interface{})
+	if !ok || len(warnings) == 0 {
+		t.Error("Expected warnings in response for partial query failure")
 	}
 }

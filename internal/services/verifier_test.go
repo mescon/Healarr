@@ -1,6 +1,8 @@
 package services
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -1077,5 +1079,195 @@ func TestVerifierService_MonitorDownloadProgress_ImportBlocked(t *testing.T) {
 	}
 	if count < 1 {
 		t.Errorf("Expected at least 1 ImportBlocked event in DB, got %d", count)
+	}
+}
+
+// =============================================================================
+// checkHistoryForImport success paths
+// =============================================================================
+
+func TestVerifierService_CheckHistoryForImport_WithExistingFiles(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Create a temp file that will "exist" for the import check
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "imported.mkv")
+	os.WriteFile(tmpFile, []byte("test"), 0644)
+
+	var filesDetectedCount int
+	eb.Subscribe(domain.FileDetected, func(e domain.Event) {
+		filesDetectedCount++
+	})
+
+	mockArr := &testutil.MockArrClient{
+		GetRecentHistoryForMediaByPathFunc: func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+			return []integration.HistoryItemInfo{
+				{EventType: "downloadFolderImported"},
+			}, nil
+		},
+		GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+			return []string{tmpFile}, nil
+		},
+	}
+
+	// Path mapper returns paths as-is
+	mockPathMapper := &testutil.MockPathMapper{
+		ToLocalPathFunc: func(arrPath string) (string, error) {
+			return arrPath, nil
+		},
+	}
+
+	// Mock health checker returns healthy for all files
+	mockDetector := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+	}
+
+	verifier := NewVerifierService(eb, mockDetector, mockPathMapper, mockArr, db)
+
+	result := verifier.checkHistoryForImport("test-success", "/movies", 123, "/test.mkv", nil)
+	if !result {
+		t.Error("Expected true for successful import with existing file")
+	}
+}
+
+// =============================================================================
+// monitorDownloadProgress timeout path
+// =============================================================================
+
+func TestVerifierService_MonitorDownloadProgress_Timeout(t *testing.T) {
+	// Create config with very short timeout and poll interval
+	testCfg := config.NewTestConfig()
+	testCfg.VerificationTimeout = 50 * time.Millisecond
+	testCfg.VerificationInterval = 10 * time.Millisecond
+	config.SetForTesting(testCfg)
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockArr := &testutil.MockArrClient{
+		FindQueueItemsByMediaIDForPathFunc: func(arrPath string, mediaID int64) ([]integration.QueueItemInfo, error) {
+			// Empty queue - not found
+			return []integration.QueueItemInfo{}, nil
+		},
+		GetRecentHistoryForMediaByPathFunc: func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+			return []integration.HistoryItemInfo{}, nil
+		},
+	}
+
+	verifier := NewVerifierService(eb, nil, nil, mockArr, db)
+
+	done := make(chan struct{})
+	go func() {
+		verifier.monitorDownloadProgress("test-timeout", "/test.mkv", "/movies", 456, nil, 0)
+		close(done)
+	}()
+
+	// Should timeout quickly
+	select {
+	case <-done:
+		// Good - monitor exited
+	case <-time.After(2 * time.Second):
+		verifier.Shutdown()
+		t.Error("Monitor did not timeout as expected")
+	}
+
+	// Verify DownloadTimeout event was published
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM events WHERE event_type = ?", domain.DownloadTimeout).Scan(&count)
+	if err != nil {
+		t.Fatalf("Failed to query events: %v", err)
+	}
+	if count < 1 {
+		t.Errorf("Expected DownloadTimeout event, got %d events", count)
+	}
+}
+
+// =============================================================================
+// monitorDownloadProgress history check path
+// =============================================================================
+
+func TestVerifierService_MonitorDownloadProgress_HistoryImportDetected(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Create temp file for import detection
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "imported.mkv")
+	os.WriteFile(tmpFile, []byte("test"), 0644)
+
+	historyCallCount := 0
+	mockArr := &testutil.MockArrClient{
+		FindQueueItemsByMediaIDForPathFunc: func(arrPath string, mediaID int64) ([]integration.QueueItemInfo, error) {
+			return []integration.QueueItemInfo{}, nil // Not in queue
+		},
+		GetRecentHistoryForMediaByPathFunc: func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+			historyCallCount++
+			if historyCallCount >= 2 {
+				// After first check, "import" has happened
+				return []integration.HistoryItemInfo{
+					{EventType: "downloadFolderImported"},
+				}, nil
+			}
+			return []integration.HistoryItemInfo{}, nil
+		},
+		GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+			return []string{tmpFile}, nil
+		},
+	}
+
+	// Path mapper returns paths as-is
+	mockPathMapper := &testutil.MockPathMapper{
+		ToLocalPathFunc: func(arrPath string) (string, error) {
+			return arrPath, nil
+		},
+	}
+
+	// Mock health checker returns healthy for all files
+	mockDetector := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+	}
+
+	verifier := NewVerifierService(eb, mockDetector, mockPathMapper, mockArr, db)
+
+	done := make(chan struct{})
+	go func() {
+		verifier.monitorDownloadProgress("test-history", "/test.mkv", "/movies", 789, nil, 0)
+		close(done)
+	}()
+
+	// Should detect import via history and exit
+	select {
+	case <-done:
+		// Good - monitor detected import and exited
+	case <-time.After(3 * time.Second):
+		verifier.Shutdown()
+		t.Error("Monitor did not detect import as expected")
 	}
 }

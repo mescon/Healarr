@@ -444,6 +444,80 @@ func TestUpdateScanPath_DefaultValues(t *testing.T) {
 	assert.Equal(t, "quick", mode)            // Default detection mode
 }
 
+func TestUpdateScanPath_WithDetectionArgs(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create arr instance first
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	arrResult, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := arrResult.LastInsertId()
+
+	// Create path to update
+	result, err := db.Exec(`INSERT INTO scan_paths (local_path, arr_path, arr_instance_id, enabled)
+		VALUES (?, ?, ?, ?)`, "/original/path", "/original", arrID, true)
+	require.NoError(t, err)
+	id, _ := result.LastInsertId()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Update with detection args
+	body := bytes.NewBufferString(fmt.Sprintf(`{
+		"local_path": "/updated/path",
+		"arr_path": "/updated/arr",
+		"arr_instance_id": %d,
+		"enabled": true,
+		"auto_remediate": true,
+		"detection_method": "ffprobe",
+		"detection_args": ["-v", "error"],
+		"detection_mode": "thorough"
+	}`, arrID))
+
+	req, _ := http.NewRequest("PUT", fmt.Sprintf("/api/config/paths/%d", id), body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Verify detection_args were stored
+	var storedArgs string
+	err = db.QueryRow("SELECT detection_args FROM scan_paths WHERE id = ?", id).Scan(&storedArgs)
+	require.NoError(t, err)
+	assert.Contains(t, storedArgs, "-v")
+	assert.Contains(t, storedArgs, "error")
+}
+
+func TestUpdateScanPath_DBError(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Drop the table to cause DB error
+	_, err := db.Exec("DROP TABLE scan_paths")
+	require.NoError(t, err)
+
+	body := bytes.NewBufferString(`{
+		"local_path": "/updated/path",
+		"arr_path": "/updated/arr",
+		"enabled": true,
+		"auto_remediate": true
+	}`)
+
+	req, _ := http.NewRequest("PUT", "/api/config/paths/1", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
 // =============================================================================
 // deleteScanPath Tests
 // =============================================================================
@@ -478,6 +552,25 @@ func TestDeleteScanPath_Success(t *testing.T) {
 	var count int
 	db.QueryRow("SELECT COUNT(*) FROM scan_paths WHERE id = ?", id).Scan(&count)
 	assert.Equal(t, 0, count)
+}
+
+func TestDeleteScanPath_DBError(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Drop the table to cause DB error
+	_, err := db.Exec("DROP TABLE scan_paths")
+	require.NoError(t, err)
+
+	req, _ := http.NewRequest("DELETE", "/api/config/paths/1", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 // =============================================================================
@@ -794,3 +887,131 @@ func TestGetDetectionPreview_DefaultValues(t *testing.T) {
 	assert.Equal(t, "ffprobe", response["method"])
 	assert.Equal(t, "quick", response["mode"])
 }
+
+func TestGetScanPaths_DBError(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Drop scan_paths table to cause DB error
+	db.Exec("DROP TABLE scan_paths")
+
+	req, _ := http.NewRequest("GET", "/api/config/paths", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestCreateScanPath_DBError(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Drop scan_paths table to cause DB error on insert
+	db.Exec("DROP TABLE scan_paths")
+
+	body := bytes.NewBufferString(`{"local_path": "/test/path", "arr_path": "/arr/path", "enabled": true}`)
+	req, _ := http.NewRequest("POST", "/api/config/paths", body)
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestBrowseDirectory_NotFound(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/browse?path=/nonexistent/path/that/does/not/exist", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should return 200 with error in response body
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	// Error should be set
+	assert.NotNil(t, response["error"])
+}
+
+func TestBrowseDirectory_CannotReadDirectory(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create a directory with no read permissions
+	tmpDir, err := os.MkdirTemp("", "healarr-browse-noread-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	testDir := filepath.Join(tmpDir, "noread")
+	err = os.MkdirAll(testDir, 0755)
+	require.NoError(t, err)
+
+	// Remove read permission so ReadDir fails
+	err = os.Chmod(testDir, 0000)
+	require.NoError(t, err)
+	defer os.Chmod(testDir, 0755) // Restore for cleanup
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/browse?path="+testDir, nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Equal(t, "Cannot read directory", response["error"])
+}
+
+func TestBrowseDirectory_CannotAccessDirectory(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create a parent directory with no execute permissions
+	// This prevents us from stat-ing children inside it
+	tmpDir, err := os.MkdirTemp("", "healarr-browse-noaccess-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	parentDir := filepath.Join(tmpDir, "parent")
+	childDir := filepath.Join(parentDir, "child")
+	err = os.MkdirAll(childDir, 0755)
+	require.NoError(t, err)
+
+	// Remove execute permission from parent so we can't stat child
+	err = os.Chmod(parentDir, 0600)
+	require.NoError(t, err)
+	defer os.Chmod(parentDir, 0755) // Restore for cleanup
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/browse?path="+childDir, nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Equal(t, "Cannot access directory", response["error"])
+}
+

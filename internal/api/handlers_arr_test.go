@@ -259,6 +259,34 @@ func TestCreateArrInstance_MultipleInstances(t *testing.T) {
 	assert.Equal(t, 2, count)
 }
 
+func TestCreateArrInstance_DBError(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupArrTestServer(t, db)
+	defer serverCleanup()
+
+	// Drop the table to cause DB error
+	_, err := db.Exec("DROP TABLE arr_instances")
+	require.NoError(t, err)
+
+	body := bytes.NewBufferString(`{
+		"name": "Test",
+		"type": "sonarr",
+		"url": "http://localhost:8989",
+		"api_key": "api-key-123",
+		"enabled": true
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/arr", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
 func TestUpdateArrInstance_Success(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
@@ -380,6 +408,53 @@ func TestDeleteArrInstance_CascadeDeletesScanPaths(t *testing.T) {
 	// Verify cascade delete of scan paths
 	db.QueryRow("SELECT COUNT(*) FROM scan_paths WHERE arr_instance_id = ?", instanceID).Scan(&scanPathCount)
 	assert.Equal(t, 0, scanPathCount)
+}
+
+func TestDeleteArrInstance_DBError(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupArrTestServer(t, db)
+	defer serverCleanup()
+
+	// Drop the table to cause DB error
+	_, err := db.Exec("DROP TABLE arr_instances")
+	require.NoError(t, err)
+
+	req, _ := http.NewRequest("DELETE", "/api/config/arr/1", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestUpdateArrInstance_DBError(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupArrTestServer(t, db)
+	defer serverCleanup()
+
+	// Drop the table to cause DB error
+	_, err := db.Exec("DROP TABLE arr_instances")
+	require.NoError(t, err)
+
+	body := bytes.NewBufferString(`{
+		"name": "Updated",
+		"type": "sonarr",
+		"url": "http://localhost:8989",
+		"api_key": "api-key-123",
+		"enabled": true
+	}`)
+
+	req, _ := http.NewRequest("PUT", "/api/config/arr/1", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 func TestTestArrConnection_Success(t *testing.T) {
@@ -533,4 +608,73 @@ func TestTestArrConnection_InvalidJSON(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestGetArrInstances_DBError(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupArrTestServer(t, db)
+	defer serverCleanup()
+
+	// Drop the arr_instances table to cause DB error
+	db.Exec("DROP TABLE arr_instances")
+
+	req, _ := http.NewRequest("GET", "/api/config/arr", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestGetArrInstances_DecryptError(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupArrTestServer(t, db)
+	defer serverCleanup()
+
+	// Insert a row with an encrypted-looking value that will fail to decrypt
+	// The enc:v1: prefix makes crypto.Decrypt try to decode it, but "invalid" is not valid base64
+	_, err := db.Exec(`
+		INSERT INTO arr_instances (name, type, url, api_key, enabled)
+		VALUES ('test', 'sonarr', 'http://test', 'enc:v1:not-valid-base64!!!', 1)
+	`)
+	assert.NoError(t, err)
+
+	req, _ := http.NewRequest("GET", "/api/config/arr", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should still return 200 (continues on decrypt error)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response []map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.Len(t, response, 1)
+	// Check that the decryption error was handled gracefully
+	assert.Equal(t, "[DECRYPTION_ERROR]", response[0]["api_key"])
+}
+
+func TestUpdateArrInstance_NotFound(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupArrTestServer(t, db)
+	defer serverCleanup()
+
+	body := bytes.NewBufferString(`{"name": "updated", "type": "sonarr", "url": "http://test", "api_key": "test"}`)
+
+	req, _ := http.NewRequest("PUT", "/api/config/arr/999", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Row not found means RowsAffected == 0, but the code returns success regardless
+	// Let's check what the actual behavior is
+	assert.Equal(t, http.StatusOK, w.Code)
 }

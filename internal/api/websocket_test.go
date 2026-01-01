@@ -578,3 +578,31 @@ func TestGetWebSocketUpgrader_SpacesInOrigins(t *testing.T) {
 		t.Error("Origin should be allowed after trimming spaces")
 	}
 }
+
+func TestWebSocketHub_HandleConnection_UpgradeError(t *testing.T) {
+	db, cleanup := setupTestDBForWebSocket(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	hub := NewWebSocketHub(eb)
+	defer hub.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/ws", func(c *gin.Context) {
+		hub.HandleConnection(c)
+	})
+
+	// Make a regular HTTP request (not WebSocket) - this will fail the upgrade
+	req := httptest.NewRequest("GET", "/ws", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// The upgrade will fail silently (no response written for failed upgrades)
+	// Client count should remain 0
+	if hub.ClientCount() != 0 {
+		t.Errorf("ClientCount() = %d, want 0 after failed upgrade", hub.ClientCount())
+	}
+}

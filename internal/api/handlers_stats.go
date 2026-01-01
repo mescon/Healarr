@@ -11,7 +11,6 @@ import (
 func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	var stats struct {
 		TotalCorruptions              int      `json:"total_corruptions"`
-		ActiveCorruptions             int      `json:"active_corruptions"`  // Deprecated: use pending_corruptions instead. Will be removed in v2.0.
 		PendingCorruptions            int      `json:"pending_corruptions"` // Just CorruptionDetected state
 		ResolvedCorruptions           int      `json:"resolved_corruptions"`
 		OrphanedCorruptions           int      `json:"orphaned_corruptions"`
@@ -29,90 +28,52 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 		Warnings                      []string `json:"warnings,omitempty"` // Query failures (partial results returned)
 	}
 
-	// Collect warnings for failed queries (stats still return partial data)
 	var warnings []string
 
-	// Get corruption stats from view
-	var active, resolved, orphaned, inProgress, manualIntervention int
-	if err := s.db.QueryRow("SELECT active_corruptions, resolved_corruptions, orphaned_corruptions, in_progress, COALESCE(manual_intervention_required, 0) FROM dashboard_stats").Scan(
-		&active, &resolved, &orphaned, &inProgress, &manualIntervention,
-	); err != nil {
-		warnings = append(warnings, "failed to query dashboard_stats view")
-		logger.Debugf("Failed to query dashboard_stats: %v", err)
+	// Query 1: All corruption stats in a single query (was 5 separate queries)
+	var resolved, orphaned, inProgress, manualIntervention, pending, failed, ignored int
+	if err := s.db.QueryRow(`
+		SELECT
+			COUNT(DISTINCT CASE WHEN current_state = 'VerificationSuccess' THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state = 'MaxRetriesReached' THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state IN ('SearchStarted', 'SearchQueued', 'RemediationQueued',
+				'DownloadStarted', 'DownloadProgress', 'SearchCompleted', 'DeletionCompleted', 'FileDetected')
+				THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state IN ('ImportBlocked', 'ManuallyRemoved') THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state = 'CorruptionDetected' THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state LIKE '%Failed' AND current_state != 'MaxRetriesReached' THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state = 'CorruptionIgnored' THEN corruption_id END)
+		FROM corruption_status
+	`).Scan(&resolved, &orphaned, &inProgress, &manualIntervention, &pending, &failed, &ignored); err != nil {
+		warnings = append(warnings, "failed to query corruption stats")
+		logger.Debugf("Failed to query corruption stats: %v", err)
 	}
 
-	stats.ActiveCorruptions = active
 	stats.ResolvedCorruptions = resolved
 	stats.OrphanedCorruptions = orphaned
 	stats.InProgressCorruptions = inProgress
 	stats.ManualInterventionCorruptions = manualIntervention
-	// Total corruptions excludes ignored - they're not part of active remediation
-	stats.TotalCorruptions = active + resolved + orphaned + manualIntervention
+	stats.PendingCorruptions = pending
+	stats.FailedCorruptions = failed
+	stats.IgnoredCorruptions = ignored
 	stats.SuccessfulRemediations = resolved
+	// Total excludes ignored - they're not part of active remediation
+	stats.TotalCorruptions = pending + resolved + orphaned + manualIntervention + inProgress + failed
 
-	// Get pending count (just CorruptionDetected state - waiting to be processed)
-	// Excluded from CorruptionIgnored check as it's a separate state
+	// Query 2: All scan stats in a single query (was 4 separate queries)
 	if err := s.db.QueryRow(`
-		SELECT COUNT(*) FROM corruption_status
-		WHERE current_state = 'CorruptionDetected'
-	`).Scan(&stats.PendingCorruptions); err != nil {
-		warnings = append(warnings, "failed to query pending corruptions")
-		logger.Debugf("Failed to query pending corruptions: %v", err)
+		SELECT
+			COUNT(CASE WHEN status = 'running' THEN 1 END),
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN substr(started_at, 1, 10) = date('now') THEN files_scanned END), 0),
+			COALESCE(SUM(CASE WHEN substr(started_at, 1, 10) >= date('now', '-7 days') THEN files_scanned END), 0)
+		FROM scans
+	`).Scan(&stats.ActiveScans, &stats.TotalScans, &stats.FilesScannedToday, &stats.FilesScannedWeek); err != nil {
+		warnings = append(warnings, "failed to query scan stats")
+		logger.Debugf("Failed to query scan stats: %v", err)
 	}
 
-	// Get failed count (*Failed states, not MaxRetriesReached, not ignored)
-	if err := s.db.QueryRow(`
-		SELECT COUNT(*) FROM corruption_status
-		WHERE current_state LIKE '%Failed'
-		AND current_state != 'MaxRetriesReached'
-		AND current_state != 'CorruptionIgnored'
-	`).Scan(&stats.FailedCorruptions); err != nil {
-		warnings = append(warnings, "failed to query failed corruptions")
-		logger.Debugf("Failed to query failed corruptions: %v", err)
-	}
-
-	// Get ignored count (separate stat for reference)
-	if err := s.db.QueryRow(`
-		SELECT COUNT(*) FROM corruption_status
-		WHERE current_state = 'CorruptionIgnored'
-	`).Scan(&stats.IgnoredCorruptions); err != nil {
-		warnings = append(warnings, "failed to query ignored corruptions")
-		logger.Debugf("Failed to query ignored corruptions: %v", err)
-	}
-
-	// Get active scans from scans table
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM scans WHERE status = 'running'").Scan(&stats.ActiveScans); err != nil {
-		warnings = append(warnings, "failed to query active scans")
-		logger.Debugf("Failed to query active scans: %v", err)
-	}
-
-	// Get total scans
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM scans").Scan(&stats.TotalScans); err != nil {
-		warnings = append(warnings, "failed to query total scans")
-		logger.Debugf("Failed to query total scans: %v", err)
-	}
-
-	// Get files scanned today
-	// Use substr to extract YYYY-MM-DD from timestamp (works with Go's time format)
-	if err := s.db.QueryRow(`
-		SELECT COALESCE(SUM(files_scanned), 0) FROM scans
-		WHERE substr(started_at, 1, 10) = date('now')
-	`).Scan(&stats.FilesScannedToday); err != nil {
-		warnings = append(warnings, "failed to query files scanned today")
-		logger.Debugf("Failed to query files scanned today: %v", err)
-	}
-
-	// Get files scanned this week
-	if err := s.db.QueryRow(`
-		SELECT COALESCE(SUM(files_scanned), 0) FROM scans
-		WHERE substr(started_at, 1, 10) >= date('now', '-7 days')
-	`).Scan(&stats.FilesScannedWeek); err != nil {
-		warnings = append(warnings, "failed to query files scanned this week")
-		logger.Debugf("Failed to query files scanned this week: %v", err)
-	}
-
-	// Get corruptions detected today (excluding ones that are now ignored)
-	// Use substr to extract YYYY-MM-DD from Go's time.Time format
+	// Query 3: Corruptions detected today (needs events table)
 	if err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM events e
 		WHERE e.event_type = 'CorruptionDetected'
@@ -127,23 +88,17 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 		logger.Debugf("Failed to query corruptions today: %v", err)
 	}
 
-	// Calculate success rate (excluding ignored from totals)
-	// Success rate = resolved / (resolved + orphaned) for completed remediations
-	// If nothing has completed yet (all still in progress), show N/A as 0
+	// Calculate success rate
 	totalAttempts := resolved + orphaned
 	if totalAttempts > 0 {
 		stats.SuccessRate = (resolved * 100) / totalAttempts
 	} else if inProgress > 0 {
-		// Active remediations but none completed yet - can't calculate rate
 		stats.SuccessRate = 0
 	} else {
-		// No remediations at all - show 100% (no failures)
 		stats.SuccessRate = 100
 	}
 
-	// Include warnings if any queries failed (partial results)
 	stats.Warnings = warnings
-
 	c.JSON(http.StatusOK, stats)
 }
 
@@ -159,7 +114,7 @@ func (s *RESTServer) getStatsHistory(c *gin.Context) {
 		ORDER BY date ASC
 	`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	defer rows.Close()
@@ -188,7 +143,7 @@ func (s *RESTServer) getStatsTypes(c *gin.Context) {
 		GROUP BY type
 	`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	defer rows.Close()

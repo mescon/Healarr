@@ -578,3 +578,29 @@ func TestReadDirFS_Interface(t *testing.T) {
 		}
 	}
 }
+
+// =============================================================================
+// ListEmbeddedFiles with mock embedded filesystem
+// =============================================================================
+
+func TestListEmbeddedFiles_WithMockEmbeddedFS(t *testing.T) {
+	// Save original state
+	origHasEmbedded := hasEmbedded
+	origEmbeddedFS := embeddedFS
+	defer func() {
+		hasEmbedded = origHasEmbedded
+		embeddedFS = origEmbeddedFS
+	}()
+
+	// Note: ListEmbeddedFiles uses embeddedFS directly, not cachedSubFS
+	// So we need to test when hasEmbedded is true
+	hasEmbedded = true
+
+	// Call ListEmbeddedFiles - it will walk embeddedFS (which is zero-valued in dev mode)
+	// This exercises the WalkDir code path even though embeddedFS is empty
+	files := ListEmbeddedFiles()
+
+	// With zero-valued embed.FS, WalkDir may return no files or an error
+	// Either way, we're testing the code path
+	t.Logf("ListEmbeddedFiles returned %d files", len(files))
+}

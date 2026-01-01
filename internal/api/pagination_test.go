@@ -193,3 +193,45 @@ func TestNewPaginationResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestItoa(t *testing.T) {
+	tests := []struct {
+		input    int
+		expected string
+	}{
+		{0, "0"},
+		{1, "1"},
+		{10, "10"},
+		{123, "123"},
+		{1000, "1000"},
+	}
+
+	for _, tt := range tests {
+		result := itoa(tt.input)
+		if result != tt.expected {
+			t.Errorf("itoa(%d) = %s, want %s", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestParseInt(t *testing.T) {
+	tests := []struct {
+		input      string
+		defaultVal int
+		expected   int
+	}{
+		{"0", 99, 0},       // Special case: "0" returns 0
+		{"123", 99, 123},   // Valid number
+		{"abc", 99, 99},    // Invalid chars, return default
+		{"12a3", 99, 99},   // Invalid char in middle, return default
+		{"", 99, 0},        // Empty string (no iteration), result stays 0
+		{"10", 99, 10},     // Valid number
+	}
+
+	for _, tt := range tests {
+		result := parseInt(tt.input, tt.defaultVal)
+		if result != tt.expected {
+			t.Errorf("parseInt(%q, %d) = %d, want %d", tt.input, tt.defaultVal, result, tt.expected)
+		}
+	}
+}

@@ -455,3 +455,30 @@ func TestDeleteSchedule_ServiceError(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
+
+// =============================================================================
+// getSchedules - Error Paths
+// =============================================================================
+
+func TestGetSchedules_DBError(t *testing.T) {
+	db, cleanup := setupSchedulesTestDB(t)
+	defer cleanup()
+
+	mockScheduler := &testutil.MockSchedulerService{}
+	router, apiKey, serverCleanup := setupSchedulesTestServer(t, db, mockScheduler)
+	defer serverCleanup()
+
+	// Drop scan_schedules table to cause DB error
+	db.Exec("DROP TABLE scan_schedules")
+
+	req, _ := http.NewRequest("GET", "/api/config/schedules", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Contains(t, response, "error")
+}

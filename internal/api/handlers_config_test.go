@@ -97,7 +97,8 @@ func setupConfigTestDB(t *testing.T) (*sql.DB, func()) {
 			events TEXT DEFAULT '[]',
 			enabled INTEGER DEFAULT 1,
 			throttle_seconds INTEGER DEFAULT 0,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 	`
 	_, err = db.Exec(schema)
@@ -467,6 +468,75 @@ func TestImportConfig_InvalidJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+func TestImportConfig_ArrInstanceDBError(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	mockPathMapper := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	// Drop arr_instances table to cause insert error
+	db.Exec("DROP TABLE arr_instances")
+
+	body := bytes.NewBufferString(`{
+		"arr_instances": [{
+			"name": "Test",
+			"type": "sonarr",
+			"url": "http://localhost:8989",
+			"api_key": "test-key",
+			"enabled": true
+		}]
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should still return 200 (continues on DB error, reports 0 imported)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	imported := response["imported"].(map[string]interface{})
+	assert.Equal(t, float64(0), imported["arr_instances"])
+}
+
+func TestImportConfig_ScanPathDBError(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	mockPathMapper := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	// Drop scan_paths table to cause insert error
+	db.Exec("DROP TABLE scan_paths")
+
+	body := bytes.NewBufferString(`{
+		"scan_paths": [{
+			"local_path": "/media/movies",
+			"enabled": true
+		}]
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should still return 200 (continues on DB error, reports 0 imported)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	imported := response["imported"].(map[string]interface{})
+	assert.Equal(t, float64(0), imported["scan_paths"])
+}
+
 // =============================================================================
 // downloadDatabaseBackup Tests
 // =============================================================================
@@ -547,6 +617,287 @@ func TestDownloadDatabaseBackup_Success(t *testing.T) {
 // =============================================================================
 // restartServer Tests
 // =============================================================================
+
+func TestExportConfig_DBError_ArrInstances(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Drop arr_instances table to trigger error
+	_, err := db.Exec("DROP TABLE arr_instances")
+	require.NoError(t, err)
+
+	mockPathMapper := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/export", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Export should still succeed (with empty arr_instances) even if query fails
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Contains(t, response, "exported_at")
+}
+
+func TestExportConfig_DBError_ScanPaths(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Create an arr instance first
+	encryptedKey, _ := crypto.Encrypt("test-key")
+	_, err := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	require.NoError(t, err)
+
+	// Drop scan_paths table to trigger error
+	_, err = db.Exec("DROP TABLE scan_paths")
+	require.NoError(t, err)
+
+	mockPathMapper := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/export", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Export should still succeed (with empty scan_paths) even if query fails
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	// arr_instances should still be exported
+	assert.Contains(t, response, "arr_instances")
+}
+
+func TestExportConfig_WithSchedules(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Create path and schedule
+	_, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path) VALUES (?, ?)", "/media/tv", "/tv")
+	require.NoError(t, err)
+
+	_, err = db.Exec("INSERT INTO scan_schedules (scan_path_id, cron_expression, enabled) VALUES (?, ?, ?)", 1, "0 * * * *", true)
+	require.NoError(t, err)
+
+	mockPathMapper := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/export", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+
+	// Schedules are exported at top level, not nested in paths
+	schedules, ok := response["schedules"].([]interface{})
+	assert.True(t, ok, "schedules should be in response")
+	assert.Len(t, schedules, 1)
+
+	schedule := schedules[0].(map[string]interface{})
+	assert.Equal(t, "0 * * * *", schedule["cron_expression"])
+}
+
+func TestExportConfig_WithNotifications(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	mockPathMapper := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, true)
+	defer serverCleanup()
+
+	// Create notification via the notifier's CreateConfig (which handles encryption)
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+	n := notifier.NewNotifier(db, eb)
+	require.NoError(t, n.Start())
+	defer n.Stop()
+
+	cfg := &notifier.NotificationConfig{
+		Name:         "Discord",
+		ProviderType: notifier.ProviderDiscord,
+		Config:       json.RawMessage(`{"webhook_url":"http://example.com/webhook"}`),
+		Events:       []string{"corruption_detected"},
+		Enabled:      true,
+	}
+	_, err := n.CreateConfig(cfg)
+	require.NoError(t, err)
+
+	req, _ := http.NewRequest("GET", "/api/config/export", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+
+	notifications, ok := response["notifications"].([]interface{})
+	assert.True(t, ok)
+	assert.Len(t, notifications, 1)
+}
+
+func TestExportConfig_DecryptError(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Insert arr instance with invalid encrypted key
+	_, err := db.Exec(`INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)`,
+		"Test", "sonarr", "http://localhost:8989", "enc:v1:invalid-key", 1)
+	require.NoError(t, err)
+
+	mockPathMapper := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/export", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should still return 200 (continues on decrypt error)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+
+	// Check that the decryption error was handled gracefully
+	instances := response["arr_instances"].([]interface{})
+	assert.Len(t, instances, 1)
+	instance := instances[0].(map[string]interface{})
+	assert.Equal(t, "[DECRYPTION_ERROR]", instance["api_key"])
+}
+
+func TestDownloadDatabaseBackup_SourceOpenError(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Create a valid temp directory but point to non-existent database file
+	tmpDir := t.TempDir()
+	nonExistentDB := filepath.Join(tmpDir, "nonexistent.db")
+
+	config.SetForTesting(&config.Config{
+		DatabasePath:      nonExistentDB,
+		DefaultMaxRetries: 3,
+	})
+
+	mockPathMapper := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/backup", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should return error when source file doesn't exist
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Equal(t, "Failed to open database", response["error"])
+}
+
+func TestDownloadDatabaseBackup_BackupDirCreationError(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Create a file where the backup directory should be (to cause mkdir to fail)
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Create the database file
+	testDB, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = testDB.Exec("CREATE TABLE test (id INTEGER)")
+	require.NoError(t, err)
+	testDB.Close()
+
+	// Create a FILE named "backups" where the backup directory should be
+	backupsPath := filepath.Join(tmpDir, "backups")
+	err = os.WriteFile(backupsPath, []byte("blocker"), 0644)
+	require.NoError(t, err)
+
+	config.SetForTesting(&config.Config{
+		DatabasePath:      dbPath,
+		DefaultMaxRetries: 3,
+	})
+
+	mockPathMapper := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/backup", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should return error when backup directory can't be created
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Equal(t, "Failed to create backup directory", response["error"])
+}
+
+func TestDownloadDatabaseBackup_BackupFileCreationError(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Create temp directory structure
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Create the database file
+	testDB, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = testDB.Exec("CREATE TABLE test (id INTEGER)")
+	require.NoError(t, err)
+	testDB.Close()
+
+	// Create backups directory but make it read-only
+	backupsPath := filepath.Join(tmpDir, "backups")
+	err = os.MkdirAll(backupsPath, 0755)
+	require.NoError(t, err)
+
+	// Make backups directory read-only to prevent file creation
+	err = os.Chmod(backupsPath, 0555)
+	require.NoError(t, err)
+	defer os.Chmod(backupsPath, 0755) // Restore for cleanup
+
+	config.SetForTesting(&config.Config{
+		DatabasePath:      dbPath,
+		DefaultMaxRetries: 3,
+	})
+
+	mockPathMapper := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/backup", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should return error when backup file can't be created
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Equal(t, "Failed to create backup file", response["error"])
+}
 
 func TestRestartServer_ReturnsOK(t *testing.T) {
 	db, cleanup := setupConfigTestDB(t)

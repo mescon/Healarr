@@ -8,15 +8,23 @@ import (
 	"github.com/mescon/Healarr/internal/notifier"
 )
 
-func (s *RESTServer) getNotifications(c *gin.Context) {
+// requireNotifier checks if the notifier is available, returning false and sending error if not
+func (s *RESTServer) requireNotifier(c *gin.Context) bool {
 	if s.notifier == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Notification service not initialized"})
+		respondServiceUnavailable(c, "Notification service")
+		return false
+	}
+	return true
+}
+
+func (s *RESTServer) getNotifications(c *gin.Context) {
+	if !s.requireNotifier(c) {
 		return
 	}
 
 	configs, err := s.notifier.GetAllConfigs()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -24,14 +32,13 @@ func (s *RESTServer) getNotifications(c *gin.Context) {
 }
 
 func (s *RESTServer) createNotification(c *gin.Context) {
-	if s.notifier == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Notification service not initialized"})
+	if !s.requireNotifier(c) {
 		return
 	}
 
 	var req notifier.NotificationConfig
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err, true)
 		return
 	}
 
@@ -42,7 +49,7 @@ func (s *RESTServer) createNotification(c *gin.Context) {
 
 	id, err := s.notifier.CreateConfig(&req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -50,8 +57,7 @@ func (s *RESTServer) createNotification(c *gin.Context) {
 }
 
 func (s *RESTServer) updateNotification(c *gin.Context) {
-	if s.notifier == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Notification service not initialized"})
+	if !s.requireNotifier(c) {
 		return
 	}
 
@@ -64,13 +70,13 @@ func (s *RESTServer) updateNotification(c *gin.Context) {
 
 	var req notifier.NotificationConfig
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err, true)
 		return
 	}
 	req.ID = id
 
 	if err := s.notifier.UpdateConfig(&req); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -78,8 +84,7 @@ func (s *RESTServer) updateNotification(c *gin.Context) {
 }
 
 func (s *RESTServer) deleteNotification(c *gin.Context) {
-	if s.notifier == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Notification service not initialized"})
+	if !s.requireNotifier(c) {
 		return
 	}
 
@@ -91,7 +96,7 @@ func (s *RESTServer) deleteNotification(c *gin.Context) {
 	}
 
 	if err := s.notifier.DeleteConfig(id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -99,14 +104,13 @@ func (s *RESTServer) deleteNotification(c *gin.Context) {
 }
 
 func (s *RESTServer) testNotification(c *gin.Context) {
-	if s.notifier == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Notification service not initialized"})
+	if !s.requireNotifier(c) {
 		return
 	}
 
 	var req notifier.NotificationConfig
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err, true)
 		return
 	}
 
@@ -130,8 +134,7 @@ func (s *RESTServer) getNotificationEvents(c *gin.Context) {
 }
 
 func (s *RESTServer) getNotificationLog(c *gin.Context) {
-	if s.notifier == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Notification service not initialized"})
+	if !s.requireNotifier(c) {
 		return
 	}
 
@@ -145,7 +148,7 @@ func (s *RESTServer) getNotificationLog(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	entries, err := s.notifier.GetNotificationLog(id, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -154,8 +157,7 @@ func (s *RESTServer) getNotificationLog(c *gin.Context) {
 
 // getNotification returns a single notification config
 func (s *RESTServer) getNotification(c *gin.Context) {
-	if s.notifier == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Notification service not initialized"})
+	if !s.requireNotifier(c) {
 		return
 	}
 
@@ -168,7 +170,7 @@ func (s *RESTServer) getNotification(c *gin.Context) {
 
 	cfg, err := s.notifier.GetConfig(id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Notification not found"})
+		respondNotFound(c, "Notification")
 		return
 	}
 

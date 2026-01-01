@@ -293,6 +293,83 @@ func TestGetCorruptions_StatusFilters(t *testing.T) {
 	}
 }
 
+func TestGetCorruptions_AdditionalStatusFilters(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	now := time.Now()
+
+	// In progress state (RemediationQueued)
+	seedCorruptionEvent(t, db, "in-progress-1", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/test/in-progress.mkv",
+	}, now)
+	seedCorruptionEvent(t, db, "in-progress-1", domain.RemediationQueued, map[string]interface{}{
+		"file_path": "/test/in-progress.mkv",
+	}, now)
+
+	// Failed state (DeletionFailed)
+	seedCorruptionEvent(t, db, "failed-1", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/test/failed.mkv",
+	}, now)
+	seedCorruptionEvent(t, db, "failed-1", domain.DeletionFailed, map[string]interface{}{
+		"file_path": "/test/failed.mkv",
+		"error":     "Test error",
+	}, now)
+
+	// Manual intervention (ImportBlocked)
+	seedCorruptionEvent(t, db, "blocked-1", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/test/blocked.mkv",
+	}, now)
+	seedCorruptionEvent(t, db, "blocked-1", domain.ImportBlocked, map[string]interface{}{
+		"file_path": "/test/blocked.mkv",
+	}, now)
+
+	// Manual intervention (ManuallyRemoved)
+	seedCorruptionEvent(t, db, "removed-1", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/test/removed.mkv",
+	}, now)
+	seedCorruptionEvent(t, db, "removed-1", domain.ManuallyRemoved, map[string]interface{}{
+		"file_path": "/test/removed.mkv",
+	}, now)
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/corruptions", server.getCorruptions)
+
+	tests := []struct {
+		filter   string
+		expected int
+	}{
+		{"active", 4},               // All non-resolved/orphaned/ignored
+		{"in_progress", 1},          // Only RemediationQueued
+		{"failed", 1},               // Only DeletionFailed
+		{"manual_intervention", 2},  // ImportBlocked + ManuallyRemoved
+		{"invalid_filter", 4},       // Invalid filter should return all
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.filter, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", "/corruptions?status="+tt.filter, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			var response map[string]interface{}
+			json.Unmarshal(w.Body.Bytes(), &response)
+
+			pagination := response["pagination"].(map[string]interface{})
+			if int(pagination["total"].(float64)) != tt.expected {
+				t.Errorf("Filter '%s': expected %d, got %v", tt.filter, tt.expected, pagination["total"])
+			}
+		})
+	}
+}
+
 func TestGetCorruptions_Pagination(t *testing.T) {
 	db, cleanup := setupCorruptionsTestDB(t)
 	defer cleanup()
@@ -1041,6 +1118,70 @@ func TestDeleteCorruptions_Partial(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// deleteCorruptions Error Path Tests
+// =============================================================================
+
+func TestDeleteCorruptions_BadJSON(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.DELETE("/corruptions", server.deleteCorruptions)
+
+	body := strings.NewReader(`{invalid json}`)
+	req, _ := http.NewRequest("DELETE", "/corruptions", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteCorruptions_DBError(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	// Drop events table to cause DB error
+	db.Exec("DROP TABLE events")
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.DELETE("/corruptions", server.deleteCorruptions)
+
+	body := strings.NewReader(`{"ids": ["test-id-1"]}`)
+	req, _ := http.NewRequest("DELETE", "/corruptions", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Should return 200 with 0 deleted (error is logged but not returned)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	if response["deleted"].(float64) != 0 {
+		t.Errorf("Expected 0 deleted when DB error occurs, got %v", response["deleted"])
+	}
+}
+
 func TestRetryCorruptions_BadJSON(t *testing.T) {
 	db, cleanup := setupCorruptionsTestDB(t)
 	defer cleanup()
@@ -1063,5 +1204,149 @@ func TestRetryCorruptions_BadJSON(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Expected status 400, got %d", w.Code)
+	}
+}
+
+// =============================================================================
+// ignoreCorruptions Error Path Tests
+// =============================================================================
+
+func TestIgnoreCorruptions_BadJSON(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/corruptions/ignore", server.ignoreCorruptions)
+
+	body := strings.NewReader(`{invalid json}`)
+	req, _ := http.NewRequest("POST", "/corruptions/ignore", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400, got %d", w.Code)
+	}
+}
+
+func TestIgnoreCorruptions_WithReason(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/corruptions/ignore", server.ignoreCorruptions)
+
+	body := strings.NewReader(`{"ids": ["ignore-test"], "reason": "Test reason"}`)
+	req, _ := http.NewRequest("POST", "/corruptions/ignore", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+}
+
+// =============================================================================
+// getCorruptions DB Error Tests
+// =============================================================================
+
+func TestGetCorruptions_DBError(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	// Drop the view to cause DB error
+	db.Exec("DROP VIEW corruption_status")
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/corruptions", server.getCorruptions)
+
+	req, _ := http.NewRequest("GET", "/corruptions", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// =============================================================================
+// getRemediations DB Error Tests
+// =============================================================================
+
+func TestGetRemediations_DBError(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	// Drop the view to cause DB error
+	db.Exec("DROP VIEW corruption_status")
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/remediations", server.getRemediations)
+
+	req, _ := http.NewRequest("GET", "/remediations", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// =============================================================================
+// getCorruptionHistory DB Error Tests
+// =============================================================================
+
+func TestGetCorruptionHistory_DBError(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	// Drop events table to cause DB error
+	db.Exec("DROP TABLE events")
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/corruptions/:id/history", server.getCorruptionHistory)
+
+	req, _ := http.NewRequest("GET", "/corruptions/any-id/history", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d: %s", w.Code, w.Body.String())
 	}
 }

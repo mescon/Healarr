@@ -480,3 +480,80 @@ func TestWebhook_SuccessMovieFile(t *testing.T) {
 	assert.Equal(t, "Scan queued", response["message"])
 	assert.Equal(t, "/local/movies/movie.mkv", response["local_path"])
 }
+
+// =============================================================================
+// Error Path Tests
+// =============================================================================
+
+func TestWebhook_DBError(t *testing.T) {
+	db, cleanup := setupWebhookTestDB(t)
+	defer cleanup()
+
+	// Setup everything normally first
+	mockPM := &testutil.MockPathMapper{}
+	mockScanner := &webhookMockScanner{}
+	router, apiKey, serverCleanup := setupWebhookTestServer(t, db, mockPM, mockScanner)
+	defer serverCleanup()
+
+	// Drop settings table to cause DB query error
+	_, err := db.Exec("DROP TABLE settings")
+	require.NoError(t, err)
+
+	body := bytes.NewBufferString(`{"eventType": "Download"}`)
+	req, _ := http.NewRequest("POST", "/api/webhook/1", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Equal(t, "Authentication error", response["error"])
+}
+
+func TestWebhook_DecryptError(t *testing.T) {
+	db, cleanup := setupWebhookTestDB(t)
+	defer cleanup()
+
+	// Setup without adding an API key through normal flow
+	mockPM := &testutil.MockPathMapper{}
+	mockScanner := &webhookMockScanner{}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	eb := eventbus.NewEventBus(db)
+	hub := NewWebSocketHub(eb)
+
+	s := &RESTServer{
+		router:     r,
+		db:         db,
+		eventBus:   eb,
+		hub:        hub,
+		pathMapper: mockPM,
+		scanner:    mockScanner,
+	}
+
+	r.POST("/api/webhook/:instance_id", s.handleWebhook)
+
+	// Insert an invalid encrypted key that will fail decryption
+	_, err := db.Exec("INSERT INTO settings (key, value) VALUES ('api_key', 'enc:v1:invalid-encrypted-data')")
+	require.NoError(t, err)
+
+	body := bytes.NewBufferString(`{"eventType": "Download"}`)
+	req, _ := http.NewRequest("POST", "/api/webhook/1", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "any-key-value")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Equal(t, "Authentication error", response["error"])
+
+	hub.Shutdown()
+	eb.Shutdown()
+}

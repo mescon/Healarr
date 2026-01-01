@@ -625,3 +625,340 @@ func TestGetTimeoutDescription(t *testing.T) {
 func contains(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
+
+// =============================================================================
+// CheckWithConfig detection method tests (coverage for switch cases)
+// =============================================================================
+
+func TestCmdHealthChecker_CheckWithConfig_MediaInfo(t *testing.T) {
+	hc := NewHealthChecker()
+
+	t.Run("returns error for missing file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// Create a sibling so parent isn't empty
+		siblingFile := filepath.Join(tmpDir, "sibling.txt")
+		if err := os.WriteFile(siblingFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("Failed to create sibling file: %v", err)
+		}
+		missingFile := filepath.Join(tmpDir, "missing.mkv")
+
+		healthy, checkErr := hc.CheckWithConfig(missingFile, DetectionConfig{
+			Method: DetectionMediaInfo,
+			Mode:   "quick",
+		})
+		if healthy {
+			t.Error("Expected unhealthy for missing file")
+		}
+		if checkErr == nil {
+			t.Error("Expected error for missing file")
+		}
+		// Should fail at accessibility check
+		if checkErr != nil && checkErr.Type != ErrorTypePathNotFound {
+			t.Errorf("Expected PathNotFound error type, got %s", checkErr.Type)
+		}
+	})
+
+	t.Run("returns error for missing file in thorough mode", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		siblingFile := filepath.Join(tmpDir, "sibling.txt")
+		if err := os.WriteFile(siblingFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("Failed to create sibling file: %v", err)
+		}
+		missingFile := filepath.Join(tmpDir, "missing.mkv")
+
+		healthy, checkErr := hc.CheckWithConfig(missingFile, DetectionConfig{
+			Method: DetectionMediaInfo,
+			Mode:   "thorough",
+		})
+		if healthy {
+			t.Error("Expected unhealthy for missing file")
+		}
+		if checkErr != nil && checkErr.Type != ErrorTypePathNotFound {
+			t.Errorf("Expected PathNotFound, got %s", checkErr.Type)
+		}
+	})
+}
+
+func TestCmdHealthChecker_CheckWithConfig_HandBrake(t *testing.T) {
+	hc := NewHealthChecker()
+
+	t.Run("returns error for missing file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		siblingFile := filepath.Join(tmpDir, "sibling.txt")
+		if err := os.WriteFile(siblingFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("Failed to create sibling file: %v", err)
+		}
+		missingFile := filepath.Join(tmpDir, "missing.mkv")
+
+		healthy, checkErr := hc.CheckWithConfig(missingFile, DetectionConfig{
+			Method: DetectionHandBrake,
+			Mode:   "quick",
+		})
+		if healthy {
+			t.Error("Expected unhealthy for missing file")
+		}
+		if checkErr == nil {
+			t.Error("Expected error for missing file")
+		}
+		if checkErr != nil && checkErr.Type != ErrorTypePathNotFound {
+			t.Errorf("Expected PathNotFound, got %s", checkErr.Type)
+		}
+	})
+
+	t.Run("returns error for missing file in thorough mode", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		siblingFile := filepath.Join(tmpDir, "sibling.txt")
+		if err := os.WriteFile(siblingFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("Failed to create sibling file: %v", err)
+		}
+		missingFile := filepath.Join(tmpDir, "missing.mkv")
+
+		healthy, checkErr := hc.CheckWithConfig(missingFile, DetectionConfig{
+			Method: DetectionHandBrake,
+			Mode:   "thorough",
+		})
+		if healthy {
+			t.Error("Expected unhealthy for missing file")
+		}
+		if checkErr != nil && checkErr.Type != ErrorTypePathNotFound {
+			t.Errorf("Expected PathNotFound, got %s", checkErr.Type)
+		}
+	})
+}
+
+func TestCmdHealthChecker_CheckWithConfig_FFprobe_ThoroughMode(t *testing.T) {
+	hc := NewHealthChecker()
+
+	t.Run("returns error for missing file in thorough mode", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		siblingFile := filepath.Join(tmpDir, "sibling.txt")
+		if err := os.WriteFile(siblingFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("Failed to create sibling file: %v", err)
+		}
+		missingFile := filepath.Join(tmpDir, "missing.mkv")
+
+		healthy, checkErr := hc.CheckWithConfig(missingFile, DetectionConfig{
+			Method: DetectionFFprobe,
+			Mode:   "thorough",
+		})
+		if healthy {
+			t.Error("Expected unhealthy for missing file")
+		}
+		if checkErr != nil && checkErr.Type != ErrorTypePathNotFound {
+			t.Errorf("Expected PathNotFound, got %s", checkErr.Type)
+		}
+	})
+}
+
+func TestCmdHealthChecker_CheckWithConfig_EmptyMode(t *testing.T) {
+	hc := NewHealthChecker()
+
+	t.Run("empty mode defaults to quick", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		siblingFile := filepath.Join(tmpDir, "sibling.txt")
+		if err := os.WriteFile(siblingFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("Failed to create sibling file: %v", err)
+		}
+		missingFile := filepath.Join(tmpDir, "missing.mkv")
+
+		// Call with empty Mode - should default to quick
+		healthy, checkErr := hc.CheckWithConfig(missingFile, DetectionConfig{
+			Method: DetectionFFprobe,
+			Mode:   "", // Empty - should default to quick
+		})
+		if healthy {
+			t.Error("Expected unhealthy for missing file")
+		}
+		// Should fail at accessibility check, not mode parsing
+		if checkErr != nil && checkErr.Type != ErrorTypePathNotFound {
+			t.Errorf("Expected PathNotFound, got %s", checkErr.Type)
+		}
+	})
+}
+
+// =============================================================================
+// classifyOSError tests - network error classification
+// =============================================================================
+
+func TestCmdHealthChecker_ClassifyOSError_NetworkErrors(t *testing.T) {
+	hc := NewHealthChecker()
+
+	t.Run("classifies transport endpoint error as mount lost", func(t *testing.T) {
+		err := &testDetectorError{msg: "transport endpoint is not connected"}
+		result := hc.classifyOSError(err, "/test/path", false)
+		if result.Type != ErrorTypeMountLost {
+			t.Errorf("Expected MountLost for transport endpoint error, got %s", result.Type)
+		}
+	})
+
+	t.Run("classifies stale handle error as mount lost", func(t *testing.T) {
+		err := &testDetectorError{msg: "stale file handle"}
+		result := hc.classifyOSError(err, "/test/path", false)
+		if result.Type != ErrorTypeMountLost {
+			t.Errorf("Expected MountLost for stale handle error, got %s", result.Type)
+		}
+	})
+
+	t.Run("classifies connection refused as mount lost", func(t *testing.T) {
+		err := &testDetectorError{msg: "connection refused"}
+		result := hc.classifyOSError(err, "/test/path", false)
+		if result.Type != ErrorTypeMountLost {
+			t.Errorf("Expected MountLost for connection refused, got %s", result.Type)
+		}
+	})
+
+	t.Run("classifies no route to host as mount lost", func(t *testing.T) {
+		err := &testDetectorError{msg: "no route to host"}
+		result := hc.classifyOSError(err, "/test/path", false)
+		if result.Type != ErrorTypeMountLost {
+			t.Errorf("Expected MountLost for no route to host, got %s", result.Type)
+		}
+	})
+
+	t.Run("classifies network unreachable as mount lost", func(t *testing.T) {
+		err := &testDetectorError{msg: "network is unreachable"}
+		result := hc.classifyOSError(err, "/test/path", false)
+		if result.Type != ErrorTypeMountLost {
+			t.Errorf("Expected MountLost for network unreachable, got %s", result.Type)
+		}
+	})
+
+	t.Run("classifies mount keyword as mount lost", func(t *testing.T) {
+		err := &testDetectorError{msg: "mount: /mnt/nas not mounted"}
+		result := hc.classifyOSError(err, "/test/path", false)
+		if result.Type != ErrorTypeMountLost {
+			t.Errorf("Expected MountLost for mount error, got %s", result.Type)
+		}
+	})
+
+	t.Run("classifies unknown error as IO error", func(t *testing.T) {
+		err := &testDetectorError{msg: "some random filesystem error"}
+		result := hc.classifyOSError(err, "/test/path", false)
+		if result.Type != ErrorTypeIOError {
+			t.Errorf("Expected IOError for unknown error, got %s", result.Type)
+		}
+	})
+
+	t.Run("includes context in error message for parent", func(t *testing.T) {
+		err := &testDetectorError{msg: "some error"}
+		result := hc.classifyOSError(err, "/test/path", true)
+		if !strings.Contains(result.Message, "parent directory") {
+			t.Errorf("Expected error message to mention 'parent directory', got: %s", result.Message)
+		}
+	})
+}
+
+// =============================================================================
+// classifyDetectorError tests - additional cases
+// =============================================================================
+
+func TestCmdHealthChecker_ClassifyDetectorError_AdditionalCases(t *testing.T) {
+	hc := NewHealthChecker()
+
+	tests := []struct {
+		name         string
+		errorMsg     string
+		expectedType string
+	}{
+		{"network unreachable", "Network is unreachable", ErrorTypeIOError},
+		{"transport endpoint", "transport endpoint is not connected", ErrorTypeIOError},
+		{"file not found", "file not found", ErrorTypePathNotFound},
+		{"access denied", "access denied", ErrorTypeAccessDenied},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &testDetectorError{msg: tt.errorMsg}
+			result := hc.classifyDetectorError(err, "/test/path")
+			if result.Type != tt.expectedType {
+				t.Errorf("Expected %s, got %s", tt.expectedType, result.Type)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// GetCommandPreview tests - with custom args
+// =============================================================================
+
+func TestGetCommandPreview_WithCustomArgs(t *testing.T) {
+	hc := NewHealthChecker()
+
+	t.Run("FFprobe quick with custom args", func(t *testing.T) {
+		preview := hc.GetCommandPreview(DetectionFFprobe, "quick", []string{"-extra", "arg"})
+		if !strings.Contains(preview, "-extra") {
+			t.Errorf("Expected custom args in preview, got: %s", preview)
+		}
+		if !strings.Contains(preview, "ffprobe") {
+			t.Errorf("Expected ffprobe in preview, got: %s", preview)
+		}
+	})
+
+	t.Run("FFprobe thorough with custom args", func(t *testing.T) {
+		preview := hc.GetCommandPreview(DetectionFFprobe, "thorough", []string{"-threads", "4"})
+		if !strings.Contains(preview, "-threads") {
+			t.Errorf("Expected custom args in preview, got: %s", preview)
+		}
+		if !strings.Contains(preview, "ffmpeg") {
+			t.Errorf("Expected ffmpeg in thorough mode, got: %s", preview)
+		}
+	})
+
+	t.Run("MediaInfo quick with custom args", func(t *testing.T) {
+		preview := hc.GetCommandPreview(DetectionMediaInfo, "quick", []string{"--Language=en"})
+		if !strings.Contains(preview, "--Language=en") {
+			t.Errorf("Expected custom args in preview, got: %s", preview)
+		}
+	})
+
+	t.Run("MediaInfo thorough with custom args", func(t *testing.T) {
+		preview := hc.GetCommandPreview(DetectionMediaInfo, "thorough", []string{"--Inform=Video"})
+		if !strings.Contains(preview, "--Inform=Video") {
+			t.Errorf("Expected custom args in preview, got: %s", preview)
+		}
+		if !strings.Contains(preview, "--Full") {
+			t.Errorf("Expected --Full in thorough mode, got: %s", preview)
+		}
+	})
+
+	t.Run("HandBrake quick with custom args", func(t *testing.T) {
+		preview := hc.GetCommandPreview(DetectionHandBrake, "quick", []string{"--verbose"})
+		if !strings.Contains(preview, "--verbose") {
+			t.Errorf("Expected custom args in preview, got: %s", preview)
+		}
+	})
+
+	t.Run("HandBrake thorough with custom args", func(t *testing.T) {
+		preview := hc.GetCommandPreview(DetectionHandBrake, "thorough", []string{"--verbose"})
+		if !strings.Contains(preview, "--previews") {
+			t.Errorf("Expected --previews in thorough mode, got: %s", preview)
+		}
+	})
+}
+
+// =============================================================================
+// checkAccessibility tests - parent not a directory
+// =============================================================================
+
+func TestCmdHealthChecker_CheckAccessibility_ParentIsFile(t *testing.T) {
+	hc := NewHealthChecker()
+
+	t.Run("detects parent that is a file not directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// Create a file that will act as "parent"
+		fakeParent := filepath.Join(tmpDir, "fakedir")
+		if err := os.WriteFile(fakeParent, []byte("I'm a file"), 0644); err != nil {
+			t.Fatalf("Failed to create fake parent file: %v", err)
+		}
+		// Try to access "file" inside the "parent" that's actually a file
+		fakeChild := filepath.Join(fakeParent, "child.mkv")
+
+		err := hc.checkAccessibility(fakeChild)
+		if err == nil {
+			t.Error("Expected error for parent that is a file")
+		}
+		// Should fail trying to stat parent or child, result in some error
+		// The exact error type depends on OS behavior
+		t.Logf("Error type: %s, message: %s", err.Type, err.Message)
+	})
+}

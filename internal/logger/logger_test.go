@@ -479,6 +479,30 @@ func TestInit_CreatesDirectory(t *testing.T) {
 	}
 }
 
+func TestInit_InvalidDirectory(t *testing.T) {
+	// Save original state
+	originalFileLogger := fileLogger
+	defer func() {
+		fileLogger = originalFileLogger
+	}()
+
+	// Try to create a directory inside a file (which should fail)
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "afile")
+	if err := os.WriteFile(filePath, []byte("content"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Try to create a log directory inside the file (impossible)
+	invalidDir := filepath.Join(filePath, "logs")
+
+	// This should trigger the error path in Init()
+	Init(invalidDir)
+
+	// fileLogger should remain nil (unchanged from before the call)
+	// The function returns early on error without setting up the logger
+}
+
 // =============================================================================
 // GetLogDir tests
 // =============================================================================

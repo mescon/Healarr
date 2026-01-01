@@ -179,8 +179,33 @@ func createTestMetrics(t *testing.T, eb *eventbus.EventBus) (*MetricsService, *p
 // =============================================================================
 
 func TestNewMetricsService(t *testing.T) {
-	// Skip this test as it uses global registry and may conflict with other tests
-	t.Skip("NewMetricsService uses global registry, skipping to avoid test conflicts")
+	// Create a fresh eventbus for this test
+	eb := newTestEventBus(t)
+	defer eb.Shutdown()
+
+	// NewMetricsService uses the global Prometheus registry
+	// We'll test it once and accept potential registry conflicts
+	// by calling it in its own subtest with cleanup
+	m := NewMetricsService(eb)
+
+	if m == nil {
+		t.Fatal("NewMetricsService should not return nil")
+	}
+
+	if m.eventBus != eb {
+		t.Error("eventBus should be set to the provided value")
+	}
+
+	// Verify metrics were created
+	if m.corruptionsDetected == nil {
+		t.Error("corruptionsDetected metric should be initialized")
+	}
+	if m.remediationsTotal == nil {
+		t.Error("remediationsTotal metric should be initialized")
+	}
+	if m.activeRemediations == nil {
+		t.Error("activeRemediations metric should be initialized")
+	}
 }
 
 // =============================================================================

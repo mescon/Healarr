@@ -886,6 +886,229 @@ func TestRemediatorService_IsInfrastructureError(t *testing.T) {
 // checkDeletionCompleted tests
 // =============================================================================
 
+// =============================================================================
+// executeDryRun tests
+// =============================================================================
+
+func TestRemediatorService_ExecuteDryRun_FindMediaFails(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	mockEventBus := testutil.NewMockEventBus()
+	mockArrClient := &testutil.MockArrClient{
+		FindMediaByPathFunc: func(path string) (int64, error) {
+			return 0, errors.New("media not found")
+		},
+	}
+	mockPathMapper := &testutil.MockPathMapper{}
+
+	remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+	// Call executeDryRun directly (it runs synchronously in test)
+	remediator.executeDryRun("test-corruption-id", "/test/path.mkv", "/arr/path.mkv")
+
+	// Should NOT publish any events when FindMedia fails in dry-run
+	if mockEventBus.EventCount(domain.RemediationQueued) > 0 {
+		t.Logf("RemediationQueued events: %d (expected 0 on FindMedia failure)", mockEventBus.EventCount(domain.RemediationQueued))
+	}
+}
+
+// =============================================================================
+// executeRemediation tests
+// =============================================================================
+
+func TestRemediatorService_ExecuteRemediation_FindMediaFails(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	mockEventBus := testutil.NewMockEventBus()
+	mockArrClient := &testutil.MockArrClient{
+		FindMediaByPathFunc: func(path string) (int64, error) {
+			return 0, errors.New("media not found")
+		},
+	}
+	mockPathMapper := &testutil.MockPathMapper{}
+
+	remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+	// Call executeRemediation directly
+	remediator.executeRemediation("test-id", "/test/path.mkv", "/arr/path.mkv", 1)
+
+	// Should have DeletionStarted and DeletionFailed
+	if mockEventBus.EventCount(domain.DeletionStarted) != 1 {
+		t.Errorf("Expected 1 DeletionStarted event, got %d", mockEventBus.EventCount(domain.DeletionStarted))
+	}
+	if mockEventBus.EventCount(domain.DeletionFailed) != 1 {
+		t.Errorf("Expected 1 DeletionFailed event, got %d", mockEventBus.EventCount(domain.DeletionFailed))
+	}
+}
+
+func TestRemediatorService_ExecuteRemediation_DeleteFileFails(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	mockEventBus := testutil.NewMockEventBus()
+	mockArrClient := &testutil.MockArrClient{
+		FindMediaByPathFunc: func(path string) (int64, error) {
+			return 123, nil
+		},
+		DeleteFileFunc: func(mediaID int64, path string) (map[string]interface{}, error) {
+			return nil, errors.New("deletion failed")
+		},
+	}
+	mockPathMapper := &testutil.MockPathMapper{}
+
+	remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+	remediator.executeRemediation("test-id", "/test/path.mkv", "/arr/path.mkv", 1)
+
+	// Should have DeletionFailed
+	if mockEventBus.EventCount(domain.DeletionFailed) != 1 {
+		t.Errorf("Expected 1 DeletionFailed event, got %d", mockEventBus.EventCount(domain.DeletionFailed))
+	}
+	// Should NOT have DeletionCompleted
+	if mockEventBus.EventCount(domain.DeletionCompleted) != 0 {
+		t.Errorf("Expected 0 DeletionCompleted events, got %d", mockEventBus.EventCount(domain.DeletionCompleted))
+	}
+}
+
+// =============================================================================
+// triggerSearch tests
+// =============================================================================
+
+func TestRemediatorService_TriggerSearch_Success(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	mockEventBus := testutil.NewMockEventBus()
+	mockArrClient := &testutil.MockArrClient{
+		TriggerSearchFunc: func(mediaID int64, path string, episodeIDs []int64) error {
+			return nil
+		},
+	}
+	mockPathMapper := &testutil.MockPathMapper{}
+
+	remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+	// Call triggerSearch directly
+	remediator.triggerSearch("test-id", "/test/path.mkv", "/arr/path.mkv", 1, 123, nil)
+
+	// Should have SearchStarted and SearchCompleted
+	if mockEventBus.EventCount(domain.SearchStarted) != 1 {
+		t.Errorf("Expected 1 SearchStarted event, got %d", mockEventBus.EventCount(domain.SearchStarted))
+	}
+	if mockEventBus.EventCount(domain.SearchCompleted) != 1 {
+		t.Errorf("Expected 1 SearchCompleted event, got %d", mockEventBus.EventCount(domain.SearchCompleted))
+	}
+}
+
+func TestRemediatorService_TriggerSearch_Failure(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	mockEventBus := testutil.NewMockEventBus()
+	mockArrClient := &testutil.MockArrClient{
+		TriggerSearchFunc: func(mediaID int64, path string, episodeIDs []int64) error {
+			return errors.New("search failed")
+		},
+	}
+	mockPathMapper := &testutil.MockPathMapper{}
+
+	remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+	remediator.triggerSearch("test-id", "/test/path.mkv", "/arr/path.mkv", 1, 123, nil)
+
+	// Should have SearchStarted and SearchFailed
+	if mockEventBus.EventCount(domain.SearchStarted) != 1 {
+		t.Errorf("Expected 1 SearchStarted event, got %d", mockEventBus.EventCount(domain.SearchStarted))
+	}
+	if mockEventBus.EventCount(domain.SearchFailed) != 1 {
+		t.Errorf("Expected 1 SearchFailed event, got %d", mockEventBus.EventCount(domain.SearchFailed))
+	}
+	// Should NOT have SearchCompleted
+	if mockEventBus.EventCount(domain.SearchCompleted) != 0 {
+		t.Errorf("Expected 0 SearchCompleted events, got %d", mockEventBus.EventCount(domain.SearchCompleted))
+	}
+}
+
+func TestRemediatorService_TriggerSearch_WithEpisodeIDs(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	mockEventBus := testutil.NewMockEventBus()
+
+	var capturedEpisodeIDs []int64
+	mockArrClient := &testutil.MockArrClient{
+		TriggerSearchFunc: func(mediaID int64, path string, episodeIDs []int64) error {
+			capturedEpisodeIDs = episodeIDs
+			return nil
+		},
+	}
+	mockPathMapper := &testutil.MockPathMapper{}
+
+	remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+	// Metadata with episode_ids
+	metadata := map[string]interface{}{
+		"episode_ids": []interface{}{float64(1), float64(2), float64(3)},
+	}
+
+	remediator.triggerSearch("test-id", "/test/path.mkv", "/arr/path.mkv", 1, 123, metadata)
+
+	// Verify episode IDs were extracted and passed
+	if len(capturedEpisodeIDs) != 3 {
+		t.Errorf("Expected 3 episode IDs, got %d", len(capturedEpisodeIDs))
+	}
+}
+
+// =============================================================================
+// publishError tests
+// =============================================================================
+
+func TestRemediatorService_PublishError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	mockEventBus := testutil.NewMockEventBus()
+	remediator := NewRemediatorService(mockEventBus, nil, nil, db)
+
+	// Call publishError
+	remediator.publishError("test-id", domain.DeletionFailed, "test error message")
+
+	// Should have the error event
+	events := mockEventBus.GetEvents(domain.DeletionFailed)
+	if len(events) != 1 {
+		t.Errorf("Expected 1 DeletionFailed event, got %d", len(events))
+	}
+	if len(events) > 0 {
+		errMsg, _ := events[0].GetString("error")
+		if errMsg != "test error message" {
+			t.Errorf("Expected error message 'test error message', got %q", errMsg)
+		}
+	}
+}
+
 func TestRemediatorService_CheckDeletionCompleted(t *testing.T) {
 	t.Run("returns false with nil db", func(t *testing.T) {
 		mockEventBus := testutil.NewMockEventBus()

@@ -356,3 +356,19 @@ func TestHandleDownloadLogs_EmptyLogDir(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Empty(t, zipReader.File)
 }
+
+func TestHandleRecentLogs_InvalidLevel(t *testing.T) {
+	db, _, cleanup := setupLogsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupLogsTestServer(t, db)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/logs/recent?level=invalid", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should still return 200 with all logs (level filter defaults)
+	assert.Equal(t, http.StatusOK, w.Code)
+}

@@ -914,3 +914,122 @@ func TestChangePassword_Unauthorized(t *testing.T) {
 		t.Errorf("Expected status 401, got %d", w.Code)
 	}
 }
+
+// =============================================================================
+// authMiddleware Error Path Tests
+// =============================================================================
+
+// TestAuthMiddleware_DBError tests that middleware returns 500 when database is unavailable
+func TestAuthMiddleware_DBError(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupAuthTestServer(t, db)
+	defer serverCleanup()
+
+	// Delete the api_key from settings to cause DB query to return no rows
+	db.Exec("DELETE FROM settings WHERE key = 'api_key'")
+
+	req, _ := http.NewRequest("GET", "/api/auth/api-key", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Middleware should catch this and return 500
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Expected status 500 for missing API key in DB, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	if response["error"] != "Authentication error" {
+		t.Errorf("Expected 'Authentication error' message, got %v", response["error"])
+	}
+}
+
+// TestAuthMiddleware_DecryptionError tests that middleware returns 500 when decryption fails
+func TestAuthMiddleware_DecryptionError(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupAuthTestServer(t, db)
+	defer serverCleanup()
+
+	// Set an encrypted-prefixed but invalid value to cause decryption error
+	// The prefix "enc:v1:" marks it as encrypted, but the data after is invalid
+	db.Exec("UPDATE settings SET value = 'enc:v1:invalid-base64-!!!' WHERE key = 'api_key'")
+
+	req, _ := http.NewRequest("GET", "/api/auth/api-key", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Middleware should catch this and return 500
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Expected status 500 for decryption error, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	if response["error"] != "Authentication error" {
+		t.Errorf("Expected 'Authentication error' message, got %v", response["error"])
+	}
+}
+
+// TestAuthMiddleware_InvalidToken_OnProtectedEndpoint tests 401 for wrong API key on protected endpoint
+func TestAuthMiddleware_InvalidToken_OnProtectedEndpoint(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, _, serverCleanup := setupAuthTestServer(t, db)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/auth/api-key", nil)
+	req.Header.Set("X-API-Key", "wrong-api-key")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 for invalid token, got %d", w.Code)
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	if response["error"] != "Invalid authentication token" {
+		t.Errorf("Expected 'Invalid authentication token' message, got %v", response["error"])
+	}
+}
+
+// TestAuthMiddleware_QueryParam_Token tests that 'token' query parameter auth works
+func TestAuthMiddleware_QueryParam_Token(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupAuthTestServer(t, db)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/auth/api-key?token="+apiKey, nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200 for token query param auth, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestAuthMiddleware_QueryParam_ApiKey tests that 'apikey' query parameter auth works
+func TestAuthMiddleware_QueryParam_ApiKey(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupAuthTestServer(t, db)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/auth/api-key?apikey="+apiKey, nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200 for apikey query param auth, got %d: %s", w.Code, w.Body.String())
+	}
+}

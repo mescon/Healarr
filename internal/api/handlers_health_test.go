@@ -18,6 +18,7 @@ import (
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/metrics"
 	"github.com/mescon/Healarr/internal/services"
+	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
 
@@ -624,5 +625,65 @@ func TestHandleHealth_DisabledArrInstancesIgnored(t *testing.T) {
 	// Status should be healthy since there are no enabled instances to be offline
 	if response["status"] != "healthy" {
 		t.Errorf("Expected status 'healthy', got %v", response["status"])
+	}
+}
+
+func TestHandleHealth_ArrInstanceDecryptError(t *testing.T) {
+	db, dbPath, cleanup := setupTestDBForHealth(t)
+	defer cleanup()
+
+	// Insert arr instance with invalid encrypted key
+	_, err := db.Exec(`INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)`,
+		"Test", "sonarr", "http://localhost:8989", "enc:v1:invalid-key", 1)
+	require.NoError(t, err)
+
+	router, _, serverCleanup := setupHealthTestServer(t, db, dbPath)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/health", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should still return 200 (continues on decrypt error)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+
+	// arr_instances should have 0 online since decrypt failed
+	arrInstances := response["arr_instances"].(map[string]interface{})
+	if arrInstances["online"] != float64(0) {
+		t.Errorf("Expected 0 online arr instances (decrypt error), got %v", arrInstances["online"])
+	}
+}
+
+func TestHandleHealth_ArrQueryError(t *testing.T) {
+	db, dbPath, cleanup := setupTestDBForHealth(t)
+	defer cleanup()
+
+	router, _, serverCleanup := setupHealthTestServer(t, db, dbPath)
+	defer serverCleanup()
+
+	// Drop arr_instances table to cause query error
+	db.Exec("DROP TABLE arr_instances")
+
+	req, _ := http.NewRequest("GET", "/api/health", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should still return 200 (gracefully handles query error)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+
+	// arr_instances should show 0/0 when query fails
+	arrInstances := response["arr_instances"].(map[string]interface{})
+	if arrInstances["total"] != float64(0) {
+		t.Errorf("Expected 0 total arr instances (query error), got %v", arrInstances["total"])
 	}
 }
