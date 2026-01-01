@@ -111,7 +111,7 @@ const Help = () => {
                             <li>In Sonarr/Radarr/Whisparr, go to <span className="font-mono text-blue-400">Settings → Connect</span></li>
                             <li>Add a new <span className="font-semibold text-slate-700 dark:text-slate-300">Webhook</span> connection</li>
                             <li>Paste the URL you copied</li>
-                            <li>Enable events: <span className="font-semibold text-slate-700 dark:text-slate-300">On Download</span> and <span className="font-semibold text-slate-700 dark:text-slate-300">On Upgrade</span></li>
+                            <li>Enable events: <span className="font-semibold text-slate-700 dark:text-slate-300">On Import</span> and <span className="font-semibold text-slate-700 dark:text-slate-300">On Upgrade</span></li>
                         </ol>
                         <div className="mt-3 pt-3 border-t border-slate-300 dark:border-slate-700/50">
                             <p className="text-xs text-amber-400 font-semibold">⚠ Important:</p>
