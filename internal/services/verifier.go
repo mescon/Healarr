@@ -26,6 +26,10 @@ type VerifierService struct {
 	// Graceful shutdown support
 	shutdownCh chan struct{}
 	wg         sync.WaitGroup
+
+	// State tracking for event deduplication
+	lastStateMu sync.RWMutex
+	lastState   map[string]string // corruptionID -> last known state
 }
 
 func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper, arrClient integration.ArrClient, db *sql.DB) *VerifierService {
@@ -36,7 +40,29 @@ func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecke
 		arrClient:  arrClient,
 		db:         db,
 		shutdownCh: make(chan struct{}),
+		lastState:  make(map[string]string),
 	}
+}
+
+// setLastState updates the last known state for a corruption (thread-safe)
+func (v *VerifierService) setLastState(corruptionID, state string) {
+	v.lastStateMu.Lock()
+	v.lastState[corruptionID] = state
+	v.lastStateMu.Unlock()
+}
+
+// getLastState returns the last known state for a corruption (thread-safe)
+func (v *VerifierService) getLastState(corruptionID string) string {
+	v.lastStateMu.RLock()
+	defer v.lastStateMu.RUnlock()
+	return v.lastState[corruptionID]
+}
+
+// clearLastState removes state tracking for a corruption (call on completion)
+func (v *VerifierService) clearLastState(corruptionID string) {
+	v.lastStateMu.Lock()
+	delete(v.lastState, corruptionID)
+	v.lastStateMu.Unlock()
 }
 
 func (v *VerifierService) Start() {
@@ -109,6 +135,9 @@ func (v *VerifierService) handleSearchCompleted(event domain.Event) {
 
 // monitorDownloadProgress uses the *arr queue and history APIs to track download progress
 func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPath string, mediaID int64, metadata map[string]interface{}, pathID int64) {
+	// Clean up state tracking when monitoring ends
+	defer v.clearLastState(corruptionID)
+
 	cfg := config.Get()
 
 	// Configuration
@@ -185,30 +214,38 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 			// Check for importBlocked state - this requires manual intervention in *arr
 			// Common causes: file already exists, disk full, permissions, corrupt download
 			if item.TrackedDownloadState == "importBlocked" {
-				errMsg := item.ErrorMessage
-				if len(item.StatusMessages) > 0 {
-					errMsg = strings.Join(item.StatusMessages, "; ")
-				}
+				// Only emit event on state change to prevent spam (was 289 events for single corruption)
+				if v.getLastState(corruptionID) != "importBlocked" {
+					v.setLastState(corruptionID, "importBlocked")
 
-				logger.Warnf("Import blocked for %s (%s): %s - requires manual intervention in *arr", item.Title, filePath, errMsg)
-				if err := v.eventBus.Publish(domain.Event{
-					AggregateID:   corruptionID,
-					AggregateType: "corruption",
-					EventType:     domain.ImportBlocked,
-					EventData: map[string]interface{}{
-						"error":           errMsg,
-						"status":          item.TrackedDownloadStatus,
-						"state":           item.TrackedDownloadState,
-						"queue_id":        item.ID,
-						"download_id":     item.DownloadID,
-						"title":           item.Title,
-						"status_messages": item.StatusMessages,
-						"requires_manual": true,
-					},
-				}); err != nil {
-					logger.Errorf("Failed to publish ImportBlocked event: %v", err)
+					errMsg := item.ErrorMessage
+					if len(item.StatusMessages) > 0 {
+						errMsg = strings.Join(item.StatusMessages, "; ")
+					}
+
+					logger.Warnf("Import blocked for %s (%s): %s - requires manual intervention in *arr", item.Title, filePath, errMsg)
+					if err := v.eventBus.Publish(domain.Event{
+						AggregateID:   corruptionID,
+						AggregateType: "corruption",
+						EventType:     domain.ImportBlocked,
+						EventData: map[string]interface{}{
+							"error":           errMsg,
+							"status":          item.TrackedDownloadStatus,
+							"state":           item.TrackedDownloadState,
+							"queue_id":        item.ID,
+							"download_id":     item.DownloadID,
+							"title":           item.Title,
+							"status_messages": item.StatusMessages,
+							"requires_manual": true,
+						},
+					}); err != nil {
+						logger.Errorf("Failed to publish ImportBlocked event: %v", err)
+					}
 				}
 				// Continue monitoring - user might fix the issue in *arr
+			} else if v.getLastState(corruptionID) == "importBlocked" {
+				// State changed FROM importBlocked to something else - clear tracked state
+				v.clearLastState(corruptionID)
 			}
 
 			// Check for ignored state - user explicitly ignored this download in *arr

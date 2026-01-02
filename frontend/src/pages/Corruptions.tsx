@@ -5,7 +5,7 @@ import { getCorruptions, retryCorruptions, ignoreCorruptions, deleteCorruptions 
 import DataGrid from '../components/ui/DataGrid';
 import RemediationJourney from '../components/RemediationJourney';
 import clsx from 'clsx';
-import { AlertTriangle, ArrowUpDown, Filter, RefreshCw, EyeOff, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowUpDown, Filter, RefreshCw, EyeOff, Trash2, X, AlertCircle } from 'lucide-react';
 import { formatCorruptionType, formatCorruptionState } from '../lib/formatters';
 import { useDateFormat } from '../lib/useDateFormat';
 import { useToast } from '../contexts/ToastContext';
@@ -50,6 +50,13 @@ const Corruptions = () => {
         queryFn: () => getCorruptions(page, limit, sortBy, sortOrder, statusFilter),
         // Polling removed - WebSocket invalidates queries on events
     });
+
+    // Query for manual intervention count (always fetch to show alert banner)
+    const { data: manualInterventionData } = useQuery({
+        queryKey: ['corruptions', 1, 1, 'detected_at', 'desc', 'manual_intervention'],
+        queryFn: () => getCorruptions(1, 1, 'detected_at', 'desc', 'manual_intervention'),
+    });
+    const manualInterventionCount = manualInterventionData?.pagination?.total || 0;
 
     const handleSort = (field: string) => {
         if (sortBy === field) {
@@ -165,6 +172,27 @@ const Corruptions = () => {
                     </select>
                 </div>
             </div>
+
+            {/* Manual Intervention Alert Banner */}
+            {manualInterventionCount > 0 && statusFilter !== 'manual_intervention' && (
+                <div className="bg-purple-500/10 border border-purple-500/30 rounded-xl p-4 flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-purple-400 mt-0.5 shrink-0" />
+                    <div className="flex-1">
+                        <h3 className="font-medium text-purple-300">
+                            {manualInterventionCount} item{manualInterventionCount > 1 ? 's' : ''} require{manualInterventionCount === 1 ? 's' : ''} manual intervention
+                        </h3>
+                        <p className="text-sm text-purple-400/80 mt-1">
+                            These corruptions could not be automatically remediated and need attention in Sonarr/Radarr.
+                        </p>
+                    </div>
+                    <button
+                        onClick={() => handleStatusFilterChange('manual_intervention')}
+                        className="px-3 py-1.5 text-sm font-medium bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 rounded-lg border border-purple-500/30 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                        View Items
+                    </button>
+                </div>
+            )}
 
             <DataGrid
                 isLoading={isLoading}

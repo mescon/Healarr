@@ -52,7 +52,18 @@ export function formatCorruptionState(state: string): { label: string; colorClas
     if (state === 'CorruptionIgnored') {
         return { label: 'Ignored', colorClass: 'bg-slate-500/10 text-slate-400 border-slate-500/20' };
     }
-    
+
+    // Manual intervention required (purple/magenta - needs user attention)
+    if (state === 'ImportBlocked') {
+        return { label: '⚠️ Import Blocked', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
+    }
+    if (state === 'ManuallyRemoved') {
+        return { label: '⚠️ Manually Removed', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
+    }
+    if (state === 'DownloadIgnored') {
+        return { label: '⚠️ Download Ignored', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
+    }
+
     // Pending - just detected (amber)
     if (state === 'CorruptionDetected') {
         return { label: 'Pending', colorClass: 'bg-amber-500/10 text-amber-400 border-amber-500/20' };
@@ -132,7 +143,14 @@ export function getEventColorClass(eventType: string): string {
     if (eventType === 'CorruptionIgnored') {
         return 'bg-slate-500/20 border-slate-500/30 text-slate-400';
     }
-    
+
+    // Manual intervention required (purple - needs user attention)
+    if (eventType === 'ImportBlocked' ||
+        eventType === 'ManuallyRemoved' ||
+        eventType === 'DownloadIgnored') {
+        return 'bg-purple-500/20 border-purple-500/30 text-purple-400';
+    }
+
     // Notification events (cyan)
     if (eventType === 'NotificationSent') {
         return 'bg-cyan-500/20 border-cyan-500/30 text-cyan-400';
@@ -176,6 +194,9 @@ export function getEventDescription(eventType: string, data?: Record<string, unk
         'RetryScheduled': 'Retry scheduled',
         'DownloadTimeout': 'Download timed out',
         'CorruptionIgnored': 'Marked as ignored',
+        'ImportBlocked': '⚠️ Import blocked in *arr - manual intervention required',
+        'ManuallyRemoved': '⚠️ Removed from *arr queue - manual intervention required',
+        'DownloadIgnored': '⚠️ Download ignored by user - manual intervention required',
     };
     
     return descriptions[eventType] || eventType.replace(/([A-Z])/g, ' $1').trim();

@@ -230,6 +230,7 @@ func GetEventGroups() []EventGroup {
 			Events: []string{
 				string(domain.ImportBlocked),
 				string(domain.ManuallyRemoved),
+				string(domain.DownloadIgnored),
 			},
 		},
 		{
@@ -284,7 +285,15 @@ func (n *Notifier) Start() error {
 	for _, event := range events {
 		eventType := domain.EventType(event) // Capture for closure
 		n.eb.Subscribe(eventType, func(ev domain.Event) {
-			n.handleEvent(string(eventType), ev.EventData)
+			// Ensure aggregate_id is included in data for proper event correlation
+			data := ev.EventData
+			if data == nil {
+				data = make(map[string]interface{})
+			}
+			if ev.AggregateID != "" {
+				data["aggregate_id"] = ev.AggregateID
+			}
+			n.handleEvent(string(eventType), data)
 		})
 	}
 
@@ -492,18 +501,16 @@ func (n *Notifier) sendNotification(cfg *NotificationConfig, eventType string, d
 
 // extractAggregateID gets the corruption aggregate ID from event data
 func (n *Notifier) extractAggregateID(data map[string]interface{}) string {
-	// Try to get aggregate_id directly
+	// Try to get aggregate_id directly (passed from event subscription)
 	if id, ok := data["aggregate_id"].(string); ok && id != "" {
 		return id
 	}
-	// Try corruption_id
+	// Try corruption_id (backup)
 	if id, ok := data["corruption_id"].(string); ok && id != "" {
 		return id
 	}
-	// Fall back to file_path as aggregate ID (it's used as the ID for corruptions)
-	if filePath, ok := data["file_path"].(string); ok && filePath != "" {
-		return filePath
-	}
+	// Note: We no longer fall back to file_path - it's not a valid aggregate ID
+	// Aggregate IDs must be UUIDs to properly correlate events
 	return ""
 }
 
@@ -652,6 +659,8 @@ func (n *Notifier) formatMessage(eventType string, data map[string]interface{}) 
 		return fmt.Sprintf("🚫 Import blocked in *arr: %s\n⚠️ %s\n👉 Manual intervention required in Sonarr/Radarr", fileName, errorMsg)
 	case string(domain.ManuallyRemoved):
 		return fmt.Sprintf("🗑️ Download manually removed: %s\n👉 Item was removed from *arr queue without being imported", fileName)
+	case string(domain.DownloadIgnored):
+		return fmt.Sprintf("⏸️ Download ignored by user: %s\n👉 User marked download as ignored in *arr - remediation stopped", fileName)
 	case string(domain.RetryScheduled):
 		return fmt.Sprintf("🔄 Retry scheduled (%d/%d): %s", retryCount, maxRetries, fileName)
 	case string(domain.MaxRetriesReached):
@@ -846,6 +855,8 @@ func (n *Notifier) formatTitle(eventType string, fileName string) string {
 		return "🚫 Import Blocked - Manual Action Required"
 	case string(domain.ManuallyRemoved):
 		return "🗑️ Download Manually Removed"
+	case string(domain.DownloadIgnored):
+		return "⏸️ Download Ignored by User"
 	case string(domain.RetryScheduled):
 		return "🔄 Retry Scheduled"
 	case string(domain.MaxRetriesReached):

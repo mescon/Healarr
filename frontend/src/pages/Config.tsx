@@ -340,10 +340,14 @@ const Config = () => {
         mutationFn: createArrInstance,
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['arrInstances'] });
+            toast.success('Server added successfully');
             // Debounce status refresh to avoid rapid-fire requests
             setTimeout(() => {
                 queryClient.invalidateQueries({ queryKey: ['serverStatus'] });
             }, 500);
+        },
+        onError: (error: Error) => {
+            toast.error(`Failed to add server: ${error.message}`);
         },
     });
 
@@ -352,10 +356,14 @@ const Config = () => {
             updateArrInstance(id, data),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['arrInstances'] });
+            toast.success('Server updated successfully');
             // Debounce status refresh to avoid rapid-fire requests
             setTimeout(() => {
                 queryClient.invalidateQueries({ queryKey: ['serverStatus'] });
             }, 500);
+        },
+        onError: (error: Error) => {
+            toast.error(`Failed to update server: ${error.message}`);
         },
     });
 
@@ -521,17 +529,28 @@ const Config = () => {
 
     const handleCreateArr = (e: React.FormEvent) => {
         e.preventDefault();
-        if (newArr.name && newArr.url && newArr.api_key && newArr.type) {
-            if (editingArrId) {
-                updateArrMutation.mutate({ id: editingArrId, data: newArr as Omit<ArrInstance, 'id'> });
-                setEditingArrId(null);
-            } else {
-                createArrMutation.mutate(newArr as Omit<ArrInstance, 'id'>);
-            }
-            setNewArr({ type: 'sonarr', enabled: true, name: '', url: '', api_key: '' });
-            setTestStatus({});
-            setIsAddArrExpanded(false);
+
+        // Validate required fields with user feedback
+        const missingFields: string[] = [];
+        if (!newArr.name?.trim()) missingFields.push('Name');
+        if (!newArr.url?.trim()) missingFields.push('URL');
+        if (!newArr.api_key?.trim()) missingFields.push('API Key');
+        if (!newArr.type) missingFields.push('Type');
+
+        if (missingFields.length > 0) {
+            toast.error(`Please fill in required fields: ${missingFields.join(', ')}`);
+            return;
         }
+
+        if (editingArrId) {
+            updateArrMutation.mutate({ id: editingArrId, data: newArr as Omit<ArrInstance, 'id'> });
+            setEditingArrId(null);
+        } else {
+            createArrMutation.mutate(newArr as Omit<ArrInstance, 'id'>);
+        }
+        setNewArr({ type: 'sonarr', enabled: true, name: '', url: '', api_key: '' });
+        setTestStatus({});
+        setIsAddArrExpanded(false);
     };
 
     const handleCreatePath = (e: React.FormEvent) => {
@@ -720,9 +739,10 @@ const Config = () => {
                                             </select>
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Name</label>
+                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Name <span className="text-red-400">*</span></label>
                                             <input
                                                 type="text"
+                                                required
                                                 value={newArr.name || ''}
                                                 onChange={e => setNewArr({ ...newArr, name: e.target.value })}
                                                 placeholder="My Sonarr"
@@ -730,9 +750,10 @@ const Config = () => {
                                             />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">URL</label>
+                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">URL <span className="text-red-400">*</span></label>
                                             <input
-                                                type="text"
+                                                type="url"
+                                                required
                                                 value={newArr.url || ''}
                                                 onChange={e => setNewArr({ ...newArr, url: e.target.value })}
                                                 placeholder="http://localhost:8989"
@@ -740,9 +761,10 @@ const Config = () => {
                                             />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">API Key</label>
+                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">API Key <span className="text-red-400">*</span></label>
                                             <input
                                                 type="text"
+                                                required
                                                 value={newArr.api_key || ''}
                                                 onChange={e => setNewArr({ ...newArr, api_key: e.target.value })}
                                                 placeholder="API key"
