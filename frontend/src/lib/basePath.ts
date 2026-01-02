@@ -1,27 +1,46 @@
 /**
  * Base path configuration for reverse proxy support.
- * The base path is detected from the current URL or fetched from the server.
+ * The base path is injected by the server into index.html as window.__HEALARR_BASE_PATH__
+ * Falls back to URL detection if not injected.
  */
+
+// Extend Window interface for TypeScript
+declare global {
+  interface Window {
+    __HEALARR_BASE_PATH__?: string;
+  }
+}
 
 // Cache the base path once detected
 let cachedBasePath: string | null = null;
 
 /**
- * Detects the base path from the current URL.
- * If the app is served from /healarr/, this returns "/healarr".
- * If served from root, returns "".
+ * Detects the base path from server-injected value or current URL.
+ * Priority:
+ * 1. Server-injected window.__HEALARR_BASE_PATH__ (most reliable)
+ * 2. URL detection based on known SPA routes (fallback)
  */
 export function detectBasePath(): string {
   if (cachedBasePath !== null) {
     return cachedBasePath;
   }
 
-  // Try to detect from the current script URL or document base
+  // First, check for server-injected base path (most reliable method)
+  if (typeof window.__HEALARR_BASE_PATH__ === 'string') {
+    cachedBasePath = window.__HEALARR_BASE_PATH__;
+    // Normalize: remove trailing slash if present (but keep "/" as is)
+    if (cachedBasePath.length > 1 && cachedBasePath.endsWith('/')) {
+      cachedBasePath = cachedBasePath.slice(0, -1);
+    }
+    return cachedBasePath;
+  }
+
+  // Fallback: Try to detect from the current URL
   const pathname = window.location.pathname;
-  
+
   // Check if we're at a known SPA route
   const spaRoutes = ['/login', '/setup', '/config', '/scans', '/corruptions', '/logs', '/help'];
-  
+
   for (const route of spaRoutes) {
     const idx = pathname.indexOf(route);
     if (idx > 0) {
@@ -38,7 +57,6 @@ export function detectBasePath(): string {
   }
 
   // If we're at root or a direct SPA route, base path is empty
-  // But we should also check if the API is available at this path
   cachedBasePath = '';
   return cachedBasePath;
 }

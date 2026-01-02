@@ -293,13 +293,24 @@ func (s *RESTServer) setupRoutes() {
 			c.Data(http.StatusOK, contentType, data)
 		}
 
+		// Helper to serve index.html with injected base path for SPA routing
+		serveIndexWithBasePath := func(c *gin.Context) {
+			data, err := fs.ReadFile(webFS, "index.html")
+			if err != nil {
+				logger.Errorf("Failed to read embedded index.html: %v", err)
+				c.Status(http.StatusNotFound)
+				return
+			}
+			// Inject base path as a script tag before </head>
+			// This allows the frontend to know the base path before any API calls
+			injectedScript := fmt.Sprintf(`<script>window.__HEALARR_BASE_PATH__=%q;</script></head>`, basePath)
+			html := strings.Replace(string(data), "</head>", injectedScript, 1)
+			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+		}
+
 		// Serve individual files from embedded FS
-		base.GET("/", func(c *gin.Context) {
-			serveEmbeddedFile(c, "index.html", "text/html; charset=utf-8")
-		})
-		base.GET("/index.html", func(c *gin.Context) {
-			serveEmbeddedFile(c, "index.html", "text/html; charset=utf-8")
-		})
+		base.GET("/", serveIndexWithBasePath)
+		base.GET("/index.html", serveIndexWithBasePath)
 		base.GET("/favicon.png", func(c *gin.Context) {
 			serveEmbeddedFile(c, "favicon.png", "image/png")
 		})
@@ -310,7 +321,7 @@ func (s *RESTServer) setupRoutes() {
 		// SPA Routes - serve index.html for client-side routing
 		s.router.NoRoute(func(c *gin.Context) {
 			if basePath == "/" || strings.HasPrefix(c.Request.URL.Path, basePath) {
-				serveEmbeddedFile(c, "index.html", "text/html; charset=utf-8")
+				serveIndexWithBasePath(c)
 			} else {
 				c.Redirect(http.StatusMovedPermanently, basePath)
 			}
@@ -323,16 +334,31 @@ func (s *RESTServer) setupRoutes() {
 			// Filesystem mode - web directory exists
 			logger.Infof("Serving web assets from filesystem: %s", webDir)
 			base.Static("/assets", filepath.Join(webDir, "assets"))
-			base.StaticFile("/", indexFile)
-			base.StaticFile("/index.html", indexFile)
 			base.StaticFile("/favicon.png", filepath.Join(webDir, "favicon.png"))
 			base.StaticFile("/healarr.svg", filepath.Join(webDir, "healarr.svg"))
+
+			// Helper to serve index.html with injected base path
+			serveIndexWithBasePath := func(c *gin.Context) {
+				data, err := os.ReadFile(indexFile)
+				if err != nil {
+					logger.Errorf("Failed to read index.html: %v", err)
+					c.Status(http.StatusNotFound)
+					return
+				}
+				// Inject base path as a script tag before </head>
+				injectedScript := fmt.Sprintf(`<script>window.__HEALARR_BASE_PATH__=%q;</script></head>`, basePath)
+				html := strings.Replace(string(data), "</head>", injectedScript, 1)
+				c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+			}
+
+			base.GET("/", serveIndexWithBasePath)
+			base.GET("/index.html", serveIndexWithBasePath)
 
 			// SPA Routes - serve index.html for client-side routing under base path
 			s.router.NoRoute(func(c *gin.Context) {
 				// Check if request is under our base path
 				if basePath == "/" || strings.HasPrefix(c.Request.URL.Path, basePath) {
-					c.File(indexFile)
+					serveIndexWithBasePath(c)
 				} else {
 					c.Redirect(http.StatusMovedPermanently, basePath)
 				}
