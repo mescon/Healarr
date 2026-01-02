@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] - 2026-01-02
+
+### Fixed
+- **Connection Lost on Root Deployments**: Fixed API calls going to `https://api/...` instead of relative URLs
+  - When deployed at root (no subpath), `getApiBasePath()` returned `/` which created `//api/health` URLs
+  - Browser interpreted `//api/health` as protocol-relative URL, treating "api" as hostname
+  - Fix: Return empty string for root deployments to prevent double-slash URLs
+
+## [1.1.4] - 2026-01-02
+
+### Fixed
+- **Reverse Proxy Login Redirect** (#6): Fixed login redirect ignoring `HEALARR_BASE_PATH`
+  - When accessing via reverse proxy at `/healarr/`, redirected to `/login` instead of `/healarr/login`
+  - Server now injects base path into HTML as `window.__HEALARR_BASE_PATH__`
+  - Frontend reads injected value before falling back to URL detection
+
+## [1.1.3] - 2026-01-02
+
+### Fixed
+- **Docker Permissions** (#5): Fixed PUID/PGID environment variables being ignored on Unraid
+  - Added docker-entrypoint.sh to handle runtime UID/GID modification
+  - Uses su-exec to drop privileges after setup
+- **Add Server Button** (#1): Fixed silent validation failure when adding *arr servers
+  - Added toast notifications for validation errors and success/failure states
+  - Added required field indicators with HTML5 validation
+- **ImportBlocked Event Spam**: Fixed 289 duplicate events per blocked import
+  - Added state deduplication - only emits on actual state change
+- **NotificationSent Aggregate ID**: Fixed using file path instead of corruption UUID
+
+### Added
+- **Manual Intervention Alert**: Prominent banner on Corruptions page when items need attention
+- **ManualInterventionRequired**: New notification event type for blocked imports
+
+## [1.1.2] - 2026-01-01
+
+### Fixed
+- **BASE_PATH Asset Loading**: Fixed static assets not loading when using `HEALARR_BASE_PATH`
+
+### Changed
+- Improved reverse proxy documentation in Help page
+
+## [1.1.1] - 2026-01-01
+
+### Changed
+- **Test Coverage**: Improved test coverage across all packages to 80%+
+- Internal code organization and cleanup
+
 ## [1.1.0] - 2025-12-31
 
 ### Added

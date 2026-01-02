@@ -64,9 +64,12 @@ export function detectBasePath(): string {
 /**
  * Gets the base path for API calls.
  * Returns the path prefix to prepend to /api endpoints.
+ * Returns empty string for root deployments to avoid "//api" URLs.
  */
 export function getApiBasePath(): string {
-  return detectBasePath();
+  const base = detectBasePath();
+  // Return empty string for root deployments to prevent "//api" protocol-relative URLs
+  return base === '/' ? '' : base;
 }
 
 /**
