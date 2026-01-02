@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.6] - 2026-01-02
+
+### Fixed
+- **Scheduler Startup Hang** (#8): Fixed potential hang during scheduler initialization
+  - Added context with timeout (10s) to all scheduler database queries
+  - Added orphaned schedule cleanup at startup (removes schedules for deleted scan paths)
+  - Added pre-validation of cron expressions before attempting to register jobs
+  - Added detailed debug logging throughout scheduler initialization
+  - Improved error handling with wrapped errors for better diagnostics
+
+### Changed
+- Scheduler interface now includes `CleanupOrphanedSchedules()` method
+- Database queries in scheduler now use `QueryContext` for cancellation support
+
 ## [1.1.5] - 2026-01-02
 
 ### Fixed

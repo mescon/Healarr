@@ -633,12 +633,13 @@ func (m *MockScannerService) Shutdown() {
 
 // MockSchedulerService implements a mock for services.SchedulerService
 type MockSchedulerService struct {
-	StartFunc          func()
-	StopFunc           func()
-	LoadSchedulesFunc  func() error
-	AddScheduleFunc    func(scanPathID int, cronExpr string) (int64, error)
-	DeleteScheduleFunc func(id int) error
-	UpdateScheduleFunc func(id int, cronExpr string, enabled bool) error
+	StartFunc                    func()
+	StopFunc                     func()
+	LoadSchedulesFunc            func() error
+	AddScheduleFunc              func(scanPathID int, cronExpr string) (int64, error)
+	DeleteScheduleFunc           func(id int) error
+	UpdateScheduleFunc           func(id int, cronExpr string, enabled bool) error
+	CleanupOrphanedSchedulesFunc func() (int, error)
 
 	mu    sync.Mutex
 	Calls []MockCall
@@ -714,6 +715,14 @@ func (m *MockSchedulerService) UpdateSchedule(id int, cronExpr string, enabled b
 		return m.UpdateScheduleFunc(id, cronExpr, enabled)
 	}
 	return nil
+}
+
+func (m *MockSchedulerService) CleanupOrphanedSchedules() (int, error) {
+	m.recordCall("CleanupOrphanedSchedules")
+	if m.CleanupOrphanedSchedulesFunc != nil {
+		return m.CleanupOrphanedSchedulesFunc()
+	}
+	return 0, nil
 }
 
 // =============================================================================

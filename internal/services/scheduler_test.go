@@ -604,3 +604,169 @@ func TestSchedulerService_CronExpressionValidation(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// CleanupOrphanedSchedules tests
+// =============================================================================
+
+func setupSchedulerTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+
+	// Add scan_schedules table
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS scan_schedules (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			scan_path_id INTEGER NOT NULL,
+			cron_expression TEXT NOT NULL,
+			enabled BOOLEAN DEFAULT 1,
+			FOREIGN KEY (scan_path_id) REFERENCES scan_paths(id)
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create scan_schedules table: %v", err)
+	}
+
+	return db
+}
+
+func TestSchedulerService_CleanupOrphanedSchedules(t *testing.T) {
+	db := setupSchedulerTestDB(t)
+	defer db.Close()
+
+	s := NewSchedulerService(db, nil)
+
+	// Create multiple scan paths
+	_, err := db.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id) VALUES (1, '/valid/path', '/arr/path', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path 1: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id) VALUES (2, '/path/two', '/arr/two', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path 2: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id) VALUES (3, '/path/three', '/arr/three', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path 3: %v", err)
+	}
+
+	// Create schedules for all paths
+	_, err = db.Exec(`INSERT INTO scan_schedules (id, scan_path_id, cron_expression, enabled) VALUES (1, 1, '0 * * * *', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert schedule 1: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO scan_schedules (id, scan_path_id, cron_expression, enabled) VALUES (2, 2, '0 0 * * *', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert schedule 2: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO scan_schedules (id, scan_path_id, cron_expression, enabled) VALUES (3, 3, '0 12 * * *', 0)`)
+	if err != nil {
+		t.Fatalf("Failed to insert schedule 3: %v", err)
+	}
+
+	// Disable foreign keys temporarily and delete scan paths to create orphaned schedules
+	// This simulates what happens when FK constraints weren't enforced in older versions
+	_, err = db.Exec("PRAGMA foreign_keys = OFF")
+	if err != nil {
+		t.Fatalf("Failed to disable foreign keys: %v", err)
+	}
+
+	// Delete scan paths 2 and 3, creating orphaned schedules
+	_, err = db.Exec("DELETE FROM scan_paths WHERE id IN (2, 3)")
+	if err != nil {
+		t.Fatalf("Failed to delete scan paths: %v", err)
+	}
+
+	// Re-enable foreign keys
+	_, err = db.Exec("PRAGMA foreign_keys = ON")
+	if err != nil {
+		t.Fatalf("Failed to re-enable foreign keys: %v", err)
+	}
+
+	// Verify we have 3 schedules
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM scan_schedules").Scan(&count)
+	if err != nil {
+		t.Fatalf("Failed to count schedules: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("Expected 3 schedules, got %d", count)
+	}
+
+	// Run cleanup
+	cleaned, err := s.CleanupOrphanedSchedules()
+	if err != nil {
+		t.Fatalf("CleanupOrphanedSchedules failed: %v", err)
+	}
+
+	if cleaned != 2 {
+		t.Errorf("Expected 2 orphaned schedules cleaned up, got %d", cleaned)
+	}
+
+	// Verify only the valid schedule remains
+	err = db.QueryRow("SELECT COUNT(*) FROM scan_schedules").Scan(&count)
+	if err != nil {
+		t.Fatalf("Failed to count schedules after cleanup: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("Expected 1 schedule remaining, got %d", count)
+	}
+
+	// Verify the remaining schedule is the valid one
+	var remainingID int
+	err = db.QueryRow("SELECT id FROM scan_schedules").Scan(&remainingID)
+	if err != nil {
+		t.Fatalf("Failed to get remaining schedule: %v", err)
+	}
+	if remainingID != 1 {
+		t.Errorf("Expected remaining schedule to have id=1, got %d", remainingID)
+	}
+}
+
+func TestSchedulerService_CleanupOrphanedSchedules_NoOrphans(t *testing.T) {
+	db := setupSchedulerTestDB(t)
+	defer db.Close()
+
+	s := NewSchedulerService(db, nil)
+
+	// Create a valid scan path and schedule
+	_, err := db.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id) VALUES (1, '/valid/path', '/arr/path', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	_, err = db.Exec(`INSERT INTO scan_schedules (scan_path_id, cron_expression, enabled) VALUES (1, '0 * * * *', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert schedule: %v", err)
+	}
+
+	// Run cleanup - should find nothing to clean
+	cleaned, err := s.CleanupOrphanedSchedules()
+	if err != nil {
+		t.Fatalf("CleanupOrphanedSchedules failed: %v", err)
+	}
+
+	if cleaned != 0 {
+		t.Errorf("Expected 0 orphaned schedules cleaned up, got %d", cleaned)
+	}
+}
+
+func TestSchedulerService_CleanupOrphanedSchedules_EmptyDB(t *testing.T) {
+	db := setupSchedulerTestDB(t)
+	defer db.Close()
+
+	s := NewSchedulerService(db, nil)
+
+	// Run cleanup on empty database
+	cleaned, err := s.CleanupOrphanedSchedules()
+	if err != nil {
+		t.Fatalf("CleanupOrphanedSchedules failed: %v", err)
+	}
+
+	if cleaned != 0 {
+		t.Errorf("Expected 0 orphaned schedules cleaned up, got %d", cleaned)
+	}
+}

@@ -1264,9 +1264,9 @@ func TestNotifier_ExtractAggregateID(t *testing.T) {
 			expected: "corr456",
 		},
 		{
-			name:     "with file_path",
+			name:     "file_path is not used as aggregate_id",
 			data:     map[string]interface{}{"file_path": "/media/movie.mkv"},
-			expected: "/media/movie.mkv",
+			expected: "", // file_path is not a valid aggregate ID, only UUIDs are
 		},
 		{
 			name:     "aggregate_id takes precedence",

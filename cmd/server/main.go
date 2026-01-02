@@ -232,6 +232,17 @@ func main() {
 	remediatorService.Start()
 	verifierService.Start()
 	monitorService.Start()
+
+	// Clean up any orphaned schedules before starting the scheduler
+	// This handles cases where scan paths were deleted but schedules remain
+	// (e.g., if foreign key constraints weren't enforced in older versions)
+	if cleaned, err := schedulerService.CleanupOrphanedSchedules(); err != nil {
+		logger.Errorf("Failed to cleanup orphaned schedules: %v", err)
+	} else if cleaned > 0 {
+		logger.Debugf("Cleaned up %d orphaned schedules", cleaned)
+	}
+
+	logger.Infof("Starting Scheduler Service...")
 	schedulerService.Start()
 	logger.Infof("✓ All background services started")
 
