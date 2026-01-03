@@ -19,9 +19,12 @@ interface DataGridProps<T> {
         limit: number;
         total: number;
         onPageChange: (page: number) => void;
+        onLimitChange?: (limit: number) => void;
     };
     onRowClick?: (row: T) => void;
 }
+
+const LIMIT_OPTIONS = [25, 50, 100, 250, 1000];
 
 const DataGrid = <T extends { id: string | number }>({ data, columns, isLoading, pagination, onRowClick }: DataGridProps<T>) => {
     if (isLoading) {
@@ -85,9 +88,25 @@ const DataGrid = <T extends { id: string | number }>({ data, columns, isLoading,
 
             {pagination && (
                 <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 dark:border-slate-800/50 bg-slate-50 dark:bg-slate-900/20">
-                    <span className="text-xs text-slate-500">
-                        Showing {Math.min(pagination.limit, pagination.total)} of {pagination.total} results
-                    </span>
+                    <div className="flex items-center gap-4">
+                        <span className="text-xs text-slate-500">
+                            Showing {Math.min(pagination.limit, pagination.total)} of {pagination.total} results
+                        </span>
+                        {pagination.onLimitChange && (
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs text-slate-500">Per page:</span>
+                                <select
+                                    value={pagination.limit}
+                                    onChange={(e) => pagination.onLimitChange!(Number(e.target.value))}
+                                    className="text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-slate-600 dark:text-slate-400 focus:outline-none focus:ring-2 focus:ring-green-500/50 cursor-pointer"
+                                >
+                                    {LIMIT_OPTIONS.map(opt => (
+                                        <option key={opt} value={opt}>{opt}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+                    </div>
                     <div className="flex gap-2">
                         <button
                             disabled={pagination.page === 1}

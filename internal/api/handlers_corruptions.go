@@ -29,37 +29,48 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	}
 	p := ParsePagination(c, cfg)
 	statusFilter := c.DefaultQuery("status", "all")
+	pathIDFilter := c.Query("path_id")
 
 	// Build query
 	baseQuery := "FROM corruption_status"
-	whereClause := ""
+	whereClauses := []string{}
 	args := []interface{}{}
 
+	// Status filter
 	if statusFilter != "all" {
-		whereClause = " WHERE "
 		switch statusFilter {
 		case "active":
-			whereClause += "current_state != 'VerificationSuccess' AND current_state != 'MaxRetriesReached' AND current_state != 'CorruptionIgnored'"
+			whereClauses = append(whereClauses, "current_state != 'VerificationSuccess' AND current_state != 'MaxRetriesReached' AND current_state != 'CorruptionIgnored'")
 		case "pending":
 			// Pending = detected but not yet being processed (just CorruptionDetected state)
-			whereClause += "current_state = 'CorruptionDetected'"
+			whereClauses = append(whereClauses, "current_state = 'CorruptionDetected'")
 		case "in_progress":
 			// In progress = currently being remediated (Queued, Started, Progress states)
-			whereClause += "(current_state LIKE '%Started' OR current_state LIKE '%Queued' OR current_state LIKE '%Progress' OR current_state = 'RemediationQueued')"
+			whereClauses = append(whereClauses, "(current_state LIKE '%Started' OR current_state LIKE '%Queued' OR current_state LIKE '%Progress' OR current_state = 'RemediationQueued')")
 		case "resolved":
-			whereClause += "current_state = 'VerificationSuccess'"
+			whereClauses = append(whereClauses, "current_state = 'VerificationSuccess'")
 		case "failed":
-			whereClause += "current_state LIKE '%Failed'"
+			whereClauses = append(whereClauses, "current_state LIKE '%Failed'")
 		case "orphaned":
-			whereClause += "current_state = 'MaxRetriesReached'"
+			whereClauses = append(whereClauses, "current_state = 'MaxRetriesReached'")
 		case "ignored":
-			whereClause += "current_state = 'CorruptionIgnored'"
+			whereClauses = append(whereClauses, "current_state = 'CorruptionIgnored'")
 		case "manual_intervention":
 			// Items that require manual intervention in *arr (import blocked, manually removed from queue)
-			whereClause += "(current_state = 'ImportBlocked' OR current_state = 'ManuallyRemoved')"
-		default:
-			whereClause = "" // Ignore invalid filter
+			whereClauses = append(whereClauses, "(current_state = 'ImportBlocked' OR current_state = 'ManuallyRemoved')")
 		}
+	}
+
+	// Path ID filter (for filtering by scan path)
+	if pathIDFilter != "" {
+		whereClauses = append(whereClauses, "path_id = ?")
+		args = append(args, pathIDFilter)
+	}
+
+	// Build WHERE clause
+	whereClause := ""
+	if len(whereClauses) > 0 {
+		whereClause = " WHERE " + strings.Join(whereClauses, " AND ")
 	}
 
 	// Get total count with filter
@@ -78,7 +89,7 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 		dbSortField = "current_state"
 	}
 
-	query := fmt.Sprintf("SELECT corruption_id, current_state, retry_count, file_path, last_error, detected_at, last_updated_at, corruption_type %s%s ORDER BY %s %s LIMIT ? OFFSET ?", baseQuery, whereClause, dbSortField, strings.ToUpper(p.SortOrder))
+	query := fmt.Sprintf("SELECT corruption_id, current_state, retry_count, file_path, path_id, last_error, detected_at, last_updated_at, corruption_type %s%s ORDER BY %s %s LIMIT ? OFFSET ?", baseQuery, whereClause, dbSortField, strings.ToUpper(p.SortOrder))
 	args = append(args, p.Limit, p.Offset)
 
 	rows, err := s.db.Query(query, args...)
@@ -91,15 +102,16 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	corruptions := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var id, state, filePath string
+		var pathID sql.NullInt64
 		var lastError, corruptionType sql.NullString
 		var retryCount int
 		var detectedAt, lastUpdatedAt string
 
-		if err := rows.Scan(&id, &state, &retryCount, &filePath, &lastError, &detectedAt, &lastUpdatedAt, &corruptionType); err != nil {
+		if err := rows.Scan(&id, &state, &retryCount, &filePath, &pathID, &lastError, &detectedAt, &lastUpdatedAt, &corruptionType); err != nil {
 			continue
 		}
 
-		corruptions = append(corruptions, map[string]interface{}{
+		corruption := map[string]interface{}{
 			"id":              id,
 			"state":           state,
 			"retry_count":     retryCount,
@@ -108,7 +120,11 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 			"detected_at":     detectedAt,
 			"last_updated_at": lastUpdatedAt,
 			"corruption_type": corruptionType.String,
-		})
+		}
+		if pathID.Valid {
+			corruption["path_id"] = pathID.Int64
+		}
+		corruptions = append(corruptions, corruption)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

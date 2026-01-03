@@ -42,11 +42,14 @@ export const getCorruptions = async (
     limit = 50,
     sortBy = 'detected_at',
     sortOrder = 'desc',
-    statusFilter = 'all'
+    statusFilter = 'all',
+    pathId?: number
 ): Promise<PaginatedResponse<Corruption>> => {
-    const { data } = await api.get<PaginatedResponse<Corruption>>('/corruptions', {
-        params: { page, limit, sort_by: sortBy, sort_order: sortOrder, status: statusFilter },
-    });
+    const params: Record<string, string | number> = { page, limit, sort_by: sortBy, sort_order: sortOrder, status: statusFilter };
+    if (pathId !== undefined) {
+        params.path_id = pathId;
+    }
+    const { data } = await api.get<PaginatedResponse<Corruption>>('/corruptions', { params });
     return data;
 };
 
@@ -72,6 +75,7 @@ export const getScans = async (
 export interface ScanDetails {
     id: number;
     path: string;
+    path_id: number;
     status: string;
     files_scanned: number;
     corruptions_found: number;

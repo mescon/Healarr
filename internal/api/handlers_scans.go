@@ -231,6 +231,7 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 	var scan struct {
 		ID               int    `json:"id"`
 		Path             string `json:"path"`
+		PathID           int    `json:"path_id"`
 		Status           string `json:"status"`
 		FilesScanned     int    `json:"files_scanned"`
 		CorruptionsFound int    `json:"corruptions_found"`
@@ -241,10 +242,11 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 	}
 
 	var completedAt sql.NullString
+	var pathID sql.NullInt64
 	err := s.db.QueryRow(`
-		SELECT id, path, status, files_scanned, corruptions_found, started_at, completed_at
+		SELECT id, path, path_id, status, files_scanned, corruptions_found, started_at, completed_at
 		FROM scans WHERE id = ?
-	`, scanID).Scan(&scan.ID, &scan.Path, &scan.Status, &scan.FilesScanned, &scan.CorruptionsFound, &scan.StartedAt, &completedAt)
+	`, scanID).Scan(&scan.ID, &scan.Path, &pathID, &scan.Status, &scan.FilesScanned, &scan.CorruptionsFound, &scan.StartedAt, &completedAt)
 
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Scan not found"})
@@ -256,6 +258,9 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 	}
 
 	scan.CompletedAt = completedAt.String
+	if pathID.Valid {
+		scan.PathID = int(pathID.Int64)
+	}
 
 	// Get file counts from scan_files table
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'healthy'", scanID).Scan(&scan.HealthyFiles); err != nil {

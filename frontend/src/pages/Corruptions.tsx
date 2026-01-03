@@ -5,10 +5,12 @@ import { getCorruptions, retryCorruptions, ignoreCorruptions, deleteCorruptions 
 import DataGrid from '../components/ui/DataGrid';
 import RemediationJourney from '../components/RemediationJourney';
 import clsx from 'clsx';
-import { AlertTriangle, ArrowUpDown, Filter, RefreshCw, EyeOff, Trash2, X, AlertCircle } from 'lucide-react';
+import { AlertTriangle, ArrowUpDown, Filter, RefreshCw, EyeOff, Trash2, X, AlertCircle, FolderOpen } from 'lucide-react';
 import { formatCorruptionType, formatCorruptionState } from '../lib/formatters';
 import { useDateFormat } from '../lib/useDateFormat';
 import { useToast } from '../contexts/ToastContext';
+
+const LIMIT_STORAGE_KEY = 'healarr_corruptions_limit';
 
 const Corruptions = () => {
     const [searchParams, setSearchParams] = useSearchParams();
@@ -16,13 +18,30 @@ const Corruptions = () => {
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const lastClickedIndex = useRef<number | null>(null);
     const [page, setPage] = useState(1);
-    const [limit] = useState(50);
+    const [limit, setLimit] = useState(() => {
+        const stored = localStorage.getItem(LIMIT_STORAGE_KEY);
+        return stored ? parseInt(stored, 10) : 50;
+    });
     const [sortBy, setSortBy] = useState<string>('detected_at');
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
     const [statusFilter, setStatusFilter] = useState<string>(() => searchParams.get('status') || 'active');
+    const pathIdFilter = searchParams.get('path_id') ? parseInt(searchParams.get('path_id')!, 10) : undefined;
     const { formatTime, formatDate } = useDateFormat();
     const toast = useToast();
     const queryClient = useQueryClient();
+
+    // Handle limit changes with localStorage persistence
+    const handleLimitChange = (newLimit: number) => {
+        setLimit(newLimit);
+        setPage(1);
+        localStorage.setItem(LIMIT_STORAGE_KEY, String(newLimit));
+    };
+
+    // Clear path_id filter
+    const clearPathFilter = () => {
+        searchParams.delete('path_id');
+        setSearchParams(searchParams, { replace: true });
+    };
 
     // Sync URL params with filter state
     useEffect(() => {
@@ -46,8 +65,8 @@ const Corruptions = () => {
     };
 
     const { data, isLoading } = useQuery({
-        queryKey: ['corruptions', page, limit, sortBy, sortOrder, statusFilter],
-        queryFn: () => getCorruptions(page, limit, sortBy, sortOrder, statusFilter),
+        queryKey: ['corruptions', page, limit, sortBy, sortOrder, statusFilter, pathIdFilter],
+        queryFn: () => getCorruptions(page, limit, sortBy, sortOrder, statusFilter, pathIdFilter),
         // Polling removed - WebSocket invalidates queries on events
     });
 
@@ -172,6 +191,28 @@ const Corruptions = () => {
                     </select>
                 </div>
             </div>
+
+            {/* Path Filter Banner */}
+            {pathIdFilter !== undefined && (
+                <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 flex items-center gap-3">
+                    <FolderOpen className="w-5 h-5 text-blue-400 shrink-0" />
+                    <div className="flex-1">
+                        <p className="text-blue-300 font-medium">
+                            Filtering by scan path ID: {pathIdFilter}
+                        </p>
+                        <p className="text-sm text-blue-400/80 mt-0.5">
+                            Showing corruptions from a specific scan path.
+                        </p>
+                    </div>
+                    <button
+                        onClick={clearPathFilter}
+                        className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 rounded-lg border border-blue-500/30 transition-colors cursor-pointer"
+                    >
+                        <X className="w-4 h-4" />
+                        Clear Filter
+                    </button>
+                </div>
+            )}
 
             {/* Manual Intervention Alert Banner */}
             {manualInterventionCount > 0 && statusFilter !== 'manual_intervention' && (
@@ -300,6 +341,7 @@ const Corruptions = () => {
                     limit: data?.pagination?.limit || limit,
                     total: data?.pagination?.total || 0,
                     onPageChange: setPage,
+                    onLimitChange: handleLimitChange,
                 }}
             />
 

@@ -1,4 +1,3 @@
-
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getScans, cancelScan, rescanPath } from '../lib/api';
 import DataGrid from '../components/ui/DataGrid';
@@ -7,12 +6,16 @@ import { useState } from 'react';
 import { ArrowUpDown, X, RefreshCw, Loader2 } from 'lucide-react';
 import { useDateFormat } from '../lib/useDateFormat';
 import { useToast } from '../contexts/ToastContext';
-
 import { useNavigate } from 'react-router-dom';
+
+const LIMIT_STORAGE_KEY = 'healarr_scans_limit';
 
 const Scans = () => {
     const [page, setPage] = useState(1);
-    const [limit] = useState(50);
+    const [limit, setLimit] = useState(() => {
+        const stored = localStorage.getItem(LIMIT_STORAGE_KEY);
+        return stored ? parseInt(stored, 10) : 50;
+    });
     const [sortBy, setSortBy] = useState<string>('started_at');
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
     const [loadingAction, setLoadingAction] = useState<number | null>(null);
@@ -20,6 +23,13 @@ const Scans = () => {
     const { formatTime, formatDate } = useDateFormat();
     const toast = useToast();
     const queryClient = useQueryClient();
+
+    // Handle limit changes with localStorage persistence
+    const handleLimitChange = (newLimit: number) => {
+        setLimit(newLimit);
+        setPage(1);
+        localStorage.setItem(LIMIT_STORAGE_KEY, String(newLimit));
+    };
 
     const { data, isLoading } = useQuery({
         queryKey: ['scans', page, limit, sortBy, sortOrder],
@@ -174,6 +184,7 @@ const Scans = () => {
                     limit: data?.pagination?.limit || limit,
                     total: data?.pagination?.total || 0,
                     onPageChange: setPage,
+                    onLimitChange: handleLimitChange,
                 }}
             />
         </div>

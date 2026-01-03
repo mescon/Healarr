@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, FileCheck, FileX, Loader2, Filter, HardDrive, Clock, FolderOpen, AlertCircle, X, RefreshCw, Timer } from 'lucide-react';
+import { ArrowLeft, FileCheck, FileX, Loader2, Filter, HardDrive, Clock, FolderOpen, AlertCircle, X, RefreshCw, ClockArrowDown, ExternalLink } from 'lucide-react';
 import clsx from 'clsx';
 import { getScanDetails, getScanFiles, cancelScan, rescanPath, type ScanFile } from '../lib/api';
 import DataGrid from '../components/ui/DataGrid';
@@ -14,27 +14,6 @@ const formatFileSize = (bytes: number): string => {
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
-const formatDuration = (startedAt: string, completedAt: string | null): string => {
-    if (!startedAt) return '-';
-    const start = new Date(startedAt);
-    const end = completedAt ? new Date(completedAt) : new Date();
-    const durationMs = end.getTime() - start.getTime();
-
-    if (durationMs < 0) return '-';
-
-    const seconds = Math.floor(durationMs / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-
-    if (hours > 0) {
-        return `${hours}h ${minutes % 60}m`;
-    } else if (minutes > 0) {
-        return `${minutes}m ${seconds % 60}s`;
-    } else {
-        return `${seconds}s`;
-    }
 };
 
 const ScanDetails = () => {
@@ -263,18 +242,31 @@ const ScanDetails = () => {
                 </div>
 
                 <div
-                    onClick={() => { setStatusFilter('corrupt'); setPage(1); }}
+                    onClick={() => {
+                        if (scanDetails.corruptions_found > 0 && scanDetails.path_id) {
+                            navigate(`/corruptions?path_id=${scanDetails.path_id}`);
+                        } else {
+                            setStatusFilter('corrupt');
+                            setPage(1);
+                        }
+                    }}
                     className={clsx(
                         "rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5 cursor-pointer transition-all hover:scale-[1.02]",
                         statusFilter === 'corrupt' && "ring-2 ring-red-500/50"
                     )}
+                    title={scanDetails.corruptions_found > 0 ? "Click to view corruptions for this scan path" : undefined}
                 >
                     <div className="flex items-center gap-3">
                         <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20">
                             <FileX className="w-5 h-5 text-red-400" />
                         </div>
-                        <div>
-                            <p className="text-2xl font-bold text-slate-900 dark:text-white">{scanDetails.corruptions_found}</p>
+                        <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                                <p className="text-2xl font-bold text-slate-900 dark:text-white">{scanDetails.corruptions_found}</p>
+                                {scanDetails.corruptions_found > 0 && scanDetails.path_id && (
+                                    <ExternalLink className="w-4 h-4 text-slate-400" />
+                                )}
+                            </div>
                             <p className="text-xs text-slate-600 dark:text-slate-400">Corruptions Found</p>
                         </div>
                     </div>
@@ -297,15 +289,19 @@ const ScanDetails = () => {
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5">
                     <div className="flex items-center gap-3">
                         <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20">
-                            <Timer className="w-5 h-5 text-amber-400" />
+                            <ClockArrowDown className="w-5 h-5 text-amber-400" />
                         </div>
                         <div>
                             <p className="text-sm font-medium text-slate-900 dark:text-white">
-                                {formatDuration(scanDetails.started_at, scanDetails.completed_at || null)}
+                                {scanDetails.status === 'running' ? (
+                                    <span className="text-blue-400">In Progress</span>
+                                ) : scanDetails.completed_at ? (
+                                    formatCompact(scanDetails.completed_at)
+                                ) : (
+                                    '-'
+                                )}
                             </p>
-                            <p className="text-xs text-slate-600 dark:text-slate-400">
-                                {scanDetails.status === 'running' ? 'Elapsed' : 'Duration'}
-                            </p>
+                            <p className="text-xs text-slate-600 dark:text-slate-400">Ended At</p>
                         </div>
                     </div>
                 </div>
