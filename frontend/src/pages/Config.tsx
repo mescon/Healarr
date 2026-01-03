@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder } from 'lucide-react';
+import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder, Info, ExternalLink, ArrowUpCircle } from 'lucide-react';
 import FileBrowser from '../components/ui/FileBrowser';
 import { useDateFormat, type DateFormatPreset } from '../lib/useDateFormat';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -14,6 +15,7 @@ import {
     testNotification, getNotificationEvents, getNotificationLog,
     triggerScanAll, exportConfig, importConfig, downloadDatabaseBackup,
     pauseAllScans, resumeAllScans, cancelAllScans, getDetectionPreview,
+    checkForUpdates,
     type ArrInstance, type ScanPath, type NotificationConfig, type NotificationLogEntry, type ConfigExport
 } from '../lib/api';
 import clsx from 'clsx';
@@ -300,13 +302,27 @@ const DataManagementSection = ({ toast, queryClient }: DataManagementSectionProp
 const Config = () => {
     const queryClient = useQueryClient();
     const toast = useToast();
+    const location = useLocation();
     const { preset: dateFormatPreset, setDateFormatPreset } = useDateFormat();
+    const aboutSectionRef = useRef<HTMLDivElement>(null);
 
     // Collapsible state
     const [isAddArrExpanded, setIsAddArrExpanded] = useState(false);
     const [isAddPathExpanded, setIsAddPathExpanded] = useState(false);
     const [isAddScheduleExpanded, setIsAddScheduleExpanded] = useState(false);
     const [isAdvancedExpanded, setIsAdvancedExpanded] = useState(false);
+    const [isAboutExpanded, setIsAboutExpanded] = useState(false);
+
+    // Handle hash navigation (e.g., /config#about)
+    useEffect(() => {
+        if (location.hash === '#about') {
+            setIsAboutExpanded(true);
+            // Small delay to ensure the section is rendered before scrolling
+            setTimeout(() => {
+                aboutSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 100);
+        }
+    }, [location.hash]);
 
     // --- Queries ---
     const { data: runtimeConfig } = useQuery({
@@ -1638,6 +1654,53 @@ const Config = () => {
                 </div>
             </motion.div>
 
+            {/* About Section */}
+            <motion.div
+                ref={aboutSectionRef}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.45 }}
+                className="space-y-4"
+                id="about"
+            >
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+                    <button
+                        onClick={() => setIsAboutExpanded(!isAboutExpanded)}
+                        className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
+                    >
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 rounded-lg bg-green-500/10 border border-green-500/20">
+                                <Info className="w-5 h-5 text-green-400" />
+                            </div>
+                            <div className="text-left">
+                                <h2 className="text-xl font-bold text-slate-900 dark:text-white">About</h2>
+                                <p className="text-sm text-slate-600 dark:text-slate-400">Version info, changelog, and updates</p>
+                            </div>
+                        </div>
+                        <ChevronDown className={clsx(
+                            "w-5 h-5 text-slate-600 dark:text-slate-400 transition-transform duration-200",
+                            isAboutExpanded && "rotate-180"
+                        )} />
+                    </button>
+
+                    <AnimatePresence>
+                        {isAboutExpanded && (
+                            <motion.div
+                                initial={{ height: 0, opacity: 0 }}
+                                animate={{ height: "auto", opacity: 1 }}
+                                exit={{ height: 0, opacity: 0 }}
+                                transition={{ duration: 0.2 }}
+                                className="overflow-hidden"
+                            >
+                                <div className="p-6 border-t border-slate-200 dark:border-slate-800">
+                                    <AboutSection />
+                                </div>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                </div>
+            </motion.div>
+
             {/* File Browser Modal */}
             <FileBrowser
                 isOpen={showFileBrowser}
@@ -2332,6 +2395,319 @@ const PROVIDER_CONFIGS = {
             { key: 'url', label: 'Shoutrrr URL', type: 'text', placeholder: 'protocol://...' }
         ]
     }
+};
+
+// About Section - Version info, changelog, and update instructions
+const AboutSection = () => {
+    const { data: updateInfo, isLoading, error, refetch } = useQuery({
+        queryKey: ['updateCheck'],
+        queryFn: checkForUpdates,
+        staleTime: 300000, // 5 minutes
+        retry: 1,
+    });
+
+    // Simple markdown-to-JSX renderer for changelog
+    const renderMarkdown = (text: string) => {
+        if (!text) return null;
+
+        const lines = text.split('\n');
+        const elements: React.ReactNode[] = [];
+        let listItems: string[] = [];
+
+        const flushList = () => {
+            if (listItems.length > 0) {
+                elements.push(
+                    <ul key={`list-${elements.length}`} className="list-disc list-inside space-y-1 text-slate-600 dark:text-slate-400 ml-2">
+                        {listItems.map((item, i) => (
+                            <li key={i}>{item}</li>
+                        ))}
+                    </ul>
+                );
+                listItems = [];
+            }
+        };
+
+        lines.forEach((line, index) => {
+            const trimmed = line.trim();
+
+            // Headers
+            if (trimmed.startsWith('### ')) {
+                flushList();
+                elements.push(
+                    <h4 key={index} className="text-md font-semibold text-slate-800 dark:text-slate-200 mt-4 mb-2">
+                        {trimmed.substring(4)}
+                    </h4>
+                );
+            } else if (trimmed.startsWith('## ')) {
+                flushList();
+                elements.push(
+                    <h3 key={index} className="text-lg font-bold text-slate-900 dark:text-white mt-4 mb-2">
+                        {trimmed.substring(3)}
+                    </h3>
+                );
+            } else if (trimmed.startsWith('# ')) {
+                flushList();
+                elements.push(
+                    <h2 key={index} className="text-xl font-bold text-slate-900 dark:text-white mt-4 mb-2">
+                        {trimmed.substring(2)}
+                    </h2>
+                );
+            }
+            // List items
+            else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+                listItems.push(trimmed.substring(2));
+            }
+            // Empty lines
+            else if (trimmed === '') {
+                flushList();
+            }
+            // Regular text
+            else if (trimmed) {
+                flushList();
+                elements.push(
+                    <p key={index} className="text-slate-600 dark:text-slate-400 my-2">
+                        {trimmed}
+                    </p>
+                );
+            }
+        });
+
+        flushList();
+        return elements;
+    };
+
+    // Detect platform for highlighting the relevant instructions
+    const detectPlatform = (): 'docker' | 'linux' | 'macos' | 'windows' | 'unknown' => {
+        // Check if running in Docker (common indicators)
+        // For a web app, we can't easily detect Docker, so we'll show all options
+        const ua = navigator.userAgent.toLowerCase();
+        if (ua.includes('win')) return 'windows';
+        if (ua.includes('mac')) return 'macos';
+        if (ua.includes('linux')) return 'linux';
+        return 'unknown';
+    };
+
+    const currentPlatform = detectPlatform();
+
+    if (isLoading) {
+        return (
+            <div className="p-6 text-center">
+                <div className="animate-spin w-6 h-6 border-2 border-slate-300 border-t-green-500 rounded-full mx-auto mb-2"></div>
+                <p className="text-slate-500">Checking for updates...</p>
+            </div>
+        );
+    }
+
+    if (error) {
+        return (
+            <div className="p-6 text-center">
+                <p className="text-red-400 mb-2">Unable to check for updates</p>
+                <p className="text-slate-500 text-sm mb-4">Please check your internet connection</p>
+                <button
+                    onClick={() => refetch()}
+                    className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors cursor-pointer"
+                >
+                    Retry
+                </button>
+            </div>
+        );
+    }
+
+    return (
+        <div className="space-y-6">
+            {/* Version Status */}
+            <div className="flex items-center justify-between p-4 rounded-xl bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+                <div className="flex items-center gap-4">
+                    <div className={clsx(
+                        "p-3 rounded-xl",
+                        updateInfo?.update_available
+                            ? "bg-amber-500/20 border border-amber-500/30"
+                            : "bg-green-500/20 border border-green-500/30"
+                    )}>
+                        {updateInfo?.update_available ? (
+                            <ArrowUpCircle className="w-6 h-6 text-amber-500" />
+                        ) : (
+                            <Check className="w-6 h-6 text-green-500" />
+                        )}
+                    </div>
+                    <div>
+                        <div className="flex items-center gap-2">
+                            <span className="font-semibold text-slate-900 dark:text-white">
+                                Current Version: {updateInfo?.current_version || 'Unknown'}
+                            </span>
+                            {updateInfo?.update_available && (
+                                <span className="px-2 py-0.5 text-xs bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-full border border-amber-500/30">
+                                    Update Available
+                                </span>
+                            )}
+                        </div>
+                        {updateInfo?.update_available && (
+                            <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+                                Latest: {updateInfo.latest_version} (released {updateInfo.published_at})
+                            </p>
+                        )}
+                        {!updateInfo?.update_available && (
+                            <p className="text-sm text-green-600 dark:text-green-400 mt-1">
+                                You're running the latest version
+                            </p>
+                        )}
+                    </div>
+                </div>
+                {updateInfo?.release_url && (
+                    <a
+                        href={updateInfo.release_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-2 px-4 py-2 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 rounded-lg transition-colors"
+                    >
+                        <ExternalLink className="w-4 h-4" />
+                        View on GitHub
+                    </a>
+                )}
+            </div>
+
+            {/* Changelog */}
+            {updateInfo?.changelog && (
+                <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/40 overflow-hidden">
+                    <div className="px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
+                        <h4 className="font-semibold text-slate-900 dark:text-white">
+                            {updateInfo.update_available ? 'What\'s New' : 'Current Release Notes'}
+                        </h4>
+                    </div>
+                    <div className="p-4 max-h-64 overflow-y-auto prose prose-sm dark:prose-invert prose-slate">
+                        {renderMarkdown(updateInfo.changelog)}
+                    </div>
+                </div>
+            )}
+
+            {/* Update Instructions */}
+            {updateInfo?.update_available && (
+                <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/40 overflow-hidden">
+                    <div className="px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
+                        <h4 className="font-semibold text-slate-900 dark:text-white">How to Update</h4>
+                    </div>
+                    <div className="p-4 space-y-4">
+                        {/* Docker */}
+                        <div className={clsx(
+                            "p-4 rounded-lg border",
+                            "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
+                        )}>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="text-lg">🐳</span>
+                                <h5 className="font-medium text-slate-900 dark:text-white">Docker</h5>
+                                <span className="text-xs text-slate-500">(Recommended)</span>
+                            </div>
+                            <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
+                                {updateInfo.update_instructions?.docker || 'docker compose pull && docker compose up -d'}
+                            </pre>
+                        </div>
+
+                        {/* Linux */}
+                        <div className={clsx(
+                            "p-4 rounded-lg border",
+                            currentPlatform === 'linux'
+                                ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700"
+                                : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
+                        )}>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="text-lg">🐧</span>
+                                <h5 className="font-medium text-slate-900 dark:text-white">Linux</h5>
+                                {currentPlatform === 'linux' && (
+                                    <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
+                                )}
+                            </div>
+                            <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
+                                {updateInfo.update_instructions?.linux}
+                            </pre>
+                            {updateInfo.download_urls?.linux_amd64 && (
+                                <a
+                                    href={updateInfo.download_urls.linux_amd64}
+                                    className="inline-flex items-center gap-2 mt-2 text-sm text-blue-500 hover:text-blue-400"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    Download (amd64)
+                                </a>
+                            )}
+                            {updateInfo.download_urls?.linux_arm64 && (
+                                <a
+                                    href={updateInfo.download_urls.linux_arm64}
+                                    className="inline-flex items-center gap-2 mt-2 ml-4 text-sm text-blue-500 hover:text-blue-400"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    Download (arm64)
+                                </a>
+                            )}
+                        </div>
+
+                        {/* macOS */}
+                        <div className={clsx(
+                            "p-4 rounded-lg border",
+                            currentPlatform === 'macos'
+                                ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700"
+                                : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
+                        )}>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="text-lg">🍎</span>
+                                <h5 className="font-medium text-slate-900 dark:text-white">macOS</h5>
+                                {currentPlatform === 'macos' && (
+                                    <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
+                                )}
+                            </div>
+                            <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
+                                {updateInfo.update_instructions?.macos}
+                            </pre>
+                            {updateInfo.download_urls?.macos_amd64 && (
+                                <a
+                                    href={updateInfo.download_urls.macos_amd64}
+                                    className="inline-flex items-center gap-2 mt-2 text-sm text-blue-500 hover:text-blue-400"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    Download (Intel)
+                                </a>
+                            )}
+                            {updateInfo.download_urls?.macos_arm64 && (
+                                <a
+                                    href={updateInfo.download_urls.macos_arm64}
+                                    className="inline-flex items-center gap-2 mt-2 ml-4 text-sm text-blue-500 hover:text-blue-400"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    Download (Apple Silicon)
+                                </a>
+                            )}
+                        </div>
+
+                        {/* Windows */}
+                        <div className={clsx(
+                            "p-4 rounded-lg border",
+                            currentPlatform === 'windows'
+                                ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700"
+                                : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
+                        )}>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="text-lg">🪟</span>
+                                <h5 className="font-medium text-slate-900 dark:text-white">Windows</h5>
+                                {currentPlatform === 'windows' && (
+                                    <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
+                                )}
+                            </div>
+                            <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
+                                {updateInfo.update_instructions?.windows}
+                            </pre>
+                            {updateInfo.download_urls?.windows_amd64 && (
+                                <a
+                                    href={updateInfo.download_urls.windows_amd64}
+                                    className="inline-flex items-center gap-2 mt-2 text-sm text-blue-500 hover:text-blue-400"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    Download (.exe)
+                                </a>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
 };
 
 const NotificationsSection = () => {

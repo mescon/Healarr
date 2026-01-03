@@ -1,9 +1,9 @@
 
 import { useNavigate, NavLink } from 'react-router-dom';
-import { LayoutDashboard, Scan, AlertOctagon, Settings, Activity, Terminal, HelpCircle, LogOut, Database, Radio, Clock, Sun, Moon } from 'lucide-react';
+import { LayoutDashboard, Scan, AlertOctagon, Settings, Activity, Terminal, HelpCircle, LogOut, Database, Radio, Clock, Sun, Moon, ArrowUpCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { useQuery } from '@tanstack/react-query';
-import { getHealth } from '../../lib/api';
+import { getHealth, checkForUpdates } from '../../lib/api';
 import { useTheme } from '../../contexts/ThemeContext';
 
 // Format bytes to human readable
@@ -106,6 +106,16 @@ const Sidebar = () => {
         queryFn: getHealth,
         refetchInterval: 30000,
     });
+
+    // Check for updates (hourly, with long stale time to avoid excessive API calls)
+    const { data: updateInfo } = useQuery({
+        queryKey: ['updateCheck'],
+        queryFn: checkForUpdates,
+        refetchInterval: 3600000, // 1 hour
+        staleTime: 3600000, // Consider data fresh for 1 hour
+        retry: 1, // Only retry once if it fails
+    });
+
     const navItems = [
         { icon: LayoutDashboard, label: 'Dashboard', to: '/' },
         { icon: Scan, label: 'Scans', to: '/scans' },
@@ -125,7 +135,21 @@ const Sidebar = () => {
                     <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-600 dark:from-white dark:to-slate-400">
                         Healarr
                     </h1>
-                    <p className="text-xs text-slate-500 font-mono">{health?.version ? `v${health.version.replace(/^v/, '')}` : 'v...'}</p>
+                    <button
+                        onClick={() => navigate('/config#about')}
+                        className={clsx(
+                            "flex items-center gap-1.5 text-xs font-mono transition-all duration-200 cursor-pointer",
+                            updateInfo?.update_available
+                                ? "text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300"
+                                : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                        )}
+                        title={updateInfo?.update_available ? `Update available: ${updateInfo.latest_version}` : 'Click for version info'}
+                    >
+                        <span>{health?.version ? `v${health.version.replace(/^v/, '')}` : 'v...'}</span>
+                        {updateInfo?.update_available && (
+                            <ArrowUpCircle className="w-3.5 h-3.5 animate-pulse" />
+                        )}
+                    </button>
                 </div>
             </div>
 

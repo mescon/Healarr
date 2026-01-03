@@ -268,6 +268,9 @@ func (s *RESTServer) setupRoutes() {
 			// Logs
 			protected.GET("/logs/recent", s.handleRecentLogs)
 			protected.GET("/logs/download", s.handleDownloadLogs)
+
+			// Updates - check for new versions
+			protected.GET("/updates/check", s.handleCheckUpdate)
 		}
 	}
 

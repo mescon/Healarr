@@ -601,3 +601,29 @@ export const importConfig = async (config: Partial<ConfigExport>): Promise<Confi
     const { data } = await api.post<ConfigImportResult>('/config/import', config);
     return data;
 };
+
+// --- Update Check API ---
+
+export interface UpdateInstructions {
+    docker: string;
+    linux: string;
+    macos: string;
+    windows: string;
+}
+
+export interface UpdateCheckResponse {
+    current_version: string;
+    latest_version: string;
+    update_available: boolean;
+    release_url: string;
+    changelog: string;
+    published_at: string;
+    download_urls: Record<string, string>;
+    docker_pull_cmd: string;
+    update_instructions: UpdateInstructions;
+}
+
+export const checkForUpdates = async (): Promise<UpdateCheckResponse> => {
+    const { data } = await api.get<UpdateCheckResponse>('/updates/check');
+    return data;
+};
