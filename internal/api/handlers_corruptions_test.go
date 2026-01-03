@@ -67,6 +67,10 @@ func setupCorruptionsTestDB(t *testing.T) (*sql.DB, func()) {
 			 WHERE e4.aggregate_id = e.aggregate_id
 			 AND e4.event_type = 'CorruptionDetected'
 			 LIMIT 1) as file_path,
+			(SELECT json_extract(event_data, '$.path_id') FROM events e7
+			 WHERE e7.aggregate_id = e.aggregate_id
+			 AND e7.event_type = 'CorruptionDetected'
+			 LIMIT 1) as path_id,
 			(SELECT json_extract(event_data, '$.error') FROM events e5
 			 WHERE e5.aggregate_id = e.aggregate_id
 			 AND e5.event_type LIKE '%Failed'
@@ -452,6 +456,121 @@ func TestGetCorruptions_Sorting(t *testing.T) {
 	first := data[0].(map[string]interface{})
 	if first["id"].(string) != "older" {
 		t.Errorf("Expected 'older' first, got %v", first["id"])
+	}
+}
+
+func TestGetCorruptions_PathIDFilter(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	now := time.Now()
+
+	// Seed corruptions with different path_ids
+	seedCorruptionEvent(t, db, "path1-corruption", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/test/path1/file.mkv",
+		"path_id":   1,
+	}, now)
+
+	seedCorruptionEvent(t, db, "path2-corruption", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/test/path2/file.mkv",
+		"path_id":   2,
+	}, now)
+
+	seedCorruptionEvent(t, db, "no-path-corruption", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/test/nopath/file.mkv",
+	}, now)
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/corruptions", server.getCorruptions)
+
+	// Filter by path_id=1
+	req, _ := http.NewRequest("GET", "/corruptions?path_id=1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+
+	pagination := response["pagination"].(map[string]interface{})
+	if int(pagination["total"].(float64)) != 1 {
+		t.Errorf("Expected 1 corruption for path_id=1, got %v", pagination["total"])
+	}
+
+	data := response["data"].([]interface{})
+	if len(data) != 1 {
+		t.Fatalf("Expected 1 item, got %d", len(data))
+	}
+
+	// Verify path_id is returned in response
+	first := data[0].(map[string]interface{})
+	if first["id"].(string) != "path1-corruption" {
+		t.Errorf("Expected 'path1-corruption', got %v", first["id"])
+	}
+}
+
+func TestGetCorruptions_PathIDFilterWithStatusFilter(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	now := time.Now()
+
+	// Seed active corruption for path 1
+	seedCorruptionEvent(t, db, "path1-active", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/test/path1/active.mkv",
+		"path_id":   1,
+	}, now)
+
+	// Seed resolved corruption for path 1
+	seedCorruptionEvent(t, db, "path1-resolved", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/test/path1/resolved.mkv",
+		"path_id":   1,
+	}, now)
+	seedCorruptionEvent(t, db, "path1-resolved", domain.VerificationSuccess, map[string]interface{}{
+		"file_path": "/test/path1/resolved.mkv",
+	}, now)
+
+	// Seed corruption for path 2
+	seedCorruptionEvent(t, db, "path2-active", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/test/path2/active.mkv",
+		"path_id":   2,
+	}, now)
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/corruptions", server.getCorruptions)
+
+	// Filter by path_id=1 AND status=pending (should only return active, not resolved)
+	req, _ := http.NewRequest("GET", "/corruptions?path_id=1&status=pending", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+
+	pagination := response["pagination"].(map[string]interface{})
+	if int(pagination["total"].(float64)) != 1 {
+		t.Errorf("Expected 1 pending corruption for path_id=1, got %v", pagination["total"])
 	}
 }
 

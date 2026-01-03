@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -63,8 +64,10 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 
 	// Path ID filter (for filtering by scan path)
 	if pathIDFilter != "" {
-		whereClauses = append(whereClauses, "path_id = ?")
-		args = append(args, pathIDFilter)
+		if pathID, err := strconv.ParseInt(pathIDFilter, 10, 64); err == nil {
+			whereClauses = append(whereClauses, "path_id = ?")
+			args = append(args, pathID)
+		}
 	}
 
 	// Build WHERE clause

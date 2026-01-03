@@ -195,18 +195,18 @@ const Corruptions = () => {
             {/* Path Filter Banner */}
             {pathIdFilter !== undefined && (
                 <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 flex items-center gap-3">
-                    <FolderOpen className="w-5 h-5 text-blue-400 shrink-0" />
+                    <FolderOpen className="w-5 h-5 text-blue-500 dark:text-blue-400 shrink-0" />
                     <div className="flex-1">
-                        <p className="text-blue-300 font-medium">
+                        <p className="text-blue-600 dark:text-blue-300 font-medium">
                             Filtering by scan path ID: {pathIdFilter}
                         </p>
-                        <p className="text-sm text-blue-400/80 mt-0.5">
+                        <p className="text-sm text-blue-500/80 dark:text-blue-400/80 mt-0.5">
                             Showing corruptions from a specific scan path.
                         </p>
                     </div>
                     <button
                         onClick={clearPathFilter}
-                        className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 rounded-lg border border-blue-500/30 transition-colors cursor-pointer"
+                        className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium bg-blue-500/20 hover:bg-blue-500/30 text-blue-600 dark:text-blue-300 rounded-lg border border-blue-500/30 transition-colors cursor-pointer"
                     >
                         <X className="w-4 h-4" />
                         Clear Filter
@@ -217,18 +217,18 @@ const Corruptions = () => {
             {/* Manual Intervention Alert Banner */}
             {manualInterventionCount > 0 && statusFilter !== 'manual_intervention' && (
                 <div className="bg-purple-500/10 border border-purple-500/30 rounded-xl p-4 flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-purple-400 mt-0.5 shrink-0" />
+                    <AlertCircle className="w-5 h-5 text-purple-500 dark:text-purple-400 mt-0.5 shrink-0" />
                     <div className="flex-1">
-                        <h3 className="font-medium text-purple-300">
+                        <h3 className="font-medium text-purple-600 dark:text-purple-300">
                             {manualInterventionCount} item{manualInterventionCount > 1 ? 's' : ''} require{manualInterventionCount === 1 ? 's' : ''} manual intervention
                         </h3>
-                        <p className="text-sm text-purple-400/80 mt-1">
+                        <p className="text-sm text-purple-500/80 dark:text-purple-400/80 mt-1">
                             These corruptions could not be automatically remediated and need attention in Sonarr/Radarr.
                         </p>
                     </div>
                     <button
                         onClick={() => handleStatusFilterChange('manual_intervention')}
-                        className="px-3 py-1.5 text-sm font-medium bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 rounded-lg border border-purple-500/30 transition-colors cursor-pointer whitespace-nowrap"
+                        className="px-3 py-1.5 text-sm font-medium bg-purple-500/20 hover:bg-purple-500/30 text-purple-600 dark:text-purple-300 rounded-lg border border-purple-500/30 transition-colors cursor-pointer whitespace-nowrap"
                     >
                         View Items
                     </button>
@@ -246,7 +246,7 @@ const Corruptions = () => {
                                 type="checkbox"
                                 checked={allSelected}
                                 onChange={handleSelectAll}
-                                className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-purple-500 focus:ring-purple-500 focus:ring-offset-0 cursor-pointer"
+                                className="w-4 h-4 rounded border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-purple-500 focus:ring-purple-500 focus:ring-offset-0 cursor-pointer"
                             />
                         ),
                         accessorKey: (row) => (
@@ -254,7 +254,7 @@ const Corruptions = () => {
                                 type="checkbox"
                                 checked={selectedIds.has(row.id)}
                                 readOnly
-                                className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-purple-500 focus:ring-purple-500 focus:ring-offset-0 pointer-events-none"
+                                className="w-4 h-4 rounded border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-purple-500 focus:ring-purple-500 focus:ring-offset-0 pointer-events-none"
                             />
                         ),
                         className: 'w-10',
@@ -351,7 +351,7 @@ const Corruptions = () => {
                     <span className="text-slate-700 dark:text-slate-300 font-medium">
                         {selectedIds.size} selected
                     </span>
-                    <div className="h-6 w-px bg-slate-700" />
+                    <div className="h-6 w-px bg-slate-300 dark:bg-slate-700" />
                     <button
                         onClick={handleBulkRetry}
                         className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 border border-blue-500/30 transition-colors text-sm font-medium cursor-pointer"
@@ -361,22 +361,22 @@ const Corruptions = () => {
                     </button>
                     <button
                         onClick={handleBulkIgnore}
-                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-500/20 hover:bg-slate-500/30 text-slate-300 border border-slate-500/30 transition-colors text-sm font-medium cursor-pointer"
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-500/20 hover:bg-slate-500/30 text-slate-600 dark:text-slate-300 border border-slate-500/30 transition-colors text-sm font-medium cursor-pointer"
                     >
                         <EyeOff className="w-4 h-4" />
                         Ignore
                     </button>
                     <button
                         onClick={handleBulkDelete}
-                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 transition-colors text-sm font-medium cursor-pointer"
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-600 dark:text-red-400 border border-red-500/30 transition-colors text-sm font-medium cursor-pointer"
                     >
                         <Trash2 className="w-4 h-4" />
                         Delete
                     </button>
-                    <div className="h-6 w-px bg-slate-700" />
+                    <div className="h-6 w-px bg-slate-300 dark:bg-slate-700" />
                     <button
                         onClick={() => setSelectedIds(new Set())}
-                        className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-300 transition-colors cursor-pointer"
+                        className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
                         title="Clear selection"
                     >
                         <X className="w-4 h-4" />

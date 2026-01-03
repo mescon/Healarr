@@ -20,7 +20,7 @@ const Accordion = ({
     const [isOpen, setIsOpen] = useState(defaultOpen);
     
     return (
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
             <button
                 onClick={() => setIsOpen(!isOpen)}
                 className="w-full p-6 flex items-center justify-between gap-3 hover:bg-slate-100 dark:hover:bg-slate-800/20 transition-colors cursor-pointer"
@@ -80,7 +80,7 @@ const Help = () => {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.2 }}
-                className="rounded-2xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 space-y-6"
+                className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 space-y-6"
             >
                 <div className="flex items-center gap-3">
                     <div className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/20">
@@ -171,7 +171,7 @@ const Help = () => {
 
                 {/* Best Practices */}
                 <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4 space-y-2">
-                    <p className="text-sm font-semibold text-blue-300">💡 Recommended Strategy</p>
+                    <p className="text-sm font-semibold text-blue-600 dark:text-blue-300">💡 Recommended Strategy</p>
                     <ul className="text-sm text-slate-700 dark:text-slate-300 space-y-1 list-disc list-inside">
                         <li><span className="font-semibold">Enable webhooks</span> for real-time scanning of new downloads</li>
                         <li><span className="font-semibold">Schedule weekly full scans</span> to catch missed files or new corruption</li>
@@ -185,7 +185,7 @@ const Help = () => {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.25 }}
-                className="rounded-2xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 space-y-6"
+                className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 space-y-6"
             >
                 <div className="flex items-center gap-3">
                     <div className="p-2 rounded-lg bg-purple-500/10 border border-purple-500/20">
@@ -207,7 +207,7 @@ const Help = () => {
                                 <th className="text-left py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold">Description</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-800">
+                        <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                             <tr>
                                 <td className="py-2 px-3 font-semibold text-amber-400">Pending</td>
                                 <td className="py-2 px-3"><span className="inline-block w-3 h-3 rounded-full bg-amber-400"></span></td>
@@ -265,7 +265,7 @@ const Help = () => {
                 </div>
 
                 <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4 space-y-2">
-                    <p className="text-sm font-semibold text-blue-300">💡 Tips</p>
+                    <p className="text-sm font-semibold text-blue-600 dark:text-blue-300">💡 Tips</p>
                     <ul className="text-sm text-slate-700 dark:text-slate-300 space-y-1 list-disc list-inside">
                         <li>Click any row in the <span className="font-semibold">Corruptions</span> table to see the full remediation journey</li>
                         <li>Use the <span className="font-semibold">Retry</span> button to restart remediation for failed items</li>
@@ -299,7 +299,7 @@ const Help = () => {
                                     <th className="text-left py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold">Description</th>
                                 </tr>
                             </thead>
-                            <tbody className="divide-y divide-slate-800">
+                            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                                 <tr>
                                     <td className="py-2 px-3 font-mono text-cyan-400">HEALARR_PORT</td>
                                     <td className="py-2 px-3 text-slate-600 dark:text-slate-400">3090</td>
@@ -308,12 +308,12 @@ const Help = () => {
                                 <tr>
                                     <td className="py-2 px-3 font-mono text-cyan-400">HEALARR_BASE_PATH</td>
                                     <td className="py-2 px-3 text-slate-600 dark:text-slate-400">/</td>
-                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">URL base path for reverse proxy setups (e.g., <code className="bg-slate-800 px-1 rounded">/healarr</code> for domain.com/healarr/)</td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">URL base path for reverse proxy setups (e.g., <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">/healarr</code> for domain.com/healarr/)</td>
                                 </tr>
                                 <tr>
                                     <td className="py-2 px-3 font-mono text-cyan-400">HEALARR_LOG_LEVEL</td>
                                     <td className="py-2 px-3 text-slate-600 dark:text-slate-400">info</td>
-                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Logging verbosity: <code className="bg-slate-800 px-1 rounded">debug</code>, <code className="bg-slate-800 px-1 rounded">info</code>, <code className="bg-slate-800 px-1 rounded">error</code></td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Logging verbosity: <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">debug</code>, <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">info</code>, <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">error</code></td>
                                 </tr>
                                 <tr>
                                     <td className="py-2 px-3 font-mono text-cyan-400">HEALARR_DATA_DIR</td>
@@ -366,7 +366,7 @@ const Help = () => {
 
                     <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-4 space-y-3">
                         <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">Example docker-compose.yml:</p>
-                        <pre className="bg-slate-900 p-3 rounded text-xs text-slate-700 dark:text-slate-300 overflow-x-auto">
+                        <pre className="bg-slate-100 dark:bg-slate-900 p-3 rounded text-xs text-slate-700 dark:text-slate-300 overflow-x-auto">
 {`services:
   healarr:
     image: ghcr.io/mescon/healarr:latest
@@ -395,7 +395,7 @@ const Help = () => {
                         <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">
                             All environment variables can also be set via command-line flags. Flags take precedence over environment variables.
                         </p>
-                        <pre className="bg-slate-900 p-3 rounded text-xs text-slate-700 dark:text-slate-300 overflow-x-auto">
+                        <pre className="bg-slate-100 dark:bg-slate-900 p-3 rounded text-xs text-slate-700 dark:text-slate-300 overflow-x-auto">
 {`# View all available flags
 ./healarr --help
 
@@ -411,12 +411,12 @@ const Help = () => {
                     </div>
 
                     <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4 space-y-2">
-                        <p className="text-sm font-semibold text-blue-300">💡 Tips</p>
+                        <p className="text-sm font-semibold text-blue-600 dark:text-blue-300">💡 Tips</p>
                         <ul className="text-sm text-slate-700 dark:text-slate-300 space-y-1 list-disc list-inside">
-                            <li>Duration values accept Go duration strings: <code className="bg-slate-800 px-1 rounded">30s</code>, <code className="bg-slate-800 px-1 rounded">5m</code>, <code className="bg-slate-800 px-1 rounded">72h</code></li>
-                            <li>Set <code className="bg-slate-800 px-1 rounded">HEALARR_LOG_LEVEL=debug</code> for troubleshooting, then switch back to <code className="bg-slate-800 px-1 rounded">info</code></li>
-                            <li><span className="font-semibold">Pro tip:</span> Mount media with the same paths your *arr apps use (e.g., <code className="bg-slate-800 px-1 rounded">-v /host/tv:/tv:ro</code>) to avoid path translation</li>
-                            <li>Mount your media paths as read-only (<code className="bg-slate-800 px-1 rounded">:ro</code>) - Healarr only reads files to check for corruption</li>
+                            <li>Duration values accept Go duration strings: <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">30s</code>, <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">5m</code>, <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">72h</code></li>
+                            <li>Set <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">HEALARR_LOG_LEVEL=debug</code> for troubleshooting, then switch back to <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">info</code></li>
+                            <li><span className="font-semibold">Pro tip:</span> Mount media with the same paths your *arr apps use (e.g., <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">-v /host/tv:/tv:ro</code>) to avoid path translation</li>
+                            <li>Mount your media paths as read-only (<code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">:ro</code>) - Healarr only reads files to check for corruption</li>
                         </ul>
                     </div>
                 </Accordion>
@@ -434,7 +434,7 @@ const Help = () => {
                     iconBgClass="bg-orange-500/10 border-orange-500/20"
                 >
                     <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4">
-                        <p className="text-sm font-semibold text-amber-300">⚠️ WebSocket Support Required</p>
+                        <p className="text-sm font-semibold text-amber-600 dark:text-amber-300">⚠️ WebSocket Support Required</p>
                         <p className="text-sm text-slate-700 dark:text-slate-300 mt-1">
                             Healarr uses WebSockets for real-time updates (scan progress, live stats, etc.). 
                             Your reverse proxy <span className="font-semibold">must</span> be configured to support WebSocket connections, 
@@ -443,8 +443,8 @@ const Help = () => {
                     </div>
 
                     <p className="text-slate-700 dark:text-slate-300">
-                        To host Healarr at a subpath like <code className="bg-slate-800 px-1 rounded">domain.com/healarr/</code>, 
-                        set the environment variable <code className="bg-slate-800 px-1 rounded">HEALARR_BASE_PATH=/healarr</code> and configure your reverse proxy:
+                        To host Healarr at a subpath like <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">domain.com/healarr/</code>, 
+                        set the environment variable <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">HEALARR_BASE_PATH=/healarr</code> and configure your reverse proxy:
                     </p>
 
                     {/* Caddy */}
@@ -547,14 +547,14 @@ server {
                         </pre>
                         <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-3 space-y-2">
                             <p className="text-xs text-slate-700 dark:text-slate-300">
-                                <strong className="text-purple-400">About entrypoints:</strong> Replace <code className="bg-slate-900 px-1 rounded">https</code> with your actual entrypoint name. 
-                                Common names include <code className="bg-slate-900 px-1 rounded">websecure</code>, <code className="bg-slate-900 px-1 rounded">web-secure</code>, or <code className="bg-slate-900 px-1 rounded">https</code>.
+                                <strong className="text-purple-400">About entrypoints:</strong> Replace <code className="bg-slate-200 dark:bg-slate-900 px-1 rounded">https</code> with your actual entrypoint name. 
+                                Common names include <code className="bg-slate-200 dark:bg-slate-900 px-1 rounded">websecure</code>, <code className="bg-slate-200 dark:bg-slate-900 px-1 rounded">web-secure</code>, or <code className="bg-slate-200 dark:bg-slate-900 px-1 rounded">https</code>.
                                 Check your Traefik static configuration to find yours.
                             </p>
                             <p className="text-xs text-slate-700 dark:text-slate-300">
-                                <strong className="text-purple-400">About strip prefix:</strong> Since Healarr uses <code className="bg-slate-900 px-1 rounded">HEALARR_BASE_PATH=/healarr</code>, 
-                                Healarr expects requests to arrive with the <code className="bg-slate-900 px-1 rounded">/healarr</code> prefix intact. 
-                                <strong>Do not use the stripprefix middleware</strong> unless HEALARR_BASE_PATH is set to <code className="bg-slate-900 px-1 rounded">/</code>.
+                                <strong className="text-purple-400">About strip prefix:</strong> Since Healarr uses <code className="bg-slate-200 dark:bg-slate-900 px-1 rounded">HEALARR_BASE_PATH=/healarr</code>, 
+                                Healarr expects requests to arrive with the <code className="bg-slate-200 dark:bg-slate-900 px-1 rounded">/healarr</code> prefix intact. 
+                                <strong>Do not use the stripprefix middleware</strong> unless HEALARR_BASE_PATH is set to <code className="bg-slate-200 dark:bg-slate-900 px-1 rounded">/</code>.
                             </p>
                         </div>
                         <p className="text-xs text-slate-500">Traefik automatically handles WebSocket upgrades.</p>
@@ -563,7 +563,7 @@ server {
                     {/* Apache */}
                     <div className="border-l-2 border-red-500/50 pl-4 space-y-2">
                         <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Apache</h3>
-                        <pre className="bg-slate-900 p-3 rounded text-xs text-slate-700 dark:text-slate-300 overflow-x-auto">
+                        <pre className="bg-slate-100 dark:bg-slate-900 p-3 rounded text-xs text-slate-700 dark:text-slate-300 overflow-x-auto">
 {`# Enable required modules:
 # a2enmod proxy proxy_http proxy_wstunnel rewrite
 
@@ -604,10 +604,10 @@ server {
                     </div>
 
                     <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4 space-y-2">
-                        <p className="text-sm font-semibold text-blue-300">💡 Testing WebSocket Connection</p>
+                        <p className="text-sm font-semibold text-blue-600 dark:text-blue-300">💡 Testing WebSocket Connection</p>
                         <ul className="text-sm text-slate-700 dark:text-slate-300 space-y-1 list-disc list-inside">
                             <li>Open the browser developer console (F12) and check the Network tab</li>
-                            <li>Look for a WebSocket connection to <code className="bg-slate-800 px-1 rounded">/api/ws</code></li>
+                            <li>Look for a WebSocket connection to <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">/api/ws</code></li>
                             <li>If it shows "101 Switching Protocols", WebSockets are working</li>
                             <li>If you see errors or the connection fails, check your proxy configuration</li>
                         </ul>
@@ -638,7 +638,7 @@ server {
                                 <ul className="text-sm text-slate-600 dark:text-slate-400 space-y-1 list-disc list-inside">
                                     <li>Ensure your reverse proxy is configured for WebSocket support (see Reverse Proxy Setup above)</li>
                                     <li>Check browser console for WebSocket connection errors</li>
-                                    <li>Verify <code className="bg-slate-800 px-1 rounded">/api/ws</code> endpoint is accessible</li>
+                                    <li>Verify <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">/api/ws</code> endpoint is accessible</li>
                                     <li>Some firewalls or security software may block WebSocket connections</li>
                                 </ul>
                             </div>
@@ -685,7 +685,7 @@ server {
                                 <ul className="text-sm text-slate-600 dark:text-slate-400 space-y-1 list-disc list-inside">
                                     <li>Check the Logs page for error messages</li>
                                     <li>Verify the scan path exists and is accessible from the Healarr container</li>
-                                    <li>Ensure ffprobe is available in the container (run <code className="bg-slate-800 px-1 rounded">ffprobe -version</code>)</li>
+                                    <li>Ensure ffprobe is available in the container (run <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">ffprobe -version</code>)</li>
                                     <li>Check if another scan is already running - only one scan runs at a time</li>
                                     <li>For scheduled scans, ensure the schedule is enabled (toggle is on)</li>
                                 </ul>
@@ -704,7 +704,7 @@ server {
                                     <li>The corruption may be in a stream Healarr doesn't check (e.g., subtitles only)</li>
                                     <li>The file may have minor errors that ffprobe doesn't consider fatal</li>
                                     <li>The corruption might be visual/audio artifacts without header damage</li>
-                                    <li>Try running <code className="bg-slate-800 px-1 rounded">ffprobe -v error -i /path/to/file</code> manually to see what errors are detected</li>
+                                    <li>Try running <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">ffprobe -v error -i /path/to/file</code> manually to see what errors are detected</li>
                                 </ul>
                             </div>
                         </div>
@@ -722,7 +722,7 @@ server {
                                     <li>If stuck on "Searching" - Sonarr/Radarr/Whisparr may not have found a replacement release</li>
                                     <li>If stuck on "Downloading" - check your download client for issues</li>
                                     <li>If stuck on "Verifying" - the download may still be in progress or post-processing</li>
-                                    <li>Check <code className="bg-slate-800 px-1 rounded">HEALARR_VERIFICATION_TIMEOUT</code> - default is 72 hours</li>
+                                    <li>Check <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">HEALARR_VERIFICATION_TIMEOUT</code> - default is 72 hours</li>
                                     <li>Verify the *arr server is online and the API key is valid</li>
                                 </ul>
                             </div>
@@ -783,7 +783,7 @@ server {
                             <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-4 space-y-3">
                                 <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">Things to check:</p>
                                 <ul className="text-sm text-slate-600 dark:text-slate-400 space-y-1 list-disc list-inside">
-                                    <li>Ensure the <code className="bg-slate-800 px-1 rounded">/config</code> volume is properly mounted</li>
+                                    <li>Ensure the <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">/config</code> volume is properly mounted</li>
                                     <li>Check that the container has write permissions to the config directory</li>
                                     <li>Verify there's sufficient disk space on the host</li>
                                     <li>If using SQLite, avoid network-mounted storage (NFS/SMB) for the database file</li>
@@ -791,7 +791,7 @@ server {
                                 </ul>
                             </div>
                             <div className="bg-green-500/5 border border-green-500/20 rounded-lg p-4 mt-3 space-y-2">
-                                <p className="text-sm font-semibold text-green-300">Automatic Database Maintenance</p>
+                                <p className="text-sm font-semibold text-green-600 dark:text-green-300">Automatic Database Maintenance</p>
                                 <p className="text-sm text-slate-700 dark:text-slate-300">
                                     Healarr automatically maintains its database to prevent bloat:
                                 </p>
@@ -799,8 +799,8 @@ server {
                                     <li><strong>WAL mode</strong> enabled for better concurrency and crash recovery</li>
                                     <li><strong>Integrity check</strong> runs on startup to detect corruption</li>
                                     <li><strong>Daily maintenance</strong> at 3 AM: prunes old data, vacuums, updates statistics</li>
-                                    <li><strong>Automatic backups</strong> every 6 hours (last 5 kept in <code className="bg-slate-800 px-1 rounded">/config/backups/</code>)</li>
-                                    <li>Set <code className="bg-slate-800 px-1 rounded">HEALARR_RETENTION_DAYS=0</code> to disable auto-pruning</li>
+                                    <li><strong>Automatic backups</strong> every 6 hours (last 5 kept in <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">/config/backups/</code>)</li>
+                                    <li>Set <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">HEALARR_RETENTION_DAYS=0</code> to disable auto-pruning</li>
                                 </ul>
                             </div>
                         </div>
@@ -816,17 +816,17 @@ server {
                                 <ol className="text-sm text-slate-600 dark:text-slate-400 space-y-2 list-decimal list-inside">
                                     <li>Stop Healarr</li>
                                     <li>Open the database file with SQLite:
-                                        <pre className="mt-1 bg-slate-900 text-slate-300 p-2 rounded text-xs overflow-x-auto">sqlite3 /path/to/healarr.db</pre>
+                                        <pre className="mt-1 bg-slate-100 dark:bg-slate-900 text-slate-700 dark:text-slate-300 p-2 rounded text-xs overflow-x-auto">sqlite3 /path/to/healarr.db</pre>
                                     </li>
                                     <li>Delete the password setting:
-                                        <pre className="mt-1 bg-slate-900 text-slate-300 p-2 rounded text-xs overflow-x-auto">DELETE FROM settings WHERE key = 'password_hash';</pre>
+                                        <pre className="mt-1 bg-slate-100 dark:bg-slate-900 text-slate-700 dark:text-slate-300 p-2 rounded text-xs overflow-x-auto">DELETE FROM settings WHERE key = 'password_hash';</pre>
                                     </li>
-                                    <li>Exit SQLite: <code className="bg-slate-800 px-1 rounded">.quit</code></li>
+                                    <li>Exit SQLite: <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">.quit</code></li>
                                     <li>Restart Healarr - you'll be prompted to set a new password</li>
                                 </ol>
                                 <p className="text-xs text-amber-400 mt-2">
-                                    <strong>Docker users:</strong> The database is typically at <code className="bg-slate-800 px-1 rounded">/config/healarr.db</code> inside the container, 
-                                    or in your mounted config directory on the host. <strong>Bare-metal:</strong> Check <code className="bg-slate-800 px-1 rounded">./config/healarr.db</code> next to the executable.
+                                    <strong>Docker users:</strong> The database is typically at <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">/config/healarr.db</code> inside the container, 
+                                    or in your mounted config directory on the host. <strong>Bare-metal:</strong> Check <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">./config/healarr.db</code> next to the executable.
                                 </p>
                             </div>
                         </div>
@@ -920,8 +920,8 @@ server {
                             </div>
 
                             <div className="bg-green-500/5 border border-green-500/20 rounded-lg p-4 space-y-3">
-                                <p className="text-sm font-semibold text-green-300">Example: JSON Webhook Payload</p>
-                                <pre className="bg-slate-900 p-3 rounded text-xs text-slate-300 overflow-x-auto">{`{
+                                <p className="text-sm font-semibold text-green-600 dark:text-green-300">Example: JSON Webhook Payload</p>
+                                <pre className="bg-slate-100 dark:bg-slate-900 p-3 rounded text-xs text-slate-700 dark:text-slate-300 overflow-x-auto">{`{
   "title": "🔴 Corruption detected: episode.mkv",
   "message": "Type: video_stream_error | Path: /media/tv/Show/S01E01.mkv",
   "event": "corruption_detected",
@@ -972,7 +972,7 @@ server {
 
                         {/* Tips */}
                         <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4 space-y-2">
-                            <p className="text-sm font-semibold text-blue-300">💡 Tips</p>
+                            <p className="text-sm font-semibold text-blue-600 dark:text-blue-300">💡 Tips</p>
                             <ul className="text-sm text-slate-700 dark:text-slate-300 space-y-1 list-disc list-inside">
                                 <li>Use <span className="font-semibold">throttling</span> to prevent notification spam during large scans</li>
                                 <li>Create multiple notification configs with different event filters (e.g., only critical events to phone)</li>
@@ -997,7 +997,7 @@ server {
                 >
                     <div className="space-y-4">
                         <p className="text-slate-700 dark:text-slate-300">
-                            Healarr provides a health endpoint at <code className="bg-slate-800 px-2 py-1 rounded text-green-400">/api/health</code> that can be used by external monitoring tools, container orchestrators, and load balancers.
+                            Healarr provides a health endpoint at <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded text-green-600 dark:text-green-400">/api/health</code> that can be used by external monitoring tools, container orchestrators, and load balancers.
                         </p>
 
                         {/* Endpoint Details */}
@@ -1006,7 +1006,7 @@ server {
                             <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-4 space-y-3">
                                 <div className="flex items-center gap-4">
                                     <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">URL:</span>
-                                    <code className="text-sm text-green-400 bg-slate-900 px-2 py-1 rounded">GET /api/health</code>
+                                    <code className="text-sm text-green-600 dark:text-green-400 bg-slate-200 dark:bg-slate-900 px-2 py-1 rounded">GET /api/health</code>
                                 </div>
                                 <div className="flex items-center gap-4">
                                     <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">Auth:</span>
@@ -1045,21 +1045,21 @@ server {
                                 <div className="flex items-start gap-3">
                                     <span className="w-3 h-3 rounded-full bg-green-500 mt-1.5 flex-shrink-0"></span>
                                     <div>
-                                        <span className="text-sm font-semibold text-green-400">healthy</span>
+                                        <span className="text-sm font-semibold text-green-600 dark:text-green-400">healthy</span>
                                         <p className="text-sm text-slate-600 dark:text-slate-400">All systems operational. Database connected, all *arr instances online.</p>
                                     </div>
                                 </div>
                                 <div className="flex items-start gap-3">
                                     <span className="w-3 h-3 rounded-full bg-yellow-500 mt-1.5 flex-shrink-0"></span>
                                     <div>
-                                        <span className="text-sm font-semibold text-yellow-400">degraded</span>
+                                        <span className="text-sm font-semibold text-yellow-600 dark:text-yellow-400">degraded</span>
                                         <p className="text-sm text-slate-600 dark:text-slate-400">Partial functionality. One or more *arr instances are offline, but database is connected. A notification is sent when this status is detected (if configured).</p>
                                     </div>
                                 </div>
                                 <div className="flex items-start gap-3">
                                     <span className="w-3 h-3 rounded-full bg-red-500 mt-1.5 flex-shrink-0"></span>
                                     <div>
-                                        <span className="text-sm font-semibold text-red-400">unhealthy</span>
+                                        <span className="text-sm font-semibold text-red-600 dark:text-red-400">unhealthy</span>
                                         <p className="text-sm text-slate-600 dark:text-slate-400">Critical failure. Database connection failed.</p>
                                     </div>
                                 </div>
@@ -1094,7 +1094,7 @@ server {
                             <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-4 space-y-3">
                                 <div>
                                     <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">Uptime Kuma:</span>
-                                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">Add HTTP(s) monitor → URL: <code className="bg-slate-900 px-1 rounded">http://healarr:3090/api/health</code> → Expected keyword: <code className="bg-slate-900 px-1 rounded">"healthy"</code></p>
+                                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">Add HTTP(s) monitor → URL: <code className="bg-slate-200 dark:bg-slate-900 px-1 rounded">http://healarr:3090/api/health</code> → Expected keyword: <code className="bg-slate-200 dark:bg-slate-900 px-1 rounded">"healthy"</code></p>
                                 </div>
                                 <div>
                                     <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">Prometheus:</span>
@@ -1102,7 +1102,7 @@ server {
                                 </div>
                                 <div>
                                     <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">Traefik:</span>
-                                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">Configure health check on <code className="bg-slate-900 px-1 rounded">/api/health</code> for load balancing</p>
+                                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">Configure health check on <code className="bg-slate-200 dark:bg-slate-900 px-1 rounded">/api/health</code> for load balancing</p>
                                 </div>
                             </div>
                         </div>

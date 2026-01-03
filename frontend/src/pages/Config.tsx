@@ -702,7 +702,7 @@ const Config = () => {
                 </div>
 
                 {/* Add *arr Server Form */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                     <button
                         onClick={() => {
                             if (!isAddArrExpanded && editingArrId) {
@@ -739,7 +739,7 @@ const Config = () => {
                                 exit={{ height: 0, opacity: 0 }}
                                 transition={{ duration: 0.2, ease: "easeInOut" }}
                             >
-                                <form onSubmit={handleCreateArr} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-200 dark:border-slate-800/50 pt-4">
+                                <form onSubmit={handleCreateArr} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-800/50 pt-4">
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
                                             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Type</label>
@@ -842,7 +842,7 @@ const Config = () => {
                 </div>
 
                 {/* *arr Servers List */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                     {isLoadingArr ? (
                         <div className="p-8 text-center text-slate-600 dark:text-slate-400">Loading servers...</div>
                     ) : arrInstances && arrInstances.length > 0 ? (
@@ -956,7 +956,7 @@ const Config = () => {
                 </div>
 
                 {/* Add Scan Path Form */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                     <button
                         onClick={() => {
                             if (!isAddPathExpanded && editingPathId) {
@@ -993,7 +993,7 @@ const Config = () => {
                                 exit={{ height: 0, opacity: 0 }}
                                 transition={{ duration: 0.2, ease: "easeInOut" }}
                             >
-                                <form onSubmit={handleCreatePath} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-200 dark:border-slate-800/50 pt-4">
+                                <form onSubmit={handleCreatePath} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-800/50 pt-4">
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
                                             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Local Path</label>
@@ -1118,7 +1118,7 @@ const Config = () => {
                                                 id="path-detection-method"
                                                 value={newPath.detection_method || 'ffprobe'}
                                                 onChange={e => setNewPath({ ...newPath, detection_method: e.target.value as 'ffprobe' | 'mediainfo' | 'handbrake' | 'zero_byte' })}
-                                                className="w-full px-4 py-2 bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                                                className="w-full px-4 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
                                             >
                                                 <option value="ffprobe">FFprobe - Fast header/stream check (recommended)</option>
                                                 <option value="mediainfo">MediaInfo - Detailed metadata analysis</option>
@@ -1184,7 +1184,7 @@ const Config = () => {
                                                     value={newPath.detection_args || ''}
                                                     onChange={e => setNewPath({ ...newPath, detection_args: e.target.value })}
                                                     placeholder="e.g. --verbose, --threads 2"
-                                                    className="w-full px-4 py-2 bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                    className="w-full px-4 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                                                 />
                                                 <p className="mt-1 text-xs text-slate-500">
                                                     Enter custom arguments to pass to the detection tool (will be split by commas)
@@ -1241,7 +1241,7 @@ const Config = () => {
                 </div>
 
                 {/* Scan Paths List */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                     {isLoadingPaths ? (
                         <div className="p-8 text-center text-slate-600 dark:text-slate-400">Loading paths...</div>
                     ) : scanPaths && scanPaths.length > 0 ? (
@@ -1356,7 +1356,7 @@ const Config = () => {
                 </div>
 
                 {/* Add Schedule Form */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                     <button
                         onClick={() => setIsAddScheduleExpanded(!isAddScheduleExpanded)}
                         className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
@@ -1379,7 +1379,7 @@ const Config = () => {
                                 exit={{ height: 0, opacity: 0 }}
                                 transition={{ duration: 0.2, ease: "easeInOut" }}
                             >
-                                <form onSubmit={handleCreateSchedule} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-200 dark:border-slate-800/50 pt-4">
+                                <form onSubmit={handleCreateSchedule} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-800/50 pt-4">
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         <div>
                                             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Scan Path</label>
@@ -1452,7 +1452,7 @@ const Config = () => {
                 </div>
 
                 {/* Schedules List */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                     {isLoadingSchedules ? (
                         <div className="p-8 text-center text-slate-600 dark:text-slate-400">Loading schedules...</div>
                     ) : schedules?.length === 0 ? (
@@ -1486,7 +1486,7 @@ const Config = () => {
                                                     "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border cursor-pointer",
                                                     schedule.enabled
                                                         ? "bg-green-500/10 text-green-400 border-green-500/20 hover:bg-green-500/20"
-                                                        : "bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700 hover:bg-slate-700 hover:text-slate-900 dark:text-white"
+                                                        : "bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700 hover:bg-slate-300 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white"
                                                 )}
                                             >
                                                 {schedule.enabled ? 'Enabled' : 'Disabled'}
@@ -1538,7 +1538,7 @@ const Config = () => {
                 transition={{ delay: 0.4 }}
                 className="space-y-4"
             >
-                <div className="rounded-xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                     <button
                         onClick={() => setIsAdvancedExpanded(!isAdvancedExpanded)}
                         className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
@@ -1565,7 +1565,7 @@ const Config = () => {
                                 animate={{ height: "auto", opacity: 1 }}
                                 exit={{ height: 0, opacity: 0 }}
                                 transition={{ duration: 0.2, ease: "easeInOut" }}
-                                className="border-t border-slate-200 dark:border-slate-200 dark:border-slate-800/50"
+                                className="border-t border-slate-200 dark:border-slate-800/50"
                             >
                                 <div className="p-6 space-y-8">
                                     {/* Display Settings */}
@@ -1814,12 +1814,12 @@ const SecuritySection = ({ apiKeyData, refetchApiKey }: SecuritySectionProps) =>
     return (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* API Key Section */}
-            <div className="rounded-xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 h-full">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 h-full">
                 <div className="space-y-4">
                     <div>
                         <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Webhook API Key</h3>
                         <p className="text-xs text-slate-500 mb-4">
-                            Use this API key in your Sonarr/Radarr webhook URLs. Add <code className="bg-slate-800 px-1 rounded text-purple-300">?apikey=YOUR_KEY</code> to the webhook URL.
+                            Use this API key in your Sonarr/Radarr webhook URLs. Add <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded text-purple-600 dark:text-purple-300">?apikey=YOUR_KEY</code> to the webhook URL.
                         </p>
                     </div>
 
@@ -1861,7 +1861,7 @@ const SecuritySection = ({ apiKeyData, refetchApiKey }: SecuritySectionProps) =>
             </div>
 
             {/* Password Change Section */}
-            <div className="rounded-xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 h-full">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 h-full">
                 <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2 flex items-center gap-2">
                     <Lock className="w-4 h-4 text-slate-600 dark:text-slate-400" />
                     Change Password
@@ -1909,7 +1909,7 @@ const SecuritySection = ({ apiKeyData, refetchApiKey }: SecuritySectionProps) =>
                     {passwordMessage.text && (
                         <div className={clsx(
                             "p-2 rounded-lg text-xs",
-                            passwordMessage.type === 'success' ? "bg-green-500/10 text-green-300 border border-green-500/20" : "bg-red-500/10 text-red-300 border border-red-500/20"
+                            passwordMessage.type === 'success' ? "bg-green-500/10 text-green-600 dark:text-green-300 border border-green-500/20" : "bg-red-500/10 text-red-600 dark:text-red-300 border border-red-500/20"
                         )}>
                             {passwordMessage.text}
                         </div>
@@ -2151,7 +2151,7 @@ const ServerSettingsSection = ({ runtimeConfig, queryClient, toast }: ServerSett
                 </AnimatePresence>
 
                 <div className="text-xs text-slate-500">
-                    <strong>Tip:</strong> You can also set the base path via the <code className="bg-slate-800 px-1 rounded text-slate-600 dark:text-slate-400">HEALARR_BASE_PATH</code> environment variable.
+                    <strong>Tip:</strong> You can also set the base path via the <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded text-slate-600 dark:text-slate-400">HEALARR_BASE_PATH</code> environment variable.
                     Environment variables take precedence over database settings.
                 </div>
             </div>
@@ -2892,7 +2892,7 @@ const NotificationsSection = () => {
     return (
         <div className="space-y-4">
             {/* Add/Edit Form */}
-            <div className="rounded-xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                 <button
                     onClick={() => {
                         if (isAddExpanded && editingId) {
@@ -2930,7 +2930,7 @@ const NotificationsSection = () => {
                             exit={{ height: 0, opacity: 0 }}
                             transition={{ duration: 0.2, ease: "easeInOut" }}
                         >
-                            <form onSubmit={handleSubmit} className="px-6 pb-6 space-y-6 border-t border-slate-200 dark:border-slate-200 dark:border-slate-800/50 pt-4">
+                            <form onSubmit={handleSubmit} className="px-6 pb-6 space-y-6 border-t border-slate-200 dark:border-slate-800/50 pt-4">
                                 {/* Basic Settings */}
                                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                     <div>
@@ -3080,7 +3080,7 @@ const NotificationsSection = () => {
                                                                 "px-2 py-1 text-xs rounded-lg border transition-colors cursor-pointer",
                                                                 formData.events.includes(event)
                                                                     ? "bg-pink-500/20 border-pink-500/50 text-pink-600 dark:text-pink-300"
-                                                                    : "bg-slate-100 dark:bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-slate-400 dark:hover:border-slate-600"
+                                                                    : "bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-slate-400 dark:hover:border-slate-600"
                                                             )}
                                                         >
                                                             {event}
@@ -3162,7 +3162,7 @@ const NotificationsSection = () => {
             </div>
 
             {/* Notifications List */}
-            <div className="rounded-xl border border-slate-200 dark:border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                 {isLoading ? (
                     <div className="p-8 text-center text-slate-600 dark:text-slate-400">Loading notifications...</div>
                 ) : notifications && notifications.length > 0 ? (
@@ -3183,7 +3183,7 @@ const NotificationsSection = () => {
                                                 <div className="flex items-center gap-2">
                                                     <span className="text-lg">{provider?.icon || '📢'}</span>
                                                     <span className="font-medium text-slate-900 dark:text-white">{notification.name}</span>
-                                                    <span className="text-xs text-slate-500 bg-slate-800 px-2 py-0.5 rounded">
+                                                    <span className="text-xs text-slate-600 dark:text-slate-500 bg-slate-200 dark:bg-slate-800 px-2 py-0.5 rounded">
                                                         {provider?.label || notification.provider_type}
                                                     </span>
                                                 </div>
