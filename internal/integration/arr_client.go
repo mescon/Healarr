@@ -1210,11 +1210,13 @@ func (c *HTTPArrClient) GetQueueForPath(arrPath string) ([]QueueItemInfo, error)
 			StatusMessages:        statusMsgs,
 			Protocol:              item.Protocol,
 			DownloadClient:        item.DownloadClient,
+			Indexer:               item.Indexer,
 			Size:                  item.Size,
 			SizeLeft:              item.SizeLeft,
 			Progress:              progress,
 			TimeLeft:              item.TimeLeft,
 			EstimatedCompletion:   item.EstimatedCompletion,
+			AddedAt:               item.Added,
 			MovieID:               item.MovieID,
 			SeriesID:              item.SeriesID,
 			EpisodeID:             item.EpisodeID,
@@ -1259,11 +1261,13 @@ func (c *HTTPArrClient) FindQueueItemsByMediaIDForPath(arrPath string, mediaID i
 			StatusMessages:        statusMsgs,
 			Protocol:              item.Protocol,
 			DownloadClient:        item.DownloadClient,
+			Indexer:               item.Indexer,
 			Size:                  item.Size,
 			SizeLeft:              item.SizeLeft,
 			Progress:              progress,
 			TimeLeft:              item.TimeLeft,
 			EstimatedCompletion:   item.EstimatedCompletion,
+			AddedAt:               item.Added,
 			MovieID:               item.MovieID,
 			SeriesID:              item.SeriesID,
 			EpisodeID:             item.EpisodeID,
@@ -1309,6 +1313,19 @@ func (c *HTTPArrClient) GetRecentHistoryForMediaByPath(arrPath string, mediaID i
 		if path, ok := item.Data["importedPath"]; ok {
 			info.ImportedPath = path
 		}
+		// Extract quality and release info from data
+		if quality, ok := item.Data["quality"]; ok {
+			info.Quality = quality
+		}
+		if releaseGroup, ok := item.Data["releaseGroup"]; ok {
+			info.ReleaseGroup = releaseGroup
+		}
+		if indexer, ok := item.Data["indexer"]; ok {
+			info.Indexer = indexer
+		}
+		if downloadClient, ok := item.Data["downloadClient"]; ok {
+			info.DownloadClient = downloadClient
+		}
 		infos = append(infos, info)
 	}
 	return infos, nil
@@ -1330,4 +1347,139 @@ func (c *HTTPArrClient) RefreshMonitoredDownloadsByPath(arrPath string) error {
 		return err
 	}
 	return c.RefreshMonitoredDownloads(instance)
+}
+
+// GetMediaDetails implements ArrClient interface - fetches friendly media titles for display.
+// For movies: returns title and year
+// For TV: returns series name, year, and episode details
+// Returns nil (not error) if media details can't be fetched, allowing graceful degradation.
+func (c *HTTPArrClient) GetMediaDetails(mediaID int64, arrPath string) (*MediaDetails, error) {
+	instance, err := c.getInstanceForPath(arrPath)
+	if err != nil {
+		return nil, nil // Graceful degradation - return nil, not error
+	}
+
+	switch instance.Type {
+	case "radarr", "whisparr-v3":
+		return c.getMovieDetails(instance, mediaID)
+	case "sonarr", "whisparr-v2":
+		return c.getSeriesDetails(instance, mediaID)
+	default:
+		return nil, nil
+	}
+}
+
+// getMovieDetails fetches movie title and year from Radarr/Whisparr
+func (c *HTTPArrClient) getMovieDetails(instance *ArrInstance, movieID int64) (*MediaDetails, error) {
+	endpoint := fmt.Sprintf("/api/v3/movie/%d", movieID)
+	resp, err := c.doRequest(instance, "GET", endpoint, nil)
+	if err != nil {
+		logger.Debugf("Failed to fetch movie details for ID %d: %v", movieID, err)
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Debugf("Movie %d not found in %s (status: %s)", movieID, instance.Name, resp.Status)
+		return nil, nil
+	}
+
+	var movie struct {
+		Title string `json:"title"`
+		Year  int    `json:"year"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&movie); err != nil {
+		return nil, nil
+	}
+
+	return &MediaDetails{
+		Title:        movie.Title,
+		Year:         movie.Year,
+		MediaType:    "movie",
+		ArrType:      instance.Type,
+		InstanceName: instance.Name,
+	}, nil
+}
+
+// getSeriesDetails fetches series and episode details from Sonarr/Whisparr
+func (c *HTTPArrClient) getSeriesDetails(instance *ArrInstance, seriesID int64) (*MediaDetails, error) {
+	// First, get series info
+	seriesEndpoint := fmt.Sprintf("/api/v3/series/%d", seriesID)
+	resp, err := c.doRequest(instance, "GET", seriesEndpoint, nil)
+	if err != nil {
+		logger.Debugf("Failed to fetch series details for ID %d: %v", seriesID, err)
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Debugf("Series %d not found in %s (status: %s)", seriesID, instance.Name, resp.Status)
+		return nil, nil
+	}
+
+	var series struct {
+		Title string `json:"title"`
+		Year  int    `json:"year"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&series); err != nil {
+		return nil, nil
+	}
+
+	return &MediaDetails{
+		Title:        series.Title,
+		Year:         series.Year,
+		MediaType:    "series",
+		ArrType:      instance.Type,
+		InstanceName: instance.Name,
+	}, nil
+}
+
+// GetEpisodeDetails fetches episode-specific details (season, episode number, title).
+// This is a separate call because we often have the episode ID from queue/history data.
+func (c *HTTPArrClient) GetEpisodeDetails(episodeID int64, arrPath string) (*MediaDetails, error) {
+	instance, err := c.getInstanceForPath(arrPath)
+	if err != nil {
+		return nil, nil
+	}
+
+	if instance.Type != "sonarr" && instance.Type != "whisparr-v2" {
+		return nil, nil // Only valid for Sonarr
+	}
+
+	// Get episode details
+	epEndpoint := fmt.Sprintf("/api/v3/episode/%d", episodeID)
+	resp, err := c.doRequest(instance, "GET", epEndpoint, nil)
+	if err != nil {
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+
+	var episode struct {
+		Title         string `json:"title"`
+		SeasonNumber  int    `json:"seasonNumber"`
+		EpisodeNumber int    `json:"episodeNumber"`
+		SeriesID      int64  `json:"seriesId"`
+		Series        struct {
+			Title string `json:"title"`
+			Year  int    `json:"year"`
+		} `json:"series"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&episode); err != nil {
+		return nil, nil
+	}
+
+	return &MediaDetails{
+		Title:         episode.Series.Title,
+		Year:          episode.Series.Year,
+		MediaType:     "series",
+		SeasonNumber:  episode.SeasonNumber,
+		EpisodeNumber: episode.EpisodeNumber,
+		EpisodeTitle:  episode.Title,
+		ArrType:       instance.Type,
+		InstanceName:  instance.Name,
+	}, nil
 }

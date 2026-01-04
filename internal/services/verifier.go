@@ -16,6 +16,17 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
+// VerificationMeta stores quality/release info captured from history for VerificationSuccess events
+type VerificationMeta struct {
+	Quality        string
+	ReleaseGroup   string
+	Indexer        string
+	DownloadClient string
+	NewFilePath    string // Primary file path (for single files)
+	NewFilePaths   []string
+	NewFileSize    int64
+}
+
 type VerifierService struct {
 	eventBus   *eventbus.EventBus
 	detector   integration.HealthChecker
@@ -30,6 +41,10 @@ type VerifierService struct {
 	// State tracking for event deduplication
 	lastStateMu sync.RWMutex
 	lastState   map[string]string // corruptionID -> last known state
+
+	// Verification metadata - stores quality/release info from history for enriching VerificationSuccess
+	verifyMetaMu sync.RWMutex
+	verifyMeta   map[string]*VerificationMeta // corruptionID -> metadata
 }
 
 func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper, arrClient integration.ArrClient, db *sql.DB) *VerifierService {
@@ -41,6 +56,7 @@ func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecke
 		db:         db,
 		shutdownCh: make(chan struct{}),
 		lastState:  make(map[string]string),
+		verifyMeta: make(map[string]*VerificationMeta),
 	}
 }
 
@@ -63,6 +79,63 @@ func (v *VerifierService) clearLastState(corruptionID string) {
 	v.lastStateMu.Lock()
 	delete(v.lastState, corruptionID)
 	v.lastStateMu.Unlock()
+}
+
+// setVerifyMeta stores verification metadata for enriching VerificationSuccess
+func (v *VerifierService) setVerifyMeta(corruptionID string, meta *VerificationMeta) {
+	v.verifyMetaMu.Lock()
+	v.verifyMeta[corruptionID] = meta
+	v.verifyMetaMu.Unlock()
+}
+
+// getVerifyMeta retrieves verification metadata (returns nil if not set)
+func (v *VerifierService) getVerifyMeta(corruptionID string) *VerificationMeta {
+	v.verifyMetaMu.RLock()
+	defer v.verifyMetaMu.RUnlock()
+	return v.verifyMeta[corruptionID]
+}
+
+// clearVerifyMeta removes verification metadata (call on completion)
+func (v *VerifierService) clearVerifyMeta(corruptionID string) {
+	v.verifyMetaMu.Lock()
+	delete(v.verifyMeta, corruptionID)
+	v.verifyMetaMu.Unlock()
+}
+
+// getDurationMetrics calculates how long the remediation took.
+// Returns: (total_duration_seconds, download_duration_seconds)
+// total_duration = CorruptionDetected → now
+// download_duration = first DownloadProgress → now
+func (v *VerifierService) getDurationMetrics(corruptionID string) (int64, int64) {
+	now := time.Now()
+
+	// Get CorruptionDetected timestamp
+	var corruptionTime time.Time
+	err := v.db.QueryRow(`
+		SELECT created_at FROM events
+		WHERE aggregate_id = ? AND event_type = 'CorruptionDetected'
+		ORDER BY created_at ASC LIMIT 1
+	`, corruptionID).Scan(&corruptionTime)
+	if err != nil {
+		return 0, 0
+	}
+
+	totalDuration := int64(now.Sub(corruptionTime).Seconds())
+
+	// Get first DownloadProgress timestamp (if any)
+	var downloadStartTime time.Time
+	err = v.db.QueryRow(`
+		SELECT created_at FROM events
+		WHERE aggregate_id = ? AND event_type = 'DownloadProgress'
+		ORDER BY created_at ASC LIMIT 1
+	`, corruptionID).Scan(&downloadStartTime)
+	if err != nil {
+		// No DownloadProgress event - maybe it completed very quickly
+		return totalDuration, 0
+	}
+
+	downloadDuration := int64(now.Sub(downloadStartTime).Seconds())
+	return totalDuration, downloadDuration
 }
 
 func (v *VerifierService) Start() {
@@ -293,13 +366,21 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 				lastStatus = currentStatus
 				lastProgress = item.Progress
 
-				// Emit progress event for UI updates
+				// Emit progress event for UI updates with enriched data
 				eventData := map[string]interface{}{
 					"status":      currentStatus,
 					"progress":    item.Progress,
 					"time_left":   item.TimeLeft,
 					"download_id": item.DownloadID,
 					"title":       item.Title,
+					// Enriched fields for UI display
+					"protocol":             item.Protocol,       // "usenet" or "torrent"
+					"download_client":      item.DownloadClient, // "SABnzbd", "qBittorrent", etc.
+					"indexer":              item.Indexer,        // "NZBgeek", "1337x", etc.
+					"size_bytes":           item.Size,           // Total size in bytes
+					"size_remaining_bytes": item.SizeLeft,       // Remaining size in bytes
+					"estimated_completion": item.EstimatedCompletion,
+					"added_at":             item.AddedAt,
 				}
 
 				// Add warning info if present
@@ -430,16 +511,16 @@ func (v *VerifierService) checkHistoryForImport(corruptionID, arrPath string, me
 		return false
 	}
 
-	// Look for recent import events
-	hasImportEvent := false
-	for _, item := range historyItems {
+	// Look for recent import events and extract quality/release info
+	var importItem *integration.HistoryItemInfo
+	for i, item := range historyItems {
 		if item.EventType == "downloadFolderImported" || item.EventType == "episodeFileImported" || item.EventType == "movieFileImported" {
-			hasImportEvent = true
+			importItem = &historyItems[i]
 			break
 		}
 	}
 
-	if !hasImportEvent {
+	if importItem == nil {
 		return false
 	}
 
@@ -461,12 +542,25 @@ func (v *VerifierService) checkHistoryForImport(corruptionID, arrPath string, me
 			}
 
 			if len(existingPaths) == len(allPaths) {
-				// All files exist
+				// All files exist - store quality/release metadata for VerificationSuccess event
+				meta := &VerificationMeta{
+					Quality:        importItem.Quality,
+					ReleaseGroup:   importItem.ReleaseGroup,
+					Indexer:        importItem.Indexer,
+					DownloadClient: importItem.DownloadClient,
+					NewFilePaths:   existingPaths,
+				}
 				if len(existingPaths) == 1 {
+					meta.NewFilePath = existingPaths[0]
+					// Get file size for single file
+					if fi, err := os.Stat(existingPaths[0]); err == nil {
+						meta.NewFileSize = fi.Size()
+					}
 					logger.Infof("Import detected for %s via history: %s", corruptionID, existingPaths[0])
 				} else {
 					logger.Infof("Multi-episode import detected for %s via history: %d files", corruptionID, len(existingPaths))
 				}
+				v.setVerifyMeta(corruptionID, meta)
 				v.emitFilesDetected(corruptionID, existingPaths)
 				return true
 			}
@@ -724,19 +818,52 @@ func (v *VerifierService) verifyHealthMultiple(corruptionID string, filePaths []
 	}
 
 	if len(failedPaths) == 0 {
-		// All files healthy
+		// All files healthy - enrich event with quality/release info if available
+		eventData := map[string]interface{}{
+			"verified_count": len(filePaths),
+		}
+
+		// Add duration metrics
+		totalDuration, downloadDuration := v.getDurationMetrics(corruptionID)
+		if totalDuration > 0 {
+			eventData["total_duration_seconds"] = totalDuration
+		}
+		if downloadDuration > 0 {
+			eventData["download_duration_seconds"] = downloadDuration
+		}
+
+		if meta := v.getVerifyMeta(corruptionID); meta != nil {
+			if meta.NewFilePath != "" {
+				eventData["new_file_path"] = meta.NewFilePath
+			}
+			if meta.NewFileSize > 0 {
+				eventData["new_file_size"] = meta.NewFileSize
+			}
+			if meta.Quality != "" {
+				eventData["quality"] = meta.Quality
+			}
+			if meta.ReleaseGroup != "" {
+				eventData["release_group"] = meta.ReleaseGroup
+			}
+			if meta.Indexer != "" {
+				eventData["indexer"] = meta.Indexer
+			}
+			if meta.DownloadClient != "" {
+				eventData["download_client"] = meta.DownloadClient
+			}
+			v.clearVerifyMeta(corruptionID) // Clean up
+		}
 		if err := v.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.VerificationSuccess,
-			EventData: map[string]interface{}{
-				"verified_count": len(filePaths),
-			},
+			EventData:     eventData,
 		}); err != nil {
 			logger.Errorf("Failed to publish VerificationSuccess event: %v", err)
 		}
 	} else {
 		// At least one file failed verification
+		v.clearVerifyMeta(corruptionID) // Clean up on failure too
 		if err := v.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",

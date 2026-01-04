@@ -229,9 +229,19 @@ const Help = () => {
                                 <td className="py-2 px-3 text-slate-700 dark:text-slate-300">A step failed but retries remain - will try again automatically</td>
                             </tr>
                             <tr>
+                                <td className="py-2 px-3 font-semibold text-amber-400">No Replacement Found</td>
+                                <td className="py-2 px-3"><span className="inline-block w-3 h-3 rounded-full bg-amber-400"></span></td>
+                                <td className="py-2 px-3 text-slate-700 dark:text-slate-300">*arr search returned no results - click Retry to search again later</td>
+                            </tr>
+                            <tr>
                                 <td className="py-2 px-3 font-semibold text-red-400">Max Retries</td>
                                 <td className="py-2 px-3"><span className="inline-block w-3 h-3 rounded-full bg-red-400"></span></td>
                                 <td className="py-2 px-3 text-slate-700 dark:text-slate-300">All retry attempts exhausted - requires manual intervention</td>
+                            </tr>
+                            <tr>
+                                <td className="py-2 px-3 font-semibold text-purple-400">Manual Intervention</td>
+                                <td className="py-2 px-3"><span className="inline-block w-3 h-3 rounded-full bg-purple-400"></span></td>
+                                <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Import blocked or removed from *arr - check your *arr app</td>
                             </tr>
                             <tr>
                                 <td className="py-2 px-3 font-semibold text-slate-600 dark:text-slate-400">Ignored</td>
@@ -336,6 +346,11 @@ const Help = () => {
                                     <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Polling interval when checking for file replacement</td>
                                 </tr>
                                 <tr>
+                                    <td className="py-2 px-3 font-mono text-cyan-400">HEALARR_STALE_THRESHOLD</td>
+                                    <td className="py-2 px-3 text-slate-600 dark:text-slate-400">24h</td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Auto-fix items Healarr lost track of (e.g., after restarts or missed webhooks). Items inactive longer than this get checked against *arr. Increase for slow download clients.</td>
+                                </tr>
+                                <tr>
                                     <td className="py-2 px-3 font-mono text-cyan-400">HEALARR_DEFAULT_MAX_RETRIES</td>
                                     <td className="py-2 px-3 text-slate-600 dark:text-slate-400">3</td>
                                     <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Default retry limit for failed remediations (can be overridden per scan path)</td>
@@ -410,7 +425,10 @@ const Help = () => {
 ./healarr --dry-run
 
 # Example: Disable automatic data pruning
-./healarr --retention-days 0`}
+./healarr --retention-days 0
+
+# Example: Adjust stale threshold for slow download clients
+./healarr --stale-threshold 48h`}
                         </pre>
                     </div>
 
@@ -727,6 +745,8 @@ server {
                                     <li>If stuck on "Downloading" - check your download client for issues</li>
                                     <li>If stuck on "Verifying" - the download may still be in progress or post-processing</li>
                                     <li>Check <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">HEALARR_VERIFICATION_TIMEOUT</code> - default is 72 hours</li>
+                                    <li>If Healarr loses track of items (after restarts, missed webhooks), it auto-fixes them by checking *arr. Items inactive for 24h+ are checked automatically</li>
+                                    <li>If your downloads take a long time (seeding, unpacking), increase: <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">HEALARR_STALE_THRESHOLD=48h</code></li>
                                     <li>Verify the *arr server is online and the API key is valid</li>
                                 </ul>
                             </div>

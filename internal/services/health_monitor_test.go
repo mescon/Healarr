@@ -91,6 +91,10 @@ func (m *mockHealthArrClient) RefreshMonitoredDownloadsByPath(arrPath string) er
 	return nil
 }
 
+func (m *mockHealthArrClient) GetMediaDetails(mediaID int64, arrPath string) (*integration.MediaDetails, error) {
+	return nil, nil
+}
+
 // =============================================================================
 // NewHealthMonitorService tests
 // =============================================================================
@@ -107,7 +111,7 @@ func TestNewHealthMonitorService(t *testing.T) {
 
 	client := &mockHealthArrClient{}
 
-	h := NewHealthMonitorService(db, eb, client)
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
 
 	if h == nil {
 		t.Fatal("NewHealthMonitorService should not return nil")
@@ -163,7 +167,7 @@ func TestHealthMonitorService_GetHealthStatus_WithDB(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	status := h.GetHealthStatus()
 
@@ -208,7 +212,7 @@ func TestHealthMonitorService_checkDatabaseHealth_WithDB(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	// Should not panic
 	h.checkDatabaseHealth()
@@ -235,7 +239,7 @@ func TestHealthMonitorService_checkStuckRemediations_NoStuck(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 	h.stuckThreshold = 1 * time.Hour
 
 	// Add a corruption that was resolved (has VerificationSuccess)
@@ -266,7 +270,7 @@ func TestHealthMonitorService_checkStuckRemediations_WithStuck(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 	// Use very short threshold for testing
 	h.stuckThreshold = 1 * time.Millisecond
 
@@ -320,7 +324,7 @@ func TestHealthMonitorService_checkRepeatedFailures_NoFailures(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	// Should not panic with empty database
 	h.checkRepeatedFailures()
@@ -351,7 +355,7 @@ func TestHealthMonitorService_checkInstanceHealth_NoInstances(t *testing.T) {
 		instances: []*integration.ArrInstanceInfo{},
 	}
 
-	h := NewHealthMonitorService(db, eb, client)
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
 
 	// Should not panic
 	h.checkInstanceHealth()
@@ -374,7 +378,7 @@ func TestHealthMonitorService_checkInstanceHealth_HealthyInstance(t *testing.T) 
 		queueErr: nil, // Healthy
 	}
 
-	h := NewHealthMonitorService(db, eb, client)
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
 
 	// Should not panic
 	h.checkInstanceHealth()
@@ -403,7 +407,7 @@ func TestHealthMonitorService_checkInstanceHealth_UnhealthyInstance(t *testing.T
 		queueErr: sql.ErrNoRows, // Simulate error
 	}
 
-	h := NewHealthMonitorService(db, eb, client)
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
 	h.checkInstanceHealth()
 
 	// Should publish InstanceUnhealthy event
@@ -434,7 +438,7 @@ func TestHealthMonitorService_checkInstanceHealth_GetInstancesError(t *testing.T
 		instancesErr: errors.New("connection refused"),
 	}
 
-	h := NewHealthMonitorService(db, eb, client)
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
 
 	// Should not panic when GetAllInstances returns error
 	h.checkInstanceHealth()
@@ -454,7 +458,7 @@ func TestHealthMonitorService_performHealthChecks(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	// Should run all health checks without panic
 	h.performHealthChecks()
@@ -474,7 +478,7 @@ func TestHealthMonitorService_StartShutdown(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	// Test that Start initializes the shutdown channel and WaitGroup properly
 	// Note: The actual goroutines have 30s/60s initial delays, so we just verify
@@ -517,7 +521,7 @@ func TestHealthMonitorService_ShutdownWithoutStart(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	// Calling Shutdown without Start should not panic
 	// (though it may block on wg.Wait() if nothing was added to wg)
@@ -557,7 +561,7 @@ func TestHealthMonitorService_checkRepeatedFailures_WithFailures(t *testing.T) {
 		eventCh <- e
 	})
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 	// Set threshold to 2 repeated failures
 	h.repeatedFailureCount = 2
 
@@ -624,7 +628,7 @@ func TestHealthMonitorService_checkDatabaseHealth_Exhausted(t *testing.T) {
 		eventCh <- e
 	})
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	// Set max open connections to 1 to simulate exhaustion scenario easier
 	db.SetMaxOpenConns(1)
@@ -651,7 +655,7 @@ func TestHealthMonitorService_runHealthChecks_ShutdownDuringInitialDelay(t *test
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	// Start the health checks in a goroutine
 	h.wg.Add(1)
@@ -690,7 +694,7 @@ func TestHealthMonitorService_GetHealthStatus_StuckRemediations(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	status := h.GetHealthStatus()
 
@@ -718,7 +722,7 @@ func TestHealthMonitorService_runInstanceHealthChecks_ShutdownDuringInitialDelay
 		instances: []*integration.ArrInstanceInfo{},
 	}
 
-	h := NewHealthMonitorService(db, eb, client)
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
 
 	// Start the instance health checks in a goroutine
 	h.wg.Add(1)
@@ -757,7 +761,7 @@ func TestHealthMonitorService_checkStuckRemediations_QueryError(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	// Drop the events table to force a query error
 	_, err = db.Exec("DROP TABLE events")
@@ -783,7 +787,7 @@ func TestHealthMonitorService_checkRepeatedFailures_QueryError(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	// Drop the events table to force a query error
 	_, err = db.Exec("DROP TABLE events")
@@ -820,7 +824,7 @@ func TestHealthMonitorService_checkInstanceHealth_MultipleInstances(t *testing.T
 		queueErr: nil,
 	}
 
-	h := NewHealthMonitorService(db, eb, client)
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
 	h.checkInstanceHealth()
 
 	// All instances should be checked (mock returns no error for all)
@@ -841,7 +845,7 @@ func TestHealthMonitorService_GetHealthStatus_QueryError(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	h := NewHealthMonitorService(db, eb, nil)
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
 
 	// Drop the events table to force a query error in GetHealthStatus
 	_, err = db.Exec("DROP TABLE events")

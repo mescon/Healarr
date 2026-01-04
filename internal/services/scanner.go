@@ -449,6 +449,12 @@ func (s *ScannerService) ScanFile(localPath string) error {
 	// are triggered by Sonarr/Radarr AFTER import is complete - the file is done being written.
 	// The recently-modified check only applies to path scans where we might find in-progress downloads.
 
+	// Capture file size before health check (for enriched corruption data)
+	var fileSize int64
+	if info, err := os.Stat(localPath); err == nil {
+		fileSize = info.Size()
+	}
+
 	// Use quick mode for single file scans (called from webhooks)
 	healthy, healthErr := s.detector.Check(localPath, "quick")
 
@@ -480,6 +486,7 @@ func (s *ScannerService) ScanFile(localPath string) error {
 			EventType:     domain.CorruptionDetected,
 			EventData: map[string]interface{}{
 				"file_path":       localPath,
+				"file_size":       fileSize,
 				"corruption_type": healthErr.Type,
 				"error_details":   healthErr.Message,
 				"source":          "webhook",
@@ -960,6 +967,7 @@ func (s *ScannerService) handleTrueCorruption(ctx context.Context, progress *Sca
 		EventType:     domain.CorruptionDetected,
 		EventData: map[string]interface{}{
 			"file_path":       sfc.filePath,
+			"file_size":       sfc.fileSize,
 			"path_id":         sfc.pathID,
 			"corruption_type": healthErr.Type,
 			"error_details":   healthErr.Message,
@@ -1583,6 +1591,12 @@ func (s *ScannerService) processPendingRescans() {
 		// Get scan path config for this path
 		autoRemediate, dryRun, _ := s.getScanPathConfig(f.filePath)
 
+		// Get file size for enriched data
+		var fileSize int64
+		if info, err := os.Stat(f.filePath); err == nil {
+			fileSize = info.Size()
+		}
+
 		// Emit corruption event
 		if err := s.eventBus.Publish(domain.Event{
 			AggregateType: "corruption",
@@ -1590,6 +1604,7 @@ func (s *ScannerService) processPendingRescans() {
 			EventType:     domain.CorruptionDetected,
 			EventData: map[string]interface{}{
 				"file_path":       f.filePath,
+				"file_size":       fileSize,
 				"path_id":         f.pathID,
 				"corruption_type": healthErr.Type,
 				"error_details":   healthErr.Message,

@@ -231,6 +231,7 @@ All configuration options can be set via environment variables or command-line f
 | `--max-retries` | `HEALARR_DEFAULT_MAX_RETRIES` | `3` | Default max remediation attempts |
 | `--verification-timeout` | `HEALARR_VERIFICATION_TIMEOUT` | `72h` | Max time to wait for file replacement |
 | `--verification-interval` | `HEALARR_VERIFICATION_INTERVAL` | `30s` | Polling interval for verification |
+| `--stale-threshold` | `HEALARR_STALE_THRESHOLD` | `24h` | Auto-fix items Healarr lost track of |
 | `--arr-rate-limit` | `HEALARR_ARR_RATE_LIMIT_RPS` | `5` | Max requests/second to *arr APIs |
 | `--arr-rate-burst` | `HEALARR_ARR_RATE_LIMIT_BURST` | `10` | Burst size for rate limiting |
 | `--version` / `-v` | - | - | Print version and exit |

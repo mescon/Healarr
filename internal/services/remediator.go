@@ -176,17 +176,36 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 
 		logger.Infof("Retry search triggered successfully for %s (media ID: %d)", filePath, mediaID)
 
+		// Fetch media details for rich display (gracefully degrades if unavailable)
+		eventData := map[string]interface{}{
+			"file_path": filePath,
+			"media_id":  mediaID,
+			"metadata":  metadata,
+			"path_id":   pathID,
+			"is_retry":  true,
+		}
+		if details, _ := r.arrClient.GetMediaDetails(mediaID, arrPath); details != nil {
+			eventData["media_title"] = details.Title
+			eventData["media_year"] = details.Year
+			eventData["media_type"] = details.MediaType
+			eventData["arr_type"] = details.ArrType
+			eventData["instance_name"] = details.InstanceName
+			if details.SeasonNumber > 0 {
+				eventData["season_number"] = details.SeasonNumber
+			}
+			if details.EpisodeNumber > 0 {
+				eventData["episode_number"] = details.EpisodeNumber
+			}
+			if details.EpisodeTitle != "" {
+				eventData["episode_title"] = details.EpisodeTitle
+			}
+		}
+
 		if err := r.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.SearchCompleted,
-			EventData: map[string]interface{}{
-				"file_path": filePath,
-				"media_id":  mediaID,
-				"metadata":  metadata,
-				"path_id":   pathID,
-				"is_retry":  true,
-			},
+			EventData:     eventData,
 		}); err != nil {
 			logger.Errorf("Failed to publish SearchCompleted event: %v", err)
 		}
@@ -366,17 +385,36 @@ func (r *RemediatorService) triggerSearch(corruptionID, filePath, arrPath string
 
 	logger.Infof("Remediation completed successfully for %s", filePath)
 
+	// Fetch media details for rich display (gracefully degrades if unavailable)
+	eventData := map[string]interface{}{
+		"file_path": filePath,
+		"media_id":  mediaID,
+		"metadata":  metadata,
+		"path_id":   pathID,
+	}
+	if details, _ := r.arrClient.GetMediaDetails(mediaID, arrPath); details != nil {
+		eventData["media_title"] = details.Title
+		eventData["media_year"] = details.Year
+		eventData["media_type"] = details.MediaType
+		eventData["arr_type"] = details.ArrType
+		eventData["instance_name"] = details.InstanceName
+		if details.SeasonNumber > 0 {
+			eventData["season_number"] = details.SeasonNumber
+		}
+		if details.EpisodeNumber > 0 {
+			eventData["episode_number"] = details.EpisodeNumber
+		}
+		if details.EpisodeTitle != "" {
+			eventData["episode_title"] = details.EpisodeTitle
+		}
+	}
+
 	// Publish search completed
 	if err := r.eventBus.Publish(domain.Event{
 		AggregateID:   corruptionID,
 		AggregateType: "corruption",
 		EventType:     domain.SearchCompleted,
-		EventData: map[string]interface{}{
-			"file_path": filePath,
-			"media_id":  mediaID,
-			"metadata":  metadata,
-			"path_id":   pathID,
-		},
+		EventData:     eventData,
 	}); err != nil {
 		logger.Errorf("Failed to publish SearchCompleted event: %v", err)
 	}

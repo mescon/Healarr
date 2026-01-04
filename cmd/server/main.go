@@ -40,6 +40,7 @@ func main() {
 	flagMaxRetries := flag.Int("max-retries", 0, "Default max remediation retries (env: HEALARR_DEFAULT_MAX_RETRIES, default: 3)")
 	flagVerificationTimeout := flag.Duration("verification-timeout", 0, "Max time to wait for file replacement (env: HEALARR_VERIFICATION_TIMEOUT, default: 72h)")
 	flagVerificationInterval := flag.Duration("verification-interval", 0, "Polling interval for verification (env: HEALARR_VERIFICATION_INTERVAL, default: 30s)")
+	flagStaleThreshold := flag.Duration("stale-threshold", 0, "Auto-fix items Healarr lost track of after this time (env: HEALARR_STALE_THRESHOLD, default: 24h)")
 	flagArrRateLimitRPS := flag.Float64("arr-rate-limit", 0, "Max requests per second to *arr APIs (env: HEALARR_ARR_RATE_LIMIT_RPS, default: 5)")
 	flagArrRateLimitBurst := flag.Int("arr-rate-burst", 0, "Burst size for *arr rate limiting (env: HEALARR_ARR_RATE_LIMIT_BURST, default: 10)")
 
@@ -65,6 +66,7 @@ func main() {
 		DefaultMaxRetries:    flagMaxRetries,
 		VerificationTimeout:  flagVerificationTimeout,
 		VerificationInterval: flagVerificationInterval,
+		StaleThreshold:       flagStaleThreshold,
 		ArrRateLimitRPS:      flagArrRateLimitRPS,
 		ArrRateLimitBurst:    flagArrRateLimitBurst,
 	}
@@ -100,6 +102,7 @@ func main() {
 	}
 	logger.Infof("  Verification Timeout: %s", cfg.VerificationTimeout)
 	logger.Infof("  Verification Interval: %s", cfg.VerificationInterval)
+	logger.Infof("  Stale Threshold: %s", cfg.StaleThreshold)
 	logger.Infof("  Default Max Retries: %d", cfg.DefaultMaxRetries)
 	logger.Infof("  *arr API Rate Limit: %.1f req/s (burst: %d)", cfg.ArrRateLimitRPS, cfg.ArrRateLimitBurst)
 	if cfg.RetentionDays > 0 {
@@ -212,6 +215,12 @@ func main() {
 	monitorService := services.NewMonitorService(eb, repo.DB)
 	logger.Infof("✓ Monitor Service (tracks corruption lifecycle)")
 
+	healthMonitorService := services.NewHealthMonitorService(repo.DB, eb, arrClient, cfg.StaleThreshold)
+	logger.Infof("✓ Health Monitor Service (detects stuck remediations)")
+
+	recoveryService := services.NewRecoveryService(repo.DB, eb, arrClient, pathMapper, healthChecker, cfg.StaleThreshold)
+	logger.Infof("✓ Recovery Service (recovers stale remediations on startup)")
+
 	schedulerService := services.NewSchedulerService(repo.DB, scannerService)
 	logger.Infof("✓ Scheduler Service (cron-based scans)")
 
@@ -236,6 +245,7 @@ func main() {
 	remediatorService.Start()
 	verifierService.Start()
 	monitorService.Start()
+	healthMonitorService.Start()
 
 	// Clean up any orphaned schedules before starting the scheduler
 	// This handles cases where scan paths were deleted but schedules remain
@@ -256,6 +266,9 @@ func main() {
 
 	// Start the rescan worker for files that had infrastructure errors
 	scannerService.StartRescanWorker()
+
+	// Run recovery service to reconcile stale in-progress items with arr state
+	recoveryService.Run()
 
 	// Start API Server
 	logger.Infof("Initializing REST API and WebSocket server...")
@@ -301,6 +314,10 @@ func main() {
 	logger.Infof("Stopping Notification Service...")
 	notifierService.Stop()
 	logger.Infof("✓ Notification Service stopped")
+
+	logger.Infof("Stopping Health Monitor Service...")
+	healthMonitorService.Shutdown()
+	logger.Infof("✓ Health Monitor Service stopped")
 
 	logger.Infof("Stopping Event Bus...")
 	eb.Shutdown()

@@ -127,6 +127,13 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 		if pathID.Valid {
 			corruption["path_id"] = pathID.Int64
 		}
+
+		// Fetch enriched data from event_data (file_size from CorruptionDetected, media info from SearchCompleted)
+		enriched := s.getEnrichedCorruptionData(id)
+		for k, v := range enriched {
+			corruption[k] = v
+		}
+
 		corruptions = append(corruptions, corruption)
 	}
 
@@ -134,6 +141,132 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 		"data":       corruptions,
 		"pagination": NewPaginationResponse(p, total),
 	})
+}
+
+// getEnrichedCorruptionData extracts enriched display data from event_data:
+// - file_size from CorruptionDetected
+// - media_title, media_type, arr_type from SearchCompleted
+// - quality, release_group, total_duration_seconds from VerificationSuccess
+// - download progress info from latest DownloadProgress
+func (s *RESTServer) getEnrichedCorruptionData(corruptionID string) map[string]interface{} {
+	enriched := make(map[string]interface{})
+
+	// Get file_size from CorruptionDetected event
+	var corruptionEventData sql.NullString
+	err := s.db.QueryRow(`
+		SELECT event_data FROM events
+		WHERE aggregate_id = ? AND event_type = 'CorruptionDetected'
+		ORDER BY created_at ASC LIMIT 1
+	`, corruptionID).Scan(&corruptionEventData)
+	if err == nil && corruptionEventData.Valid {
+		var data map[string]interface{}
+		if json.Unmarshal([]byte(corruptionEventData.String), &data) == nil {
+			if fs, ok := data["file_size"].(float64); ok && fs > 0 {
+				enriched["file_size"] = int64(fs)
+			}
+		}
+	}
+
+	// Get media info from SearchCompleted event (latest one if multiple)
+	var searchEventData sql.NullString
+	err = s.db.QueryRow(`
+		SELECT event_data FROM events
+		WHERE aggregate_id = ? AND event_type = 'SearchCompleted'
+		ORDER BY created_at DESC LIMIT 1
+	`, corruptionID).Scan(&searchEventData)
+	if err == nil && searchEventData.Valid {
+		var data map[string]interface{}
+		if json.Unmarshal([]byte(searchEventData.String), &data) == nil {
+			if title, ok := data["media_title"].(string); ok && title != "" {
+				enriched["media_title"] = title
+			}
+			if year, ok := data["media_year"].(float64); ok {
+				enriched["media_year"] = int(year)
+			}
+			if mediaType, ok := data["media_type"].(string); ok {
+				enriched["media_type"] = mediaType
+			}
+			if season, ok := data["season_number"].(float64); ok {
+				enriched["season_number"] = int(season)
+			}
+			if episode, ok := data["episode_number"].(float64); ok {
+				enriched["episode_number"] = int(episode)
+			}
+			if arrType, ok := data["arr_type"].(string); ok {
+				enriched["arr_type"] = arrType
+			}
+			if instanceName, ok := data["instance_name"].(string); ok {
+				enriched["instance_name"] = instanceName
+			}
+		}
+	}
+
+	// Get quality and duration from VerificationSuccess event (if resolved)
+	var verifyEventData sql.NullString
+	err = s.db.QueryRow(`
+		SELECT event_data FROM events
+		WHERE aggregate_id = ? AND event_type = 'VerificationSuccess'
+		ORDER BY created_at DESC LIMIT 1
+	`, corruptionID).Scan(&verifyEventData)
+	if err == nil && verifyEventData.Valid {
+		var data map[string]interface{}
+		if json.Unmarshal([]byte(verifyEventData.String), &data) == nil {
+			if quality, ok := data["quality"].(string); ok && quality != "" {
+				enriched["quality"] = quality
+			}
+			if releaseGroup, ok := data["release_group"].(string); ok && releaseGroup != "" {
+				enriched["release_group"] = releaseGroup
+			}
+			if totalDur, ok := data["total_duration_seconds"].(float64); ok {
+				enriched["total_duration_seconds"] = int64(totalDur)
+			}
+			if downloadDur, ok := data["download_duration_seconds"].(float64); ok {
+				enriched["download_duration_seconds"] = int64(downloadDur)
+			}
+			if newFilePath, ok := data["new_file_path"].(string); ok {
+				enriched["new_file_path"] = newFilePath
+			}
+			if newFileSize, ok := data["new_file_size"].(float64); ok {
+				enriched["new_file_size"] = int64(newFileSize)
+			}
+		}
+	}
+
+	// Get latest download progress info (for in-progress items)
+	var progressEventData sql.NullString
+	err = s.db.QueryRow(`
+		SELECT event_data FROM events
+		WHERE aggregate_id = ? AND event_type = 'DownloadProgress'
+		ORDER BY created_at DESC LIMIT 1
+	`, corruptionID).Scan(&progressEventData)
+	if err == nil && progressEventData.Valid {
+		var data map[string]interface{}
+		if json.Unmarshal([]byte(progressEventData.String), &data) == nil {
+			if progress, ok := data["progress"].(float64); ok {
+				enriched["download_progress"] = progress
+			}
+			if sizeBytes, ok := data["size_bytes"].(float64); ok {
+				enriched["download_size"] = int64(sizeBytes)
+			}
+			if sizeLeft, ok := data["size_remaining_bytes"].(float64); ok {
+				enriched["download_remaining"] = int64(sizeLeft)
+			}
+			if protocol, ok := data["protocol"].(string); ok {
+				enriched["download_protocol"] = protocol
+			}
+			if client, ok := data["download_client"].(string); ok {
+				enriched["download_client"] = client
+			}
+			if indexer, ok := data["indexer"].(string); ok {
+				enriched["indexer"] = indexer
+			}
+			if timeLeft, ok := data["time_left"].(string); ok {
+				enriched["download_time_left"] = timeLeft
+			}
+		}
+	}
+
+	return enriched
 }
 
 func (s *RESTServer) getRemediations(c *gin.Context) {

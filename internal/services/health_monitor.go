@@ -24,19 +24,24 @@ type HealthMonitorService struct {
 	stuckThreshold         time.Duration
 	repeatedFailureCount   int
 	instanceHealthInterval time.Duration
+	arrSyncInterval        time.Duration
 }
 
 // NewHealthMonitorService creates a new health monitoring service
-func NewHealthMonitorService(db *sql.DB, eb *eventbus.EventBus, arrClient integration.ArrClient) *HealthMonitorService {
+func NewHealthMonitorService(db *sql.DB, eb *eventbus.EventBus, arrClient integration.ArrClient, staleThreshold time.Duration) *HealthMonitorService {
+	if staleThreshold <= 0 {
+		staleThreshold = 24 * time.Hour
+	}
 	return &HealthMonitorService{
 		db:                     db,
 		eventBus:               eb,
 		arrClient:              arrClient,
 		shutdownCh:             make(chan struct{}),
 		checkInterval:          15 * time.Minute,
-		stuckThreshold:         24 * time.Hour,
+		stuckThreshold:         staleThreshold,
 		repeatedFailureCount:   2,
 		instanceHealthInterval: 5 * time.Minute,
+		arrSyncInterval:        30 * time.Minute,
 	}
 }
 
@@ -48,7 +53,10 @@ func (h *HealthMonitorService) Start() {
 	h.wg.Add(1)
 	go h.runInstanceHealthChecks()
 
-	logger.Infof("Health monitor started (check interval: %s, stuck threshold: %s)", h.checkInterval, h.stuckThreshold)
+	h.wg.Add(1)
+	go h.runArrStateSync()
+
+	logger.Infof("Health monitor started (check interval: %s, stuck threshold: %s, arr sync: %s)", h.checkInterval, h.stuckThreshold, h.arrSyncInterval)
 }
 
 // Shutdown gracefully stops the health monitor
@@ -355,4 +363,165 @@ func (h *HealthMonitorService) GetHealthStatus() map[string]interface{} {
 	}
 
 	return status
+}
+
+// runArrStateSync periodically syncs in-progress items with arr state
+func (h *HealthMonitorService) runArrStateSync() {
+	defer h.wg.Done()
+
+	ticker := time.NewTicker(h.arrSyncInterval)
+	defer ticker.Stop()
+
+	// Run initial sync after 5 minutes (give recovery service time to run first)
+	select {
+	case <-h.shutdownCh:
+		return
+	case <-time.After(5 * time.Minute):
+	}
+	h.syncWithArrState()
+
+	for {
+		select {
+		case <-h.shutdownCh:
+			return
+		case <-ticker.C:
+			h.syncWithArrState()
+		}
+	}
+}
+
+// syncWithArrState checks in-progress items against arr state and resolves discrepancies.
+// This catches cases where:
+// - Download completed but Healarr's monitoring goroutine died (e.g., after restart)
+// - User manually fixed the issue in arr UI
+// - arr imported the file but Healarr wasn't notified
+func (h *HealthMonitorService) syncWithArrState() {
+	if h.db == nil || h.arrClient == nil {
+		return
+	}
+
+	logger.Debugf("Health monitor: syncing in-progress items with arr state")
+
+	// Find items in active states that haven't been updated in the last hour
+	// (to avoid interfering with active monitoring)
+	query := `
+		SELECT
+			cs.corruption_id,
+			cs.file_path,
+			COALESCE(cs.path_id, 0) as path_id,
+			(
+				SELECT json_extract(e.event_data, '$.media_id')
+				FROM events e
+				WHERE e.aggregate_id = cs.corruption_id
+				AND e.event_type IN ('SearchCompleted', 'SearchStarted')
+				ORDER BY e.id DESC
+				LIMIT 1
+			) as media_id
+		FROM corruption_status cs
+		WHERE cs.current_state IN ('DownloadProgress', 'SearchCompleted', 'DownloadStarted')
+		AND cs.last_updated_at < datetime('now', '-1 hours')
+		AND cs.last_updated_at > datetime('now', '-7 days')
+	`
+
+	rows, err := h.db.Query(query)
+	if err != nil {
+		logger.Debugf("Health monitor: failed to query in-progress items: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var synced, exhausted int
+	for rows.Next() {
+		var corruptionID, filePath string
+		var pathID int64
+		var mediaIDRaw sql.NullFloat64
+
+		if err := rows.Scan(&corruptionID, &filePath, &pathID, &mediaIDRaw); err != nil {
+			continue
+		}
+
+		mediaID := int64(0)
+		if mediaIDRaw.Valid {
+			mediaID = int64(mediaIDRaw.Float64)
+		}
+
+		if mediaID == 0 {
+			continue // Can't check arr without media ID
+		}
+
+		// Check if arr has the file
+		hasFile, err := h.checkArrHasFile(filePath, mediaID)
+		if err != nil {
+			logger.Debugf("Health monitor: failed to check arr for %s: %v", filePath, err)
+			continue
+		}
+
+		if hasFile {
+			// File exists in arr - emit VerificationSuccess
+			// Note: We can't do full health verification here (no healthChecker),
+			// but if arr says hasFile=true, the import was successful
+			logger.Infof("Health monitor: arr reports file exists for %s, marking as resolved", filePath)
+			if err := h.eventBus.Publish(domain.Event{
+				AggregateID:   corruptionID,
+				AggregateType: "corruption",
+				EventType:     domain.VerificationSuccess,
+				EventData: map[string]interface{}{
+					"file_path":       filePath,
+					"path_id":         pathID,
+					"recovery_action": "arr_sync",
+					"note":            "Resolved via periodic arr state sync - arr reports hasFile=true",
+				},
+			}); err != nil {
+				logger.Errorf("Health monitor: failed to publish VerificationSuccess for %s: %v", corruptionID, err)
+			} else {
+				synced++
+			}
+		} else {
+			// Check if item is in arr queue
+			inQueue, _ := h.isInArrQueue(filePath)
+			if !inQueue {
+				// Not in queue and no file - item is gone
+				logger.Infof("Health monitor: item %s not in arr queue and no file, marking as exhausted", filePath)
+				if err := h.eventBus.Publish(domain.Event{
+					AggregateID:   corruptionID,
+					AggregateType: "corruption",
+					EventType:     domain.SearchExhausted,
+					EventData: map[string]interface{}{
+						"file_path":       filePath,
+						"path_id":         pathID,
+						"reason":          "item_vanished",
+						"recovery_action": "arr_sync",
+					},
+				}); err != nil {
+					logger.Errorf("Health monitor: failed to publish SearchExhausted for %s: %v", corruptionID, err)
+				} else {
+					exhausted++
+				}
+			}
+		}
+	}
+
+	if synced > 0 || exhausted > 0 {
+		logger.Infof("Health monitor: arr sync complete - resolved=%d, exhausted=%d", synced, exhausted)
+	}
+}
+
+// checkArrHasFile checks if arr reports the media as having a file
+func (h *HealthMonitorService) checkArrHasFile(filePath string, mediaID int64) (bool, error) {
+	// Use GetAllFilePaths to check if arr has file(s) for this media
+	// Pass nil metadata since we're just checking existence
+	allPaths, err := h.arrClient.GetAllFilePaths(mediaID, nil, filePath)
+	if err != nil {
+		return false, err
+	}
+	return len(allPaths) > 0, nil
+}
+
+// isInArrQueue checks if there's an active download for this file path
+func (h *HealthMonitorService) isInArrQueue(filePath string) (bool, error) {
+	queueItems, err := h.arrClient.GetQueueForPath(filePath)
+	if err != nil {
+		return false, err
+	}
+	return len(queueItems) > 0, nil
 }

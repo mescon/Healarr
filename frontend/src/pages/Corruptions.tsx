@@ -5,8 +5,8 @@ import { getCorruptions, retryCorruptions, ignoreCorruptions, deleteCorruptions,
 import DataGrid from '../components/ui/DataGrid';
 import RemediationJourney from '../components/RemediationJourney';
 import clsx from 'clsx';
-import { AlertTriangle, ArrowUpDown, Filter, RefreshCw, EyeOff, Trash2, X, AlertCircle, FolderOpen } from 'lucide-react';
-import { formatCorruptionType, formatCorruptionState } from '../lib/formatters';
+import { AlertTriangle, ArrowUpDown, Filter, RefreshCw, EyeOff, Trash2, X, AlertCircle, FolderOpen, Film, Tv } from 'lucide-react';
+import { formatCorruptionType, formatCorruptionState, formatBytes, formatDuration, getDownloadClientIcon, getArrIcon } from '../lib/formatters';
 import { useDateFormat } from '../lib/useDateFormat';
 import { useToast } from '../contexts/ToastContext';
 
@@ -292,34 +292,85 @@ const Corruptions = () => {
                     {
                         header: (
                             <button className="flex items-center gap-1 hover:text-slate-900 dark:hover:text-white" onClick={() => handleSort('file_path')}>
-                                File Path <ArrowUpDown className="w-3 h-3" />
+                                Media <ArrowUpDown className="w-3 h-3" />
                             </button>
                         ),
                         accessorKey: (row) => {
-                            // Extract meaningful parts from the path
-                            const parts = row.file_path.split('/');
-                            const filename = parts.pop() || '';
-                            // Get the last 2-3 meaningful directory parts (e.g., "Colony/Season 01")
-                            const relevantParts = parts.slice(-3).filter((p: string) => p && p !== 'mnt' && p !== 'media');
-                            const contextPath = relevantParts.join(' / ');
-                            
+                            // Format media title like "Colony S01E08" or "The Matrix (1999)"
+                            let displayTitle = '';
+                            let subtitle = '';
+                            const hasMediaInfo = row.media_title || row.media_type;
+
+                            if (row.media_title) {
+                                if (row.media_type === 'series' && row.season_number && row.episode_number) {
+                                    // Format: "Colony S01E08"
+                                    const s = String(row.season_number).padStart(2, '0');
+                                    const e = String(row.episode_number).padStart(2, '0');
+                                    displayTitle = `${row.media_title} S${s}E${e}`;
+                                } else if (row.media_year) {
+                                    // Format: "The Matrix (1999)"
+                                    displayTitle = `${row.media_title} (${row.media_year})`;
+                                } else {
+                                    displayTitle = row.media_title;
+                                }
+                            } else {
+                                // Fallback to filename
+                                const parts = row.file_path.split('/');
+                                displayTitle = parts.pop() || row.file_path;
+                            }
+
+                            // Build subtitle: instance name + file path context
+                            const pathParts = row.file_path.split('/');
+                            pathParts.pop(); // remove filename
+                            const contextPath = pathParts.slice(-2).filter((p: string) => p && p !== 'mnt' && p !== 'media').join(' / ');
+
+                            if (row.instance_name) {
+                                subtitle = `${row.instance_name} • ${contextPath}`;
+                            } else {
+                                subtitle = contextPath;
+                            }
+
                             return (
-                                <div className="flex flex-col max-w-lg">
-                                    <span className="font-medium text-slate-700 dark:text-slate-300 truncate" title={filename}>
-                                        {filename}
-                                    </span>
-                                    <span className="text-xs text-slate-500 truncate" title={row.file_path}>
-                                        {contextPath}
-                                    </span>
-                                    {row.last_error && (
-                                        <div className="mt-1 flex items-start gap-1 text-xs text-red-400 bg-red-500/10 p-1 rounded border border-red-500/20">
-                                            <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
-                                            <span className="line-clamp-2" title={row.last_error}>{row.last_error}</span>
-                                        </div>
-                                    )}
+                                <div className="flex items-start gap-2 max-w-lg">
+                                    {/* Media type icon */}
+                                    {row.arr_type ? (
+                                        <img src={getArrIcon(row.arr_type)} alt="" className="w-4 h-4 mt-0.5 opacity-60" />
+                                    ) : row.media_type === 'series' ? (
+                                        <Tv className="w-4 h-4 mt-0.5 text-slate-400" />
+                                    ) : row.media_type === 'movie' ? (
+                                        <Film className="w-4 h-4 mt-0.5 text-slate-400" />
+                                    ) : null}
+                                    <div className="flex flex-col min-w-0">
+                                        <span className="font-medium text-slate-700 dark:text-slate-300 truncate" title={hasMediaInfo ? row.file_path : displayTitle}>
+                                            {displayTitle}
+                                        </span>
+                                        <span className="text-xs text-slate-500 truncate" title={row.file_path}>
+                                            {subtitle}
+                                        </span>
+                                        {row.last_error && (
+                                            <div className="mt-1 flex items-start gap-1 text-xs text-red-400 bg-red-500/10 p-1 rounded border border-red-500/20">
+                                                <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+                                                <span className="line-clamp-2" title={row.last_error}>{row.last_error}</span>
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                             );
                         }
+                    },
+                    {
+                        header: 'Size',
+                        accessorKey: (row) => {
+                            // Show file size if available
+                            const size = row.file_size || row.new_file_size;
+                            if (!size) return <span className="text-slate-500">—</span>;
+                            return (
+                                <span className="text-slate-700 dark:text-slate-300 text-sm">
+                                    {formatBytes(size)}
+                                </span>
+                            );
+                        },
+                        className: 'w-24 text-right'
                     },
                     {
                         header: (
@@ -341,6 +392,49 @@ const Corruptions = () => {
                         ),
                         accessorKey: (row) => {
                             const { label, colorClass } = formatCorruptionState(row.state);
+
+                            // For downloading state, show progress info
+                            if (row.state === 'SearchCompleted' && row.download_progress !== undefined) {
+                                const progress = Math.round(row.download_progress);
+                                const downloaded = row.download_size && row.download_remaining
+                                    ? formatBytes(row.download_size - row.download_remaining)
+                                    : null;
+                                const total = row.download_size ? formatBytes(row.download_size) : null;
+
+                                return (
+                                    <div className="flex flex-col">
+                                        <div className="flex items-center gap-2">
+                                            {row.download_client && (
+                                                <img src={getDownloadClientIcon(row.download_client)} alt="" className="w-4 h-4" />
+                                            )}
+                                            <span className={clsx("px-2 py-0.5 rounded-full text-xs font-medium border", colorClass)}>
+                                                {progress}%
+                                            </span>
+                                        </div>
+                                        {downloaded && total && (
+                                            <span className="text-xs text-slate-500 mt-0.5">
+                                                {downloaded} / {total}
+                                            </span>
+                                        )}
+                                    </div>
+                                );
+                            }
+
+                            // For resolved state, show duration
+                            if (row.state === 'VerificationSuccess' && row.total_duration_seconds) {
+                                return (
+                                    <div className="flex flex-col">
+                                        <span className={clsx("px-2 py-1 rounded-full text-xs font-medium border", colorClass)}>
+                                            {label}
+                                        </span>
+                                        <span className="text-xs text-slate-500 mt-0.5">
+                                            took {formatDuration(row.total_duration_seconds)}
+                                        </span>
+                                    </div>
+                                );
+                            }
+
+                            // Default status badge
                             return (
                                 <span className={clsx("px-2 py-1 rounded-full text-xs font-medium border", colorClass)}>
                                     {label}
@@ -348,7 +442,7 @@ const Corruptions = () => {
                             );
                         }
                     },
-                    { header: 'Retries', accessorKey: 'retry_count', className: 'text-center' },
+                    { header: 'Retries', accessorKey: 'retry_count', className: 'text-center w-20' },
                 ]}
                 pagination={{
                     page: data?.pagination?.page || 1,

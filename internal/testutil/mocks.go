@@ -194,6 +194,7 @@ type MockArrClient struct {
 	GetRecentHistoryForMediaByPathFunc  func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error)
 	RemoveFromQueueByPathFunc           func(arrPath string, queueID int64, removeFromClient, blocklist bool) error
 	RefreshMonitoredDownloadsByPathFunc func(arrPath string) error
+	GetMediaDetailsFunc                 func(mediaID int64, arrPath string) (*integration.MediaDetails, error)
 
 	// Call tracking for assertions
 	mu    sync.Mutex
@@ -334,6 +335,14 @@ func (m *MockArrClient) RefreshMonitoredDownloadsByPath(arrPath string) error {
 		return m.RefreshMonitoredDownloadsByPathFunc(arrPath)
 	}
 	return nil
+}
+
+func (m *MockArrClient) GetMediaDetails(mediaID int64, arrPath string) (*integration.MediaDetails, error) {
+	m.recordCall("GetMediaDetails", mediaID, arrPath)
+	if m.GetMediaDetailsFunc != nil {
+		return m.GetMediaDetailsFunc(mediaID, arrPath)
+	}
+	return nil, nil
 }
 
 // MockPathMapper implements integration.PathMapper for testing.

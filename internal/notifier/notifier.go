@@ -231,6 +231,7 @@ func GetEventGroups() []EventGroup {
 				string(domain.ImportBlocked),
 				string(domain.ManuallyRemoved),
 				string(domain.DownloadIgnored),
+				string(domain.SearchExhausted),
 			},
 		},
 		{
@@ -665,6 +666,24 @@ func (n *Notifier) formatMessage(eventType string, data map[string]interface{}) 
 		return fmt.Sprintf("🔄 Retry scheduled (%d/%d): %s", retryCount, maxRetries, fileName)
 	case string(domain.MaxRetriesReached):
 		return fmt.Sprintf("⚠️ Max retries exhausted (%d): %s", maxRetries, fileName)
+	case string(domain.SearchExhausted):
+		reason, _ := data["reason"].(string)
+		attempts, _ := data["attempts"].(int)
+		if attempts == 0 {
+			// Try float64 (JSON numbers)
+			if f, ok := data["attempts"].(float64); ok {
+				attempts = int(f)
+			}
+		}
+		msg := fmt.Sprintf("🔍 No replacement found: %s", fileName)
+		if attempts > 0 {
+			msg += fmt.Sprintf("\n📊 Attempts: %d", attempts)
+		}
+		if reason != "" {
+			msg += fmt.Sprintf("\n📋 Reason: %s", reason)
+		}
+		msg += "\n👉 Check your indexers or manually search in Sonarr/Radarr"
+		return msg
 	default:
 		return fmt.Sprintf("📢 Event: %s", eventType)
 	}

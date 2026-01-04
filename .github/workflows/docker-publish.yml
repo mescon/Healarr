@@ -47,6 +47,19 @@ jobs:
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Get version for build
+        id: version
+        run: |
+          # For tags, use the tag name (v1.1.10 -> v1.1.10)
+          # For branches, use git describe to get last tag + commits (v1.1.9-5-g1a2b3c4)
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION=$(git describe --tags --always 2>/dev/null || echo "dev")
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Using version: ${VERSION}"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -58,4 +71,4 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
           build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
+            VERSION=${{ steps.version.outputs.version }}

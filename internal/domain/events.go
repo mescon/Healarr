@@ -27,6 +27,7 @@ const (
 	DownloadIgnored      EventType = "DownloadIgnored" // *arr marked download as ignored by user
 	RetryScheduled       EventType = "RetryScheduled"
 	MaxRetriesReached    EventType = "MaxRetriesReached"
+	SearchExhausted      EventType = "SearchExhausted" // No replacement found - arr search returned 0 results or item vanished
 	ScanStarted          EventType = "ScanStarted"
 	ScanCompleted        EventType = "ScanCompleted"
 	ScanFailed           EventType = "ScanFailed"
@@ -174,6 +175,7 @@ func (e *Event) GetStringSlice(key string) ([]string, bool) {
 // CorruptionEventData contains data for CorruptionDetected events.
 type CorruptionEventData struct {
 	FilePath       string `json:"file_path"`
+	FileSize       int64  `json:"file_size,omitempty"` // Original file size in bytes
 	PathID         int64  `json:"path_id,omitempty"`
 	CorruptionType string `json:"corruption_type"`
 	ErrorDetails   string `json:"error_details,omitempty"`
@@ -191,6 +193,7 @@ func (e *Event) ParseCorruptionEventData() (CorruptionEventData, bool) {
 	}
 	return CorruptionEventData{
 		FilePath:       filePath,
+		FileSize:       e.GetInt64Or("file_size", 0),
 		PathID:         e.GetInt64Or("path_id", 0),
 		CorruptionType: e.GetStringOr("corruption_type", ""),
 		ErrorDetails:   e.GetStringOr("error_details", ""),

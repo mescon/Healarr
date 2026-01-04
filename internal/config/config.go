@@ -48,6 +48,11 @@ type Config struct {
 	// VerificationInterval is the polling interval when checking for file replacement (default: 30s)
 	VerificationInterval time.Duration
 
+	// StaleThreshold is how long an item must be in an active state with no updates
+	// before it's considered stale and eligible for recovery (default: 24h)
+	// This accounts for downloads that may wait for unpacking, seeding, or queue delays
+	StaleThreshold time.Duration
+
 	// DefaultMaxRetries is the default retry limit for failed remediations (default: 3)
 	// Can be overridden per scan path in the UI
 	DefaultMaxRetries int
@@ -204,6 +209,7 @@ func Load() *Config {
 		LogLevel:             strings.ToLower(getEnvOrDefault("HEALARR_LOG_LEVEL", "info")),
 		VerificationTimeout:  getEnvDurationOrDefault("HEALARR_VERIFICATION_TIMEOUT", 72*time.Hour),
 		VerificationInterval: getEnvDurationOrDefault("HEALARR_VERIFICATION_INTERVAL", 30*time.Second),
+		StaleThreshold:       getEnvDurationOrDefault("HEALARR_STALE_THRESHOLD", 24*time.Hour),
 		DefaultMaxRetries:    getEnvIntOrDefault("HEALARR_DEFAULT_MAX_RETRIES", 3),
 		DryRunMode:           getEnvBoolOrDefault("HEALARR_DRY_RUN", false),
 		ArrRateLimitRPS:      getEnvFloatOrDefault("HEALARR_ARR_RATE_LIMIT_RPS", 5.0),
@@ -279,6 +285,7 @@ func NewTestConfig() *Config {
 		LogLevel:             "debug",
 		VerificationTimeout:  72 * time.Hour,
 		VerificationInterval: 30 * time.Second,
+		StaleThreshold:       24 * time.Hour,
 		DefaultMaxRetries:    3,
 		DryRunMode:           false,
 		ArrRateLimitRPS:      5,
@@ -347,6 +354,7 @@ type FlagOverrides struct {
 	LogLevel             *string
 	VerificationTimeout  *time.Duration
 	VerificationInterval *time.Duration
+	StaleThreshold       *time.Duration
 	DefaultMaxRetries    *int
 	DryRunMode           *bool
 	ArrRateLimitRPS      *float64
@@ -388,6 +396,9 @@ func ApplyFlags(flags FlagOverrides) {
 	}
 	if flags.VerificationInterval != nil && *flags.VerificationInterval != 0 {
 		cfg.VerificationInterval = *flags.VerificationInterval
+	}
+	if flags.StaleThreshold != nil && *flags.StaleThreshold != 0 {
+		cfg.StaleThreshold = *flags.StaleThreshold
 	}
 	if flags.DefaultMaxRetries != nil && *flags.DefaultMaxRetries != 0 {
 		cfg.DefaultMaxRetries = *flags.DefaultMaxRetries

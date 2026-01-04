@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.11] - 2026-01-04
+
+### Added
+- **Enriched Media Information**: Corruptions list now shows friendly media titles
+  - Movie/TV show titles instead of raw file paths (e.g., "Colony S01E08" instead of "/tv/Colony/S01E08.mkv")
+  - *arr instance icons (Sonarr, Radarr, Whisparr) for quick identification
+  - File size display in human-readable format
+  - Download progress indicator for items currently downloading
+- **Enhanced Remediation Journey**: Rich download and quality information
+  - SearchCompleted events show download client icon, protocol (Usenet/Torrent), and indexer
+  - DownloadProgress events display visual progress bar with size and ETA
+  - VerificationSuccess shows quality badge (4K/1080p/720p), release group, and duration metrics
+- **Quality Tier Badges**: Color-coded quality indicators
+  - UHD/4K (purple), 1080p (blue), 720p (green), SD (gray)
+  - Release group tags for easy identification
+- **Duration Metrics**: Track how long remediations take
+  - Download duration (time from search to import)
+  - Total duration (time from detection to resolution)
+
+### Changed
+- API now returns enriched corruption data from all event types (CorruptionDetected, SearchCompleted, DownloadProgress, VerificationSuccess)
+- Download client icons added: SABnzbd, NZBget, qBittorrent, Deluge, Transmission, ruTorrent, Flood, aria2, Download Station
+- Protocol icons added for Usenet and Torrent downloads
+
+### Fixed
+- Docker image version now shows proper semver (e.g., "v1.1.10-5-g1a2b3c4") instead of branch name when built from main
+
+## [1.1.10] - 2026-01-04
+
+### Added
+- **Startup Recovery Service**: Automatically recovers stale in-progress items on startup
+  - Reconciles Healarr state with actual *arr queue/history
+  - Marks items as resolved if arr reports file exists and is healthy
+  - Marks items as "No Replacement Found" if vanished from arr without import
+- **Periodic Arr State Sync**: HealthMonitorService syncs with arr state every 30 minutes
+  - Catches missed webhooks and state drift
+  - Automatically resolves items that completed while Healarr wasn't watching
+- **SearchExhausted Event Type**: New non-terminal state for "No Replacement Found"
+  - Distinct from MaxRetriesReached (which is for verification failures)
+  - Allows unlimited manual retries via the Retry button
+  - Notifications supported for this event type
+- **Configurable Stale Threshold**: `HEALARR_STALE_THRESHOLD` / `--stale-threshold`
+  - Auto-fixes items Healarr lost track of (after restarts, missed webhooks, etc.)
+  - Items inactive longer than this get checked against *arr to see what really happened
+  - Default: 24h - increase for slow download clients (e.g., `48h` for long seeding)
+
+### Changed
+- HealthMonitorService now properly started (was defined but never wired up)
+
+### Removed
+- Wiki and Discussions links from About page (not yet available)
+
 ## [1.1.6] - 2026-01-02
 
 ### Fixed

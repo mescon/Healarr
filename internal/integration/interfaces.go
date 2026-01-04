@@ -35,6 +35,10 @@ type ArrClient interface {
 	// Queue management
 	RemoveFromQueueByPath(arrPath string, queueID int64, removeFromClient, blocklist bool) error
 	RefreshMonitoredDownloadsByPath(arrPath string) error
+
+	// Media details - fetch friendly titles for display
+	// Returns nil (not error) if media not found, to allow graceful degradation
+	GetMediaDetails(mediaID int64, arrPath string) (*MediaDetails, error)
 }
 
 // QueueItemInfo represents a download queue item (simplified for interface)
@@ -49,11 +53,13 @@ type QueueItemInfo struct {
 	StatusMessages        []string // detailed status/warning messages from *arr
 	Protocol              string   // usenet, torrent
 	DownloadClient        string
+	Indexer               string   // Source indexer (NZBgeek, 1337x, etc.)
 	Size                  int64
 	SizeLeft              int64
 	Progress              float64 // calculated: (size - sizeleft) / size * 100
 	TimeLeft              string
 	EstimatedCompletion   string
+	AddedAt               string // When added to queue (ISO timestamp)
 	MovieID               int64
 	SeriesID              int64
 	EpisodeID             int64
@@ -70,6 +76,64 @@ type HistoryItemInfo struct {
 	SeriesID     int64
 	EpisodeID    int64
 	ImportedPath string // from data.importedPath for import events
+	// Quality and release info (from data field)
+	Quality        string // e.g., "Bluray-1080p"
+	ReleaseGroup   string // e.g., "DEMAND", "SPARKS"
+	Indexer        string // e.g., "NZBgeek", "1337x"
+	DownloadClient string // e.g., "SABnzbd", "qBittorrent"
+}
+
+// MediaDetails contains friendly display information about a movie or TV episode.
+// Used to show "Colony S01E08" instead of raw file paths.
+type MediaDetails struct {
+	Title         string // Movie title or Series name
+	Year          int    // Release year
+	MediaType     string // "movie" or "series"
+	SeasonNumber  int    // For TV only (0 for movies)
+	EpisodeNumber int    // For TV only (0 for movies)
+	EpisodeTitle  string // For TV only (empty for movies)
+	ArrType       string // "sonarr", "radarr", "whisparr"
+	InstanceName  string // e.g., "Radarr", "Radarr4K"
+}
+
+// FormatDisplayTitle returns a user-friendly title like "Colony S01E08" or "The Matrix (1999)"
+func (m *MediaDetails) FormatDisplayTitle() string {
+	if m == nil {
+		return ""
+	}
+	if m.MediaType == "series" && m.SeasonNumber > 0 && m.EpisodeNumber > 0 {
+		// Format: "Colony S01E08"
+		return m.Title + " S" + padZero(m.SeasonNumber) + "E" + padZero(m.EpisodeNumber)
+	}
+	if m.Year > 0 {
+		// Format: "The Matrix (1999)"
+		return m.Title + " (" + itoa(m.Year) + ")"
+	}
+	return m.Title
+}
+
+// padZero pads a number with leading zero if < 10
+func padZero(n int) string {
+	if n < 10 {
+		return "0" + itoa(n)
+	}
+	return itoa(n)
+}
+
+// itoa converts int to string without importing strconv
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	if n < 0 {
+		return "-" + itoa(-n)
+	}
+	var digits []byte
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
 }
 
 // HealthChecker defines the interface for checking file health

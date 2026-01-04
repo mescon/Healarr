@@ -2,10 +2,10 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getCorruptionHistory } from '../lib/api';
 import { useDateFormat } from '../lib/useDateFormat';
-import { formatCorruptionState, getEventDescription, getEventColorClass } from '../lib/formatters';
+import { formatCorruptionState, getEventDescription, getEventColorClass, formatBytes, formatDuration, formatQuality, getDownloadClientIcon } from '../lib/formatters';
 import {
     CheckCircle, AlertTriangle, Clock, Search, Trash2,
-    FileSearch, Activity, Shield, FileCheck, ChevronDown, Settings, Bell, BellOff, EyeOff, XCircle, Download, RefreshCw
+    FileSearch, Activity, Shield, FileCheck, ChevronDown, Settings, Bell, BellOff, EyeOff, XCircle, Download, RefreshCw, Film, Tv
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
@@ -246,6 +246,190 @@ const RemediationJourney: React.FC<RemediationJourneyProps> = ({ corruptionId, o
                                             primaryInfo = (
                                                 <div className="text-xs text-red-400 font-mono mt-1 break-all">
                                                     Error: <span className="text-red-300">{String(data.error)}</span>
+                                                </div>
+                                            );
+                                        }
+                                    }
+
+                                    // Enriched SearchCompleted: show download client, protocol, indexer
+                                    if (event.event_type === 'SearchCompleted' && event.data && typeof event.data === 'object') {
+                                        const data = event.data as Record<string, unknown>;
+                                        const hasEnrichedData = data.download_client || data.download_protocol || data.indexer || data.media_title;
+                                        if (hasEnrichedData) {
+                                            const mediaTitle = data.media_title as string;
+                                            const mediaType = data.media_type as string;
+                                            const seasonNum = data.season_number as number;
+                                            const episodeNum = data.episode_number as number;
+                                            const downloadClient = data.download_client as string;
+                                            const downloadProtocol = data.download_protocol as string;
+                                            const indexer = data.indexer as string;
+
+                                            primaryInfo = (
+                                                <div className="mt-2 space-y-1.5">
+                                                    {mediaTitle && (
+                                                        <div className="flex items-center gap-2 text-xs">
+                                                            {mediaType === 'series' ? (
+                                                                <Tv className="w-3.5 h-3.5 text-blue-400" />
+                                                            ) : (
+                                                                <Film className="w-3.5 h-3.5 text-purple-400" />
+                                                            )}
+                                                            <span className="text-slate-700 dark:text-slate-300 font-medium">
+                                                                {mediaTitle}
+                                                                {mediaType === 'series' && seasonNum && episodeNum && (
+                                                                    <span className="text-slate-500"> S{String(seasonNum).padStart(2, '0')}E{String(episodeNum).padStart(2, '0')}</span>
+                                                                )}
+                                                            </span>
+                                                        </div>
+                                                    )}
+                                                    <div className="flex items-center gap-3 text-xs text-slate-500">
+                                                        {downloadClient && (
+                                                            <span className="flex items-center gap-1.5">
+                                                                <img
+                                                                    src={getDownloadClientIcon(downloadClient)}
+                                                                    alt={downloadClient}
+                                                                    className="w-4 h-4 object-contain"
+                                                                    onError={(e) => { (e.target as HTMLImageElement).src = '/icons/download-clients/generic.svg'; }}
+                                                                />
+                                                                <span>{downloadClient}</span>
+                                                                {downloadProtocol && (
+                                                                    <span className="text-slate-600 dark:text-slate-400">({downloadProtocol})</span>
+                                                                )}
+                                                            </span>
+                                                        )}
+                                                        {indexer && (
+                                                            <span className="text-slate-600 dark:text-slate-400">
+                                                                via {indexer}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+                                    }
+
+                                    // Enriched DownloadProgress: show progress bar and client info
+                                    if (event.event_type === 'DownloadProgress' && event.data && typeof event.data === 'object') {
+                                        const data = event.data as Record<string, unknown>;
+                                        const progress = data.download_progress as number;
+                                        const downloadClient = data.download_client as string;
+                                        const downloadProtocol = data.download_protocol as string;
+                                        const downloadSize = data.download_size as number;
+                                        const downloadRemaining = data.download_remaining as number;
+                                        const timeLeft = data.download_time_left as string;
+
+                                        if (progress !== undefined) {
+                                            primaryInfo = (
+                                                <div className="mt-2 space-y-2">
+                                                    {/* Progress bar */}
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="flex-1 h-2 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden">
+                                                            <div
+                                                                className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                                                                style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+                                                            />
+                                                        </div>
+                                                        <span className="text-xs font-medium text-blue-400 w-12 text-right">
+                                                            {progress.toFixed(1)}%
+                                                        </span>
+                                                    </div>
+
+                                                    {/* Download info */}
+                                                    <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+                                                        {downloadClient && (
+                                                            <span className="flex items-center gap-1.5">
+                                                                <img
+                                                                    src={getDownloadClientIcon(downloadClient)}
+                                                                    alt={downloadClient}
+                                                                    className="w-4 h-4 object-contain"
+                                                                    onError={(e) => { (e.target as HTMLImageElement).src = '/icons/download-clients/generic.svg'; }}
+                                                                />
+                                                                <span>{downloadClient}</span>
+                                                                {downloadProtocol && (
+                                                                    <span className="text-slate-600 dark:text-slate-400">({downloadProtocol})</span>
+                                                                )}
+                                                            </span>
+                                                        )}
+                                                        {downloadSize && (
+                                                            <span>
+                                                                {downloadRemaining ? (
+                                                                    <>{formatBytes(downloadSize - downloadRemaining)} / {formatBytes(downloadSize)}</>
+                                                                ) : (
+                                                                    formatBytes(downloadSize)
+                                                                )}
+                                                            </span>
+                                                        )}
+                                                        {timeLeft && (
+                                                            <span className="text-slate-600 dark:text-slate-400">
+                                                                ~{timeLeft} remaining
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+                                    }
+
+                                    // Enriched VerificationSuccess: show quality, release group, duration
+                                    if (event.event_type === 'VerificationSuccess' && event.data && typeof event.data === 'object') {
+                                        const data = event.data as Record<string, unknown>;
+                                        const quality = data.quality as string;
+                                        const releaseGroup = data.release_group as string;
+                                        const newFileSize = data.new_file_size as number;
+                                        const originalFileSize = data.file_size as number;
+                                        const totalDuration = data.total_duration_seconds as number;
+                                        const downloadDuration = data.download_duration_seconds as number;
+
+                                        const hasEnrichedData = quality || releaseGroup || newFileSize || totalDuration;
+
+                                        if (hasEnrichedData) {
+                                            const qualityInfo = quality ? formatQuality(quality) : null;
+
+                                            primaryInfo = (
+                                                <div className="mt-2 space-y-2">
+                                                    {/* Quality and release badges */}
+                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                        {qualityInfo && (
+                                                            <span className={clsx(
+                                                                "px-2 py-0.5 rounded text-xs font-medium border",
+                                                                qualityInfo.colorClass
+                                                            )}>
+                                                                {qualityInfo.label}
+                                                            </span>
+                                                        )}
+                                                        {releaseGroup && (
+                                                            <span className="px-2 py-0.5 rounded text-xs font-medium bg-slate-500/10 text-slate-400 border border-slate-500/20">
+                                                                {releaseGroup}
+                                                            </span>
+                                                        )}
+                                                    </div>
+
+                                                    {/* File size and duration info */}
+                                                    <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+                                                        {newFileSize && (
+                                                            <span>
+                                                                {formatBytes(newFileSize)}
+                                                                {originalFileSize && originalFileSize !== newFileSize && (
+                                                                    <span className={clsx(
+                                                                        "ml-1",
+                                                                        newFileSize > originalFileSize ? "text-green-400" : "text-amber-400"
+                                                                    )}>
+                                                                        ({newFileSize > originalFileSize ? '+' : ''}{formatBytes(newFileSize - originalFileSize)})
+                                                                    </span>
+                                                                )}
+                                                            </span>
+                                                        )}
+                                                        {(totalDuration || downloadDuration) && (
+                                                            <span className="text-slate-600 dark:text-slate-400">
+                                                                {downloadDuration && (
+                                                                    <span>Download: {formatDuration(downloadDuration)}</span>
+                                                                )}
+                                                                {downloadDuration && totalDuration && <span> | </span>}
+                                                                {totalDuration && (
+                                                                    <span>Total: {formatDuration(totalDuration)}</span>
+                                                                )}
+                                                            </span>
+                                                        )}
+                                                    </div>
                                                 </div>
                                             );
                                         }

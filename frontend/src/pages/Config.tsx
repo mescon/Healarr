@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder, Info, ExternalLink, ArrowUpCircle, Github, Bug, HardDrive, Book, MessageCircle } from 'lucide-react';
+import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder, Info, ExternalLink, ArrowUpCircle, Github, Bug, HardDrive } from 'lucide-react';
 import FileBrowser from '../components/ui/FileBrowser';
 import { useDateFormat, type DateFormatPreset } from '../lib/useDateFormat';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -2982,24 +2982,6 @@ const AboutSection = () => {
                                 >
                                     <Download className="w-4 h-4" />
                                     Releases
-                                </a>
-                                <a
-                                    href={systemInfo.links.wiki}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm text-slate-700 dark:text-slate-300 transition-colors"
-                                >
-                                    <Book className="w-4 h-4" />
-                                    Wiki
-                                </a>
-                                <a
-                                    href={systemInfo.links.discussions}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm text-slate-700 dark:text-slate-300 transition-colors"
-                                >
-                                    <MessageCircle className="w-4 h-4" />
-                                    Discussions
                                 </a>
                             </div>
                         </div>
