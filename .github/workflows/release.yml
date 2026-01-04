@@ -87,16 +87,56 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout for CHANGELOG
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        env:
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Get version from tag (v1.1.12 -> 1.1.12)
+          VERSION=${GITHUB_REF#refs/tags/v}
+
+          # Extract the section for this version from CHANGELOG.md
+          # Finds content between "## [VERSION]" and the next "## [" or end of file
+          NOTES=$(awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (found) exit
+              if ($0 ~ "\\[" ver "\\]") found=1
+              next
+            }
+            found { print }
+          ' CHANGELOG.md)
+
+          # If no notes found, use a default message
+          if [ -z "$NOTES" ]; then
+            NOTES="See [CHANGELOG.md](https://github.com/${GH_REPO}/blob/main/CHANGELOG.md) for details."
+          fi
+
+          # Append full changelog link
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            NOTES="${NOTES}
+
+---
+
+**Full Changelog**: https://github.com/${GH_REPO}/compare/${PREV_TAG}...v${VERSION}"
+          fi
+
+          # Write to file for multi-line support
+          echo "$NOTES" > release_notes.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
-          generate_release_notes: true
+          body_path: release_notes.md
           draft: false
           prerelease: ${{ contains(github.ref, '-') }}
