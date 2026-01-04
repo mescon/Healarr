@@ -123,11 +123,7 @@ jobs:
           # Append full changelog link
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           if [ -n "$PREV_TAG" ]; then
-            NOTES="${NOTES}
-
----
-
-**Full Changelog**: https://github.com/${GH_REPO}/compare/${PREV_TAG}...v${VERSION}"
+            NOTES=$(printf '%s\n\n---\n\n**Full Changelog**: https://github.com/%s/compare/%s...v%s' "$NOTES" "$GH_REPO" "$PREV_TAG" "$VERSION")
           fi
 
           # Write to file for multi-line support
