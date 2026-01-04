@@ -338,12 +338,14 @@ if (navigator.clipboard && window.isSecureContext) {
 
 1. **Clustering**: Single-instance only
 2. **Fine-grained permissions**: Single admin user
-3. **Metrics export**: No Prometheus integration
-4. **Plugin system**: Hardcoded integrations
+3. **Plugin system**: Hardcoded integrations
+4. **Scheduled reports**: Email summaries
+5. **Multiple user accounts**: With role-based access
 
-### Potential Enhancements
+### Already Implemented (v1.0.0 - v1.1.10)
 
-1. **More notification types**: Telegram, email
-2. **Health check alternatives**: MediaInfo, HandBrake
-3. **Scheduled reports**: Email summaries
-4. **Multiple user accounts**: With role-based access
+1. ✅ **Prometheus metrics** - Added in v1.1.0 at `/metrics` endpoint
+2. ✅ **Telegram, email, and more** - Discord, Slack, Telegram, Pushover, Gotify, ntfy, Email (SMTP)
+3. ✅ **Health check alternatives** - ffprobe, MediaInfo, and HandBrake supported
+4. ✅ **Startup recovery** - Auto-fixes items Healarr lost track of (v1.1.10)
+5. ✅ **Periodic *arr sync** - Every 30 minutes to catch missed updates (v1.1.10)

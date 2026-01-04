@@ -4,7 +4,7 @@
 
 Healarr (**H**ealth **E**valuation **A**nd **L**ibrary **A**uto-**R**ecovery for ***aRR**) solves the silent data corruption problem in self-hosted media libraries by providing automated detection, remediation, and verification integrated with the *arr ecosystem.
 
-**Current Version**: v1.1.0
+**Current Version**: v1.1.10
 **Status**: Production-ready, feature-complete for v1.x scope
 
 ---
@@ -287,7 +287,8 @@ Healarr succeeds when users can:
 | v0.9 | Per-path configuration, dry-run mode |
 | v1.0 | Queue-based verification, Whisparr v2/v3 support |
 | v1.0.3 | Stability improvements, accessibility error separation |
-| v1.1.0 | **Current** - Circuit breaker, clock abstraction, comprehensive test coverage |
+| v1.1.0 | Circuit breaker, clock abstraction, comprehensive test coverage |
+| v1.1.10 | **Current** - Startup recovery, periodic *arr sync, stale item auto-fix |
 
 ---
 
