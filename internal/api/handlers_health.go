@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,8 +15,13 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
-// handleHealth returns server health status for container orchestration
+// handleHealth returns server health status for container orchestration.
+// This endpoint must return quickly (within 5 seconds) for Docker healthchecks.
 func (s *RESTServer) handleHealth(c *gin.Context) {
+	// Create a context with timeout to ensure we don't hang
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
 	health := gin.H{
 		"status":  "healthy",
 		"version": config.Version,
@@ -34,9 +40,9 @@ func (s *RESTServer) handleHealth(c *gin.Context) {
 		health["uptime"] = fmt.Sprintf("%dm", minutes)
 	}
 
-	// Check database
+	// Check database with timeout
 	dbHealth := gin.H{"status": "connected"}
-	if err := s.db.Ping(); err != nil {
+	if err := s.db.PingContext(ctx); err != nil {
 		health["status"] = "degraded"
 		dbHealth["status"] = "error"
 		dbHealth["error"] = err.Error()
@@ -54,7 +60,7 @@ func (s *RESTServer) handleHealth(c *gin.Context) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	rows, err := s.db.Query("SELECT url, api_key FROM arr_instances WHERE enabled = 1")
+	rows, err := s.db.QueryContext(ctx, "SELECT url, api_key FROM arr_instances WHERE enabled = 1")
 	if err == nil {
 		defer rows.Close()
 		client := &http.Client{Timeout: 2 * time.Second}
@@ -81,13 +87,17 @@ func (s *RESTServer) handleHealth(c *gin.Context) {
 
 		totalArr = len(instances)
 
-		// Check all instances in parallel
+		// Check all instances in parallel with context
 		for _, inst := range instances {
 			wg.Add(1)
 			go func(url, apiKey string) {
 				defer wg.Done()
 				testURL := strings.TrimSuffix(url, "/") + "/api/v3/system/status?apikey=" + apiKey
-				if resp, err := client.Get(testURL); err == nil {
+				req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
+				if err != nil {
+					return
+				}
+				if resp, err := client.Do(req); err == nil {
 					if err := resp.Body.Close(); err != nil {
 						logger.Debugf("Failed to close response body: %v", err)
 					}
@@ -103,18 +113,18 @@ func (s *RESTServer) handleHealth(c *gin.Context) {
 	}
 	health["arr_instances"] = gin.H{"online": onlineArr, "total": totalArr}
 
-	// Get active scans count
+	// Get active scans count - this should be fast (just a map read)
 	activeScans := len(s.scanner.GetActiveScans())
 	health["active_scans"] = activeScans
 
-	// Get pending corruptions count
+	// Get pending corruptions count with timeout
 	var pending int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM corruption_status WHERE current_state = 'CorruptionDetected'").Scan(&pending); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM corruption_status WHERE current_state = 'CorruptionDetected'").Scan(&pending); err != nil {
 		logger.Debugf("Failed to query pending corruptions: %v", err)
 	}
 	health["pending_corruptions"] = pending
 
-	// Get WebSocket connections count
+	// Get WebSocket connections count - this should be fast (just a map len)
 	health["websocket_clients"] = s.hub.ClientCount()
 
 	// Include any configuration warnings

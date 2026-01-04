@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.12] - 2026-01-04
+
+### Fixed
+- **API endpoints hanging**: Multiple API endpoints could hang indefinitely if database was locked by background services
+  - Added 5-second timeout context to all database operations in health and corruptions handlers
+  - `/api/health` now guaranteed to return within timeout for Docker healthchecks
+  - `/api/corruptions` and related endpoints now return gracefully under database contention
+- **Test infrastructure**: Fixed test database connection starvation causing test timeouts
+  - Enabled WAL mode for concurrent reads in tests
+  - Increased max connections to prevent EventBus/handler contention
+
 ## [1.1.11] - 2026-01-04
 
 ### Added

@@ -35,12 +35,20 @@ func setupCorruptionsTestDB(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
-	db.SetMaxOpenConns(1)
+	// Configure SQLite for concurrent access in tests
+	// WAL mode allows concurrent reads while writes are happening
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		os.RemoveAll(tmpDir)
+		t.Fatalf("Failed to set WAL mode: %v", err)
+	}
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		db.Close()
 		os.RemoveAll(tmpDir)
 		t.Fatalf("Failed to enable foreign keys: %v", err)
 	}
+	// Allow multiple connections for concurrent EventBus and handler operations
+	db.SetMaxOpenConns(5)
 
 	schema := `
 		CREATE TABLE events (

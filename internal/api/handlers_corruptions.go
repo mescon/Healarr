@@ -1,19 +1,28 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/logger"
 )
 
+// dbTimeout is the maximum time to wait for database operations
+const dbTimeout = 5 * time.Second
+
 func (s *RESTServer) getCorruptions(c *gin.Context) {
+	// Create context with timeout to prevent blocking on DB locks
+	ctx, cancel := context.WithTimeout(c.Request.Context(), dbTimeout)
+	defer cancel()
+
 	// Parse pagination with config
 	cfg := PaginationConfig{
 		DefaultLimit:     50,
@@ -79,7 +88,7 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	// Get total count with filter
 	var total int
 	countQuery := "SELECT COUNT(*) " + baseQuery + whereClause
-	err := s.db.QueryRow(countQuery, args...).Scan(&total)
+	err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -95,7 +104,7 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	query := fmt.Sprintf("SELECT corruption_id, current_state, retry_count, file_path, path_id, last_error, detected_at, last_updated_at, corruption_type %s%s ORDER BY %s %s LIMIT ? OFFSET ?", baseQuery, whereClause, dbSortField, strings.ToUpper(p.SortOrder))
 	args = append(args, p.Limit, p.Offset)
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -129,7 +138,7 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 		}
 
 		// Fetch enriched data from event_data (file_size from CorruptionDetected, media info from SearchCompleted)
-		enriched := s.getEnrichedCorruptionData(id)
+		enriched := s.getEnrichedCorruptionData(ctx, id)
 		for k, v := range enriched {
 			corruption[k] = v
 		}
@@ -148,12 +157,12 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 // - media_title, media_type, arr_type from SearchCompleted
 // - quality, release_group, total_duration_seconds from VerificationSuccess
 // - download progress info from latest DownloadProgress
-func (s *RESTServer) getEnrichedCorruptionData(corruptionID string) map[string]interface{} {
+func (s *RESTServer) getEnrichedCorruptionData(ctx context.Context, corruptionID string) map[string]interface{} {
 	enriched := make(map[string]interface{})
 
 	// Get file_size from CorruptionDetected event
 	var corruptionEventData sql.NullString
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT event_data FROM events
 		WHERE aggregate_id = ? AND event_type = 'CorruptionDetected'
 		ORDER BY created_at ASC LIMIT 1
@@ -169,7 +178,7 @@ func (s *RESTServer) getEnrichedCorruptionData(corruptionID string) map[string]i
 
 	// Get media info from SearchCompleted event (latest one if multiple)
 	var searchEventData sql.NullString
-	err = s.db.QueryRow(`
+	err = s.db.QueryRowContext(ctx, `
 		SELECT event_data FROM events
 		WHERE aggregate_id = ? AND event_type = 'SearchCompleted'
 		ORDER BY created_at DESC LIMIT 1
@@ -203,7 +212,7 @@ func (s *RESTServer) getEnrichedCorruptionData(corruptionID string) map[string]i
 
 	// Get quality and duration from VerificationSuccess event (if resolved)
 	var verifyEventData sql.NullString
-	err = s.db.QueryRow(`
+	err = s.db.QueryRowContext(ctx, `
 		SELECT event_data FROM events
 		WHERE aggregate_id = ? AND event_type = 'VerificationSuccess'
 		ORDER BY created_at DESC LIMIT 1
@@ -234,7 +243,7 @@ func (s *RESTServer) getEnrichedCorruptionData(corruptionID string) map[string]i
 
 	// Get latest download progress info (for in-progress items)
 	var progressEventData sql.NullString
-	err = s.db.QueryRow(`
+	err = s.db.QueryRowContext(ctx, `
 		SELECT event_data FROM events
 		WHERE aggregate_id = ? AND event_type = 'DownloadProgress'
 		ORDER BY created_at DESC LIMIT 1
@@ -270,19 +279,23 @@ func (s *RESTServer) getEnrichedCorruptionData(corruptionID string) map[string]i
 }
 
 func (s *RESTServer) getRemediations(c *gin.Context) {
+	// Create context with timeout to prevent blocking on DB locks
+	ctx, cancel := context.WithTimeout(c.Request.Context(), dbTimeout)
+	defer cancel()
+
 	// Parse pagination (no sorting - fixed order by last_updated_at DESC)
 	p := ParsePagination(c, DefaultPaginationConfig())
 
 	// Get total count
 	var total int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM corruption_status WHERE current_state = ?", string(domain.VerificationSuccess)).Scan(&total)
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM corruption_status WHERE current_state = ?", string(domain.VerificationSuccess)).Scan(&total)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	// Get paginated data
-	rows, err := s.db.Query("SELECT corruption_id, file_path, last_updated_at FROM corruption_status WHERE current_state = ? ORDER BY last_updated_at DESC LIMIT ? OFFSET ?", string(domain.VerificationSuccess), p.Limit, p.Offset)
+	rows, err := s.db.QueryContext(ctx, "SELECT corruption_id, file_path, last_updated_at FROM corruption_status WHERE current_state = ? ORDER BY last_updated_at DESC LIMIT ? OFFSET ?", string(domain.VerificationSuccess), p.Limit, p.Offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -310,8 +323,12 @@ func (s *RESTServer) getRemediations(c *gin.Context) {
 }
 
 func (s *RESTServer) getCorruptionHistory(c *gin.Context) {
+	// Create context with timeout to prevent blocking on DB locks
+	ctx, cancel := context.WithTimeout(c.Request.Context(), dbTimeout)
+	defer cancel()
+
 	id := c.Param("id")
-	rows, err := s.db.Query("SELECT event_type, event_data, created_at FROM events WHERE aggregate_id = ? ORDER BY created_at ASC", id)
+	rows, err := s.db.QueryContext(ctx, "SELECT event_type, event_data, created_at FROM events WHERE aggregate_id = ? ORDER BY created_at ASC", id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -345,6 +362,10 @@ func (s *RESTServer) getCorruptionHistory(c *gin.Context) {
 
 // retryCorruptions triggers a manual retry for selected corruptions
 func (s *RESTServer) retryCorruptions(c *gin.Context) {
+	// Create context with timeout to prevent blocking on DB locks
+	ctx, cancel := context.WithTimeout(c.Request.Context(), dbTimeout)
+	defer cancel()
+
 	var req struct {
 		IDs []string `json:"ids"`
 	}
@@ -362,7 +383,7 @@ func (s *RESTServer) retryCorruptions(c *gin.Context) {
 	for _, id := range req.IDs {
 		var filePath sql.NullString
 		var pathID sql.NullInt64
-		err := s.db.QueryRow(`
+		err := s.db.QueryRowContext(ctx, `
 			SELECT
 				json_extract(event_data, '$.file_path'),
 				json_extract(event_data, '$.path_id')
@@ -435,6 +456,10 @@ func (s *RESTServer) ignoreCorruptions(c *gin.Context) {
 
 // deleteCorruptions removes corruption entries from the database
 func (s *RESTServer) deleteCorruptions(c *gin.Context) {
+	// Create context with timeout to prevent blocking on DB locks
+	ctx, cancel := context.WithTimeout(c.Request.Context(), dbTimeout)
+	defer cancel()
+
 	var req struct {
 		IDs []string `json:"ids"`
 	}
@@ -450,7 +475,7 @@ func (s *RESTServer) deleteCorruptions(c *gin.Context) {
 
 	deleted := 0
 	for _, id := range req.IDs {
-		result, err := s.db.Exec(`DELETE FROM events WHERE aggregate_id = ?`, id)
+		result, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE aggregate_id = ?`, id)
 		if err != nil {
 			logger.Errorf("Failed to delete events for corruption %s: %v", id, err)
 			continue
