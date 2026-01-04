@@ -631,3 +631,56 @@ export const checkForUpdates = async (): Promise<UpdateCheckResponse> => {
     const { data } = await api.get<UpdateCheckResponse>('/updates/check');
     return data;
 };
+
+// --- System Info API ---
+
+export interface SystemConfigInfo {
+    port: string;
+    base_path: string;
+    base_path_source: string;
+    log_level: string;
+    data_dir: string;
+    database_path: string;
+    log_dir: string;
+    dry_run_mode: boolean;
+    retention_days: number;
+    default_max_retries: number;
+    verification_timeout: string;
+    verification_interval: string;
+    arr_rate_limit_rps: number;
+    arr_rate_limit_burst: number;
+}
+
+export interface MountInfo {
+    source: string;
+    destination: string;
+    type?: string;
+    read_only: boolean;
+}
+
+export interface SystemLinks {
+    github: string;
+    issues: string;
+    releases: string;
+    wiki: string;
+    discussions: string;
+}
+
+export interface SystemInfo {
+    version: string;
+    environment: 'docker' | 'native';
+    os: string;
+    arch: string;
+    go_version: string;
+    uptime: string;
+    uptime_seconds: number;
+    started_at: string;
+    config: SystemConfigInfo;
+    mounts?: MountInfo[];
+    links: SystemLinks;
+}
+
+export const getSystemInfo = async (): Promise<SystemInfo> => {
+    const { data } = await api.get<SystemInfo>('/system/info');
+    return data;
+};

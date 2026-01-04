@@ -177,6 +177,9 @@ func (s *RESTServer) setupRoutes() {
 		// Health check endpoint (no authentication required)
 		api.GET("/health", s.handleHealth)
 
+		// System info endpoint (no authentication required - useful for debugging)
+		api.GET("/system/info", s.handleSystemInfo)
+
 		// Prometheus metrics endpoint (no authentication required for scraping)
 		api.GET("/metrics", gin.WrapH(s.metrics.Handler()))
 

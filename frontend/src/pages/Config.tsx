@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder, Info, ExternalLink, ArrowUpCircle } from 'lucide-react';
+import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder, Info, ExternalLink, ArrowUpCircle, Github, Bug, HardDrive, Book, MessageCircle } from 'lucide-react';
 import FileBrowser from '../components/ui/FileBrowser';
 import { useDateFormat, type DateFormatPreset } from '../lib/useDateFormat';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -16,6 +16,7 @@ import {
     triggerScanAll, exportConfig, importConfig, downloadDatabaseBackup,
     pauseAllScans, resumeAllScans, cancelAllScans, getDetectionPreview,
     checkForUpdates,
+    getSystemInfo,
     type ArrInstance, type ScanPath, type NotificationConfig, type NotificationLogEntry, type ConfigExport
 } from '../lib/api';
 import clsx from 'clsx';
@@ -2400,31 +2401,68 @@ const PROVIDER_CONFIGS = {
     }
 };
 
+// Platform icons as inline SVGs
+const DockerIcon = ({ className }: { className?: string }) => (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+        <path d="M13.983 11.078h2.119a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.119a.185.185 0 00-.185.185v1.888c0 .102.083.185.185.185m-2.954-5.43h2.118a.186.186 0 00.186-.186V3.574a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.186m0 2.716h2.118a.187.187 0 00.186-.186V6.29a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.887c0 .102.082.185.185.186m-2.93 0h2.12a.186.186 0 00.184-.186V6.29a.185.185 0 00-.185-.185H8.1a.185.185 0 00-.185.185v1.887c0 .102.083.185.185.186m-2.964 0h2.119a.186.186 0 00.185-.186V6.29a.185.185 0 00-.185-.185H5.136a.186.186 0 00-.186.185v1.887c0 .102.084.185.186.186m5.893 2.715h2.118a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.185m-2.93 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.083.185.185.185m-2.964 0h2.119a.185.185 0 00.185-.185V9.006a.185.185 0 00-.185-.186h-2.119a.186.186 0 00-.186.186v1.887c0 .102.084.185.186.185m-2.92 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.082.185.185.185M23.763 9.89c-.065-.051-.672-.51-1.954-.51-.338.001-.676.03-1.01.087-.248-1.7-1.653-2.53-1.716-2.566l-.344-.199-.226.327c-.284.438-.49.922-.612 1.43-.23.97-.09 1.882.403 2.661-.595.332-1.55.413-1.744.42H.751a.751.751 0 00-.75.748 11.376 11.376 0 00.692 4.062c.545 1.428 1.355 2.48 2.41 3.124 1.18.723 3.1 1.137 5.275 1.137.983.003 1.963-.086 2.93-.266a12.248 12.248 0 003.823-1.389c.98-.567 1.86-1.288 2.61-2.136 1.252-1.418 1.998-2.997 2.553-4.4h.221c1.372 0 2.215-.549 2.68-1.009.309-.293.55-.65.707-1.046l.098-.288z"/>
+    </svg>
+);
+
+const LinuxIcon = ({ className }: { className?: string }) => (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+        <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002c.186-.133.36-.2.53-.2zm-1.062 2.674c.05 0 .105.003.156.018a.5.5 0 01.077.022l-.074-.005h-.002c-.104.003-.203.02-.296.07-.09.049-.175.115-.26.199-.09.135-.168.2-.213.335h.002c-.03.098-.045.198-.05.3-.004.098.004.2.02.3.012.066.03.132.05.197a.39.39 0 00.076.155c.036.042.09.09.136.111.046.024.1.039.154.039.111 0 .199-.068.299-.2.1-.135.18-.27.24-.404.059-.066.12-.2.179-.335.06-.134.124-.268.178-.402.01-.02.017-.038.024-.055a.093.093 0 01.007-.013l.001-.003.003-.005-.001.001.002-.005h.004l.006-.008.006-.007.003-.004.004-.005.006-.006-.001.001.002-.002c.016-.013.032-.024.048-.034.016-.009.032-.015.05-.02a.2.2 0 01.05-.008c.027-.002.053-.002.08-.002z"/>
+    </svg>
+);
+
+const AppleIcon = ({ className }: { className?: string }) => (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+        <path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/>
+    </svg>
+);
+
+const WindowsIcon = ({ className }: { className?: string }) => (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+        <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/>
+    </svg>
+);
+
 // About Section - Version info, changelog, and update instructions
 const AboutSection = () => {
-    const { data: updateInfo, isLoading, error, refetch } = useQuery({
+    const { data: updateInfo, isLoading: updateLoading, error: updateError, refetch } = useQuery({
         queryKey: ['updateCheck'],
         queryFn: checkForUpdates,
         staleTime: 300000, // 5 minutes
         retry: 1,
     });
 
-    // Parse inline markdown elements (bold, links, URLs) into React nodes
+    const { data: systemInfo, isLoading: systemLoading } = useQuery({
+        queryKey: ['systemInfo'],
+        queryFn: getSystemInfo,
+        staleTime: 60000, // 1 minute
+        retry: 1,
+    });
+
+    // Determine platform from system info
+    const currentPlatform = systemInfo?.environment === 'docker' ? 'docker' : systemInfo?.os || 'unknown';
+
+    // Parse inline markdown elements (bold, links, URLs, code) into React nodes
     const parseInlineMarkdown = (text: string, keyPrefix: string): React.ReactNode[] => {
         const result: React.ReactNode[] = [];
         let remaining = text;
         let partIndex = 0;
 
         while (remaining.length > 0) {
-            // Match markdown links [text](url), bold **text**, or bare URLs
+            // Match markdown links [text](url), bold **text**, inline code `text`, or bare URLs
             const mdLinkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
             const boldMatch = remaining.match(/\*\*([^*]+)\*\*/);
+            const codeMatch = remaining.match(/`([^`]+)`/);
             const urlMatch = remaining.match(/(https?:\/\/[^\s<>\[\]()]+)/);
 
             // Find the earliest match
             const matches = [
                 mdLinkMatch ? { type: 'mdLink', match: mdLinkMatch, index: mdLinkMatch.index! } : null,
                 boldMatch ? { type: 'bold', match: boldMatch, index: boldMatch.index! } : null,
+                codeMatch ? { type: 'code', match: codeMatch, index: codeMatch.index! } : null,
                 urlMatch ? { type: 'url', match: urlMatch, index: urlMatch.index! } : null,
             ].filter(Boolean).sort((a, b) => a!.index - b!.index);
 
@@ -2461,6 +2499,14 @@ const AboutSection = () => {
                     <strong key={`${keyPrefix}-bold-${partIndex++}`} className="font-semibold text-slate-700 dark:text-slate-300">
                         {boldText}
                     </strong>
+                );
+                remaining = remaining.substring(first.index + fullMatch.length);
+            } else if (first.type === 'code') {
+                const [fullMatch, codeText] = first.match as RegExpMatchArray;
+                result.push(
+                    <code key={`${keyPrefix}-code-${partIndex++}`} className="px-1.5 py-0.5 bg-slate-200 dark:bg-slate-800 rounded text-sm font-mono text-slate-700 dark:text-slate-300">
+                        {codeText}
+                    </code>
                 );
                 remaining = remaining.substring(first.index + fullMatch.length);
             } else if (first.type === 'url') {
@@ -2556,18 +2602,8 @@ const AboutSection = () => {
         return elements;
     };
 
-    // Detect platform for highlighting the relevant instructions
-    const detectPlatform = (): 'docker' | 'linux' | 'macos' | 'windows' | 'unknown' => {
-        // Check if running in Docker (common indicators)
-        // For a web app, we can't easily detect Docker, so we'll show all options
-        const ua = navigator.userAgent.toLowerCase();
-        if (ua.includes('win')) return 'windows';
-        if (ua.includes('mac')) return 'macos';
-        if (ua.includes('linux')) return 'linux';
-        return 'unknown';
-    };
-
-    const currentPlatform = detectPlatform();
+    const isLoading = updateLoading || systemLoading;
+    const error = updateError;
 
     if (isLoading) {
         return (
@@ -2670,12 +2706,16 @@ const AboutSection = () => {
                         {/* Docker */}
                         <div className={clsx(
                             "p-4 rounded-lg border",
-                            "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
+                            currentPlatform === 'docker'
+                                ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700"
+                                : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
                         )}>
                             <div className="flex items-center gap-2 mb-2">
-                                <span className="text-lg">🐳</span>
+                                <DockerIcon className="w-5 h-5 text-[#2496ED]" />
                                 <h5 className="font-medium text-slate-900 dark:text-white">Docker</h5>
-                                <span className="text-xs text-slate-500">(Recommended)</span>
+                                {currentPlatform === 'docker' && (
+                                    <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
+                                )}
                             </div>
                             <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
                                 {updateInfo.update_instructions?.docker || 'docker compose pull && docker compose up -d'}
@@ -2690,7 +2730,7 @@ const AboutSection = () => {
                                 : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
                         )}>
                             <div className="flex items-center gap-2 mb-2">
-                                <span className="text-lg">🐧</span>
+                                <LinuxIcon className="w-5 h-5 text-slate-700 dark:text-slate-300" />
                                 <h5 className="font-medium text-slate-900 dark:text-white">Linux</h5>
                                 {currentPlatform === 'linux' && (
                                     <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
@@ -2722,14 +2762,14 @@ const AboutSection = () => {
                         {/* macOS */}
                         <div className={clsx(
                             "p-4 rounded-lg border",
-                            currentPlatform === 'macos'
+                            currentPlatform === 'darwin'
                                 ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700"
                                 : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
                         )}>
                             <div className="flex items-center gap-2 mb-2">
-                                <span className="text-lg">🍎</span>
+                                <AppleIcon className="w-5 h-5 text-slate-700 dark:text-slate-300" />
                                 <h5 className="font-medium text-slate-900 dark:text-white">macOS</h5>
-                                {currentPlatform === 'macos' && (
+                                {currentPlatform === 'darwin' && (
                                     <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
                                 )}
                             </div>
@@ -2764,7 +2804,7 @@ const AboutSection = () => {
                                 : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
                         )}>
                             <div className="flex items-center gap-2 mb-2">
-                                <span className="text-lg">🪟</span>
+                                <WindowsIcon className="w-5 h-5 text-[#0078D4]" />
                                 <h5 className="font-medium text-slate-900 dark:text-white">Windows</h5>
                                 {currentPlatform === 'windows' && (
                                     <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
@@ -2782,6 +2822,159 @@ const AboutSection = () => {
                                     Download (.exe)
                                 </a>
                             )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* System Information */}
+            {systemInfo && (
+                <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/40 overflow-hidden">
+                    <div className="px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
+                        <h4 className="font-semibold text-slate-900 dark:text-white">System Information</h4>
+                    </div>
+                    <div className="p-4 space-y-4">
+                        {/* Runtime Environment */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50">
+                                <div className="p-2 rounded-lg bg-slate-200 dark:bg-slate-700">
+                                    {systemInfo.environment === 'docker' ? (
+                                        <DockerIcon className="w-4 h-4 text-[#2496ED]" />
+                                    ) : (
+                                        <Server className="w-4 h-4 text-slate-600 dark:text-slate-400" />
+                                    )}
+                                </div>
+                                <div>
+                                    <div className="text-xs text-slate-500 dark:text-slate-400">Environment</div>
+                                    <div className="text-sm font-medium text-slate-900 dark:text-white capitalize">{systemInfo.environment}</div>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50">
+                                <div className="p-2 rounded-lg bg-slate-200 dark:bg-slate-700">
+                                    <Monitor className="w-4 h-4 text-slate-600 dark:text-slate-400" />
+                                </div>
+                                <div>
+                                    <div className="text-xs text-slate-500 dark:text-slate-400">Platform</div>
+                                    <div className="text-sm font-medium text-slate-900 dark:text-white">{systemInfo.os}/{systemInfo.arch}</div>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50">
+                                <div className="p-2 rounded-lg bg-slate-200 dark:bg-slate-700">
+                                    <Clock className="w-4 h-4 text-slate-600 dark:text-slate-400" />
+                                </div>
+                                <div>
+                                    <div className="text-xs text-slate-500 dark:text-slate-400">Uptime</div>
+                                    <div className="text-sm font-medium text-slate-900 dark:text-white">{systemInfo.uptime}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Configuration Details */}
+                        <div className="space-y-2">
+                            <h5 className="text-sm font-medium text-slate-700 dark:text-slate-300">Configuration</h5>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
+                                    <span className="text-slate-500 dark:text-slate-400">Data Directory</span>
+                                    <code className="text-slate-700 dark:text-slate-300 font-mono">{systemInfo.config.data_dir}</code>
+                                </div>
+                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
+                                    <span className="text-slate-500 dark:text-slate-400">Database</span>
+                                    <code className="text-slate-700 dark:text-slate-300 font-mono">{systemInfo.config.database_path}</code>
+                                </div>
+                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
+                                    <span className="text-slate-500 dark:text-slate-400">Log Directory</span>
+                                    <code className="text-slate-700 dark:text-slate-300 font-mono">{systemInfo.config.log_dir}</code>
+                                </div>
+                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
+                                    <span className="text-slate-500 dark:text-slate-400">Log Level</span>
+                                    <span className="text-slate-700 dark:text-slate-300">{systemInfo.config.log_level}</span>
+                                </div>
+                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
+                                    <span className="text-slate-500 dark:text-slate-400">Retention</span>
+                                    <span className="text-slate-700 dark:text-slate-300">{systemInfo.config.retention_days} days</span>
+                                </div>
+                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
+                                    <span className="text-slate-500 dark:text-slate-400">Go Version</span>
+                                    <span className="text-slate-700 dark:text-slate-300">{systemInfo.go_version}</span>
+                                </div>
+                                {systemInfo.config.dry_run_mode && (
+                                    <div className="flex justify-between p-2 rounded bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 md:col-span-2">
+                                        <span className="text-amber-600 dark:text-amber-400">Dry Run Mode</span>
+                                        <span className="text-amber-700 dark:text-amber-300 font-medium">Enabled</span>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Mounted Volumes (Docker only) */}
+                        {systemInfo.mounts && systemInfo.mounts.length > 0 && (
+                            <div className="space-y-2">
+                                <h5 className="text-sm font-medium text-slate-700 dark:text-slate-300">Mounted Volumes</h5>
+                                <div className="space-y-1">
+                                    {systemInfo.mounts.map((mount, idx) => (
+                                        <div key={idx} className="flex items-center gap-2 p-2 rounded bg-slate-50 dark:bg-slate-800/30 text-sm font-mono">
+                                            <HardDrive className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                                            <span className="text-slate-700 dark:text-slate-300 truncate">{mount.destination}</span>
+                                            {mount.read_only && (
+                                                <span className="text-xs px-1.5 py-0.5 bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 rounded">RO</span>
+                                            )}
+                                            <span className="text-slate-400 dark:text-slate-500 text-xs ml-auto">{mount.type}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Links */}
+                        <div className="space-y-2">
+                            <h5 className="text-sm font-medium text-slate-700 dark:text-slate-300">Links</h5>
+                            <div className="flex flex-wrap gap-2">
+                                <a
+                                    href={systemInfo.links.github}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm text-slate-700 dark:text-slate-300 transition-colors"
+                                >
+                                    <Github className="w-4 h-4" />
+                                    GitHub
+                                </a>
+                                <a
+                                    href={systemInfo.links.issues}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm text-slate-700 dark:text-slate-300 transition-colors"
+                                >
+                                    <Bug className="w-4 h-4" />
+                                    Issues
+                                </a>
+                                <a
+                                    href={systemInfo.links.releases}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm text-slate-700 dark:text-slate-300 transition-colors"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    Releases
+                                </a>
+                                <a
+                                    href={systemInfo.links.wiki}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm text-slate-700 dark:text-slate-300 transition-colors"
+                                >
+                                    <Book className="w-4 h-4" />
+                                    Wiki
+                                </a>
+                                <a
+                                    href={systemInfo.links.discussions}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm text-slate-700 dark:text-slate-300 transition-colors"
+                                >
+                                    <MessageCircle className="w-4 h-4" />
+                                    Discussions
+                                </a>
+                            </div>
                         </div>
                     </div>
                 </div>
