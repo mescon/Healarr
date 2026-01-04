@@ -111,6 +111,10 @@ func main() {
 		logger.Infof("  ⚠️  DRY-RUN MODE: ENABLED (no files will be deleted)")
 	}
 
+	// Validate configuration and warn about potential issues
+	// This checks for misconfigured paths that could cause data loss
+	config.ValidateAndWarn()
+
 	// Initialize Database
 	logger.Infof("Initializing database: %s", cfg.DatabasePath)
 	repo, err := db.NewRepository(cfg.DatabasePath)

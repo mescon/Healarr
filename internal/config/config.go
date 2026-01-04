@@ -14,6 +14,18 @@ import (
 // Default "dev" is used for development builds
 var Version = "dev"
 
+// ConfigWarning represents a configuration issue that may cause problems
+type ConfigWarning struct {
+	Type        string `json:"type"`        // Warning type: "relative_path", "template_variable", etc.
+	Field       string `json:"field"`       // Which config field has the issue
+	Message     string `json:"message"`     // Human-readable description
+	Current     string `json:"current"`     // Current value
+	Recommended string `json:"recommended"` // Recommended value
+}
+
+// configWarnings stores any configuration warnings detected during Load()
+var configWarnings []ConfigWarning
+
 // Config holds all application configuration loaded from environment variables.
 // All fields have sensible defaults if environment variables are not set.
 type Config struct {
@@ -401,4 +413,114 @@ func ApplyFlags(flags FlagOverrides) {
 	if flags.WebDir != nil && *flags.WebDir != "" {
 		cfg.WebDir = *flags.WebDir
 	}
+}
+
+// GetWarnings returns any configuration warnings detected during Load().
+// These warnings indicate potential issues that may cause problems (e.g., data not persisting).
+func GetWarnings() []ConfigWarning {
+	return configWarnings
+}
+
+// ValidateAndWarn checks the configuration for potential issues and logs warnings.
+// This should be called after Load() and ApplyFlags(), typically from main.go.
+// Returns the list of warnings for use by the health API.
+func ValidateAndWarn() []ConfigWarning {
+	configWarnings = nil // Reset warnings
+
+	if cfg == nil {
+		return nil
+	}
+
+	// Check if we're likely in a Docker environment
+	inDocker := isDockerEnvironment()
+
+	// Check database path for issues
+	dbPath := cfg.DatabasePath
+	if dbPath != "" {
+		// Check for unexpanded template variables (e.g., {data-dir})
+		if strings.Contains(dbPath, "{") || strings.Contains(dbPath, "}") {
+			configWarnings = append(configWarnings, ConfigWarning{
+				Type:        "template_variable",
+				Field:       "database_path",
+				Message:     "Database path contains unexpanded template variable - data will not persist",
+				Current:     dbPath,
+				Recommended: "/config/healarr.db",
+			})
+		} else if inDocker && !filepath.IsAbs(dbPath) {
+			// Relative path in Docker is problematic
+			configWarnings = append(configWarnings, ConfigWarning{
+				Type:        "relative_path",
+				Field:       "database_path",
+				Message:     "Database path is relative - in Docker, this resolves inside the container and data will not persist across updates",
+				Current:     dbPath,
+				Recommended: "/config/healarr.db",
+			})
+		}
+	}
+
+	// Check data directory for issues
+	dataDir := cfg.DataDir
+	if dataDir != "" && inDocker {
+		if strings.Contains(dataDir, "{") || strings.Contains(dataDir, "}") {
+			configWarnings = append(configWarnings, ConfigWarning{
+				Type:        "template_variable",
+				Field:       "data_dir",
+				Message:     "Data directory contains unexpanded template variable - data will not persist",
+				Current:     dataDir,
+				Recommended: "/config",
+			})
+		} else if !filepath.IsAbs(dataDir) {
+			configWarnings = append(configWarnings, ConfigWarning{
+				Type:        "relative_path",
+				Field:       "data_dir",
+				Message:     "Data directory is relative - in Docker, this resolves inside the container and data will not persist across updates",
+				Current:     dataDir,
+				Recommended: "/config",
+			})
+		}
+	}
+
+	// Log warnings prominently
+	if len(configWarnings) > 0 {
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "WARNING ════════════════════════════════════════════════════════════════════")
+		fmt.Fprintln(os.Stderr, "  CONFIGURATION ISSUE DETECTED - DATA MAY NOT PERSIST!")
+		fmt.Fprintln(os.Stderr, "")
+		for _, w := range configWarnings {
+			fmt.Fprintf(os.Stderr, "  Problem:     %s\n", w.Message)
+			fmt.Fprintf(os.Stderr, "  Current:     %s\n", w.Current)
+			fmt.Fprintf(os.Stderr, "  Recommended: %s\n", w.Recommended)
+			fmt.Fprintln(os.Stderr, "")
+		}
+		fmt.Fprintln(os.Stderr, "  Fix: Update your container configuration to use absolute paths.")
+		fmt.Fprintln(os.Stderr, "  See: https://github.com/mescon/Healarr/issues/9")
+		fmt.Fprintln(os.Stderr, "════════════════════════════════════════════════════════════════════════════")
+		fmt.Fprintln(os.Stderr, "")
+	}
+
+	return configWarnings
+}
+
+// isDockerEnvironment returns true if we appear to be running inside Docker.
+// We check for common Docker indicators.
+func isDockerEnvironment() bool {
+	// Check for /.dockerenv file (most reliable)
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+
+	// Check if /config exists (our Docker default)
+	if info, err := os.Stat("/config"); err == nil && info.IsDir() {
+		return true
+	}
+
+	// Check cgroup for docker/container indicators
+	if data, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+		content := string(data)
+		if strings.Contains(content, "docker") || strings.Contains(content, "containerd") {
+			return true
+		}
+	}
+
+	return false
 }

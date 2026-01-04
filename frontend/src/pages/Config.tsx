@@ -20,6 +20,7 @@ import {
 } from '../lib/api';
 import clsx from 'clsx';
 import { useToast } from '../contexts/ToastContext';
+import ConfigWarningBanner from '../components/ConfigWarningBanner';
 
 const ServerStatus = ({ url, apiKey, isManuallyTesting }: { url: string; apiKey: string; isManuallyTesting?: boolean }) => {
     const { data, isLoading, isError, isFetching } = useQuery({
@@ -678,6 +679,8 @@ const Config = () => {
 
     return (
         <div className="space-y-8">
+            <ConfigWarningBanner />
+
             <div>
                 <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-2 flex items-center gap-3">
                     <Settings className="w-8 h-8 text-slate-600 dark:text-slate-400" />

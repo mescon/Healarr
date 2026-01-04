@@ -9,6 +9,7 @@ import TypeDistributionChart from '../components/charts/TypeDistributionChart';
 import { useWebSocket } from '../contexts/WebSocketProvider';
 import { useToast } from '../contexts/ToastContext';
 import { useNavigate } from 'react-router-dom';
+import ConfigWarningBanner from '../components/ConfigWarningBanner';
 
 const StatCard = ({ title, value, subtitle, icon: Icon, color, delay, onClick }: { title: string, value: string, subtitle?: string, icon: React.ElementType, color: string, delay: number, onClick?: () => void }) => (
     <motion.div
@@ -221,6 +222,8 @@ const Dashboard = () => {
 
     return (
         <div className="space-y-6">
+            <ConfigWarningBanner />
+
             <div>
                 <motion.h1
                     initial={{ opacity: 0, x: -20 }}

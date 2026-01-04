@@ -117,6 +117,11 @@ func (s *RESTServer) handleHealth(c *gin.Context) {
 	// Get WebSocket connections count
 	health["websocket_clients"] = s.hub.ClientCount()
 
+	// Include any configuration warnings
+	if warnings := config.GetWarnings(); len(warnings) > 0 {
+		health["config_warnings"] = warnings
+	}
+
 	// Determine overall status
 	if health["status"] == "healthy" && (totalArr > 0 && onlineArr < totalArr) {
 		health["status"] = "degraded"
