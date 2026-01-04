@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - File size display in human-readable format
   - Download progress indicator for items currently downloading
 - **Enhanced Remediation Journey**: Rich download and quality information
+  - Full file path displayed in header with copy-to-clipboard button
   - SearchCompleted events show download client icon, protocol (Usenet/Torrent), and indexer
   - DownloadProgress events display visual progress bar with size and ETA
   - VerificationSuccess shows quality badge (4K/1080p/720p), release group, and duration metrics

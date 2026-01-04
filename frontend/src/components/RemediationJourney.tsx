@@ -5,7 +5,7 @@ import { useDateFormat } from '../lib/useDateFormat';
 import { formatCorruptionState, getEventDescription, getEventColorClass, formatBytes, formatDuration, formatQuality, getDownloadClientIcon } from '../lib/formatters';
 import {
     CheckCircle, AlertTriangle, Clock, Search, Trash2,
-    FileSearch, Activity, Shield, FileCheck, ChevronDown, Settings, Bell, BellOff, EyeOff, XCircle, Download, RefreshCw, Film, Tv
+    FileSearch, Activity, Shield, FileCheck, ChevronDown, Settings, Bell, BellOff, EyeOff, XCircle, Download, RefreshCw, Film, Tv, Copy, Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
@@ -127,6 +127,27 @@ const RemediationJourney: React.FC<RemediationJourneyProps> = ({ corruptionId, o
     // State for individual expanded items (overrides default)
     const [expandedItems, setExpandedItems] = useState<Record<number, boolean>>({});
 
+    // State for copy button feedback
+    const [copiedPath, setCopiedPath] = useState(false);
+
+    const copyToClipboard = async (text: string) => {
+        try {
+            await navigator.clipboard.writeText(text);
+            setCopiedPath(true);
+            setTimeout(() => setCopiedPath(false), 2000);
+        } catch {
+            // Fallback for older browsers
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            setCopiedPath(true);
+            setTimeout(() => setCopiedPath(false), 2000);
+        }
+    };
+
     const toggleItem = (idx: number) => {
         setExpandedItems(prev => {
             const current = prev[idx] ?? showDetailsDefault;
@@ -163,25 +184,32 @@ const RemediationJourney: React.FC<RemediationJourneyProps> = ({ corruptionId, o
                             </div>
                             
                             {summary && (
-                                <div className="space-y-1.5 mt-3">
+                                <div className="space-y-2 mt-3">
                                     <div className="flex items-start gap-2 text-sm">
-                                        <span className="text-slate-500 shrink-0">Corrupted:</span>
-                                        <span className="text-slate-700 dark:text-slate-300 font-mono text-xs truncate" title={summary.originalPath}>
-                                            {summary.originalFilename}
-                                        </span>
+                                        <span className="text-slate-500 shrink-0">File:</span>
+                                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                                            <span className="text-slate-700 dark:text-slate-300 font-mono text-xs break-all">
+                                                {summary.originalPath}
+                                            </span>
+                                            <button
+                                                onClick={() => copyToClipboard(summary.originalPath)}
+                                                className="shrink-0 p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+                                                title="Copy full path"
+                                            >
+                                                {copiedPath ? (
+                                                    <Check className="w-3.5 h-3.5 text-green-500" />
+                                                ) : (
+                                                    <Copy className="w-3.5 h-3.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300" />
+                                                )}
+                                            </button>
+                                        </div>
                                     </div>
-                                    {summary.newFilename && (
+                                    {summary.newFilename && summary.filesAreDifferent && (
                                         <div className="flex items-start gap-2 text-sm">
-                                            <span className="text-slate-500 shrink-0">Replaced:</span>
-                                            {summary.filesAreDifferent ? (
-                                                <span className="text-green-400 font-mono text-xs truncate" title={summary.newPath}>
-                                                    {summary.newFilename}
-                                                </span>
-                                            ) : (
-                                                <span className="text-slate-600 dark:text-slate-400 font-mono text-xs italic">
-                                                    (same filename)
-                                                </span>
-                                            )}
+                                            <span className="text-slate-500 shrink-0">Replaced with:</span>
+                                            <span className="text-green-400 font-mono text-xs break-all">
+                                                {summary.newFilename}
+                                            </span>
                                         </div>
                                     )}
                                 </div>
