@@ -2445,6 +2445,16 @@ const AboutSection = () => {
     // Determine platform from system info
     const currentPlatform = systemInfo?.environment === 'docker' ? 'docker' : systemInfo?.os || 'unknown';
 
+    // Update instructions collapsed state - expanded by default when update available
+    const [updateInstructionsExpanded, setUpdateInstructionsExpanded] = useState(false);
+
+    // Auto-expand when update becomes available
+    useEffect(() => {
+        if (updateInfo?.update_available) {
+            setUpdateInstructionsExpanded(true);
+        }
+    }, [updateInfo?.update_available]);
+
     // Parse inline markdown elements (bold, links, URLs, code) into React nodes
     const parseInlineMarkdown = (text: string, keyPrefix: string): React.ReactNode[] => {
         const result: React.ReactNode[] = [];
@@ -2696,13 +2706,28 @@ const AboutSection = () => {
                 </div>
             )}
 
-            {/* Update Instructions */}
-            {updateInfo?.update_available && (
-                <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/40 overflow-hidden">
-                    <div className="px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
-                        <h4 className="font-semibold text-slate-900 dark:text-white">How to Update</h4>
-                    </div>
-                    <div className="p-4 space-y-4">
+            {/* Update Instructions - Always visible, collapsible */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/40 overflow-hidden">
+                <button
+                    onClick={() => setUpdateInstructionsExpanded(!updateInstructionsExpanded)}
+                    className="w-full px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 transition-colors"
+                >
+                    <h4 className="font-semibold text-slate-900 dark:text-white">How to Update</h4>
+                    <ChevronDown className={clsx(
+                        "w-5 h-5 text-slate-500 transition-transform duration-200",
+                        updateInstructionsExpanded && "rotate-180"
+                    )} />
+                </button>
+                <AnimatePresence initial={false}>
+                    {updateInstructionsExpanded && (
+                        <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="overflow-hidden"
+                        >
+                            <div className="p-4 space-y-4">
                         {/* Docker */}
                         <div className={clsx(
                             "p-4 rounded-lg border",
@@ -2718,7 +2743,7 @@ const AboutSection = () => {
                                 )}
                             </div>
                             <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
-                                {updateInfo.update_instructions?.docker || 'docker compose pull && docker compose up -d'}
+                                {updateInfo?.update_instructions?.docker || 'docker compose pull && docker compose up -d'}
                             </pre>
                         </div>
 
@@ -2737,9 +2762,9 @@ const AboutSection = () => {
                                 )}
                             </div>
                             <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
-                                {updateInfo.update_instructions?.linux}
+                                {updateInfo?.update_instructions?.linux || 'Download the latest binary from GitHub releases'}
                             </pre>
-                            {updateInfo.download_urls?.linux_amd64 && (
+                            {updateInfo?.download_urls?.linux_amd64 && (
                                 <a
                                     href={updateInfo.download_urls.linux_amd64}
                                     className="inline-flex items-center gap-2 mt-2 text-sm text-blue-500 hover:text-blue-400"
@@ -2748,7 +2773,7 @@ const AboutSection = () => {
                                     Download (amd64)
                                 </a>
                             )}
-                            {updateInfo.download_urls?.linux_arm64 && (
+                            {updateInfo?.download_urls?.linux_arm64 && (
                                 <a
                                     href={updateInfo.download_urls.linux_arm64}
                                     className="inline-flex items-center gap-2 mt-2 ml-4 text-sm text-blue-500 hover:text-blue-400"
@@ -2774,9 +2799,9 @@ const AboutSection = () => {
                                 )}
                             </div>
                             <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
-                                {updateInfo.update_instructions?.macos}
+                                {updateInfo?.update_instructions?.macos || 'Download the latest binary from GitHub releases'}
                             </pre>
-                            {updateInfo.download_urls?.macos_amd64 && (
+                            {updateInfo?.download_urls?.macos_amd64 && (
                                 <a
                                     href={updateInfo.download_urls.macos_amd64}
                                     className="inline-flex items-center gap-2 mt-2 text-sm text-blue-500 hover:text-blue-400"
@@ -2785,7 +2810,7 @@ const AboutSection = () => {
                                     Download (Intel)
                                 </a>
                             )}
-                            {updateInfo.download_urls?.macos_arm64 && (
+                            {updateInfo?.download_urls?.macos_arm64 && (
                                 <a
                                     href={updateInfo.download_urls.macos_arm64}
                                     className="inline-flex items-center gap-2 mt-2 ml-4 text-sm text-blue-500 hover:text-blue-400"
@@ -2811,9 +2836,9 @@ const AboutSection = () => {
                                 )}
                             </div>
                             <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
-                                {updateInfo.update_instructions?.windows}
+                                {updateInfo?.update_instructions?.windows || 'Download the latest .exe from GitHub releases'}
                             </pre>
-                            {updateInfo.download_urls?.windows_amd64 && (
+                            {updateInfo?.download_urls?.windows_amd64 && (
                                 <a
                                     href={updateInfo.download_urls.windows_amd64}
                                     className="inline-flex items-center gap-2 mt-2 text-sm text-blue-500 hover:text-blue-400"
@@ -2823,9 +2848,11 @@ const AboutSection = () => {
                                 </a>
                             )}
                         </div>
-                    </div>
-                </div>
-            )}
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+            </div>
 
             {/* System Information */}
             {systemInfo && (
