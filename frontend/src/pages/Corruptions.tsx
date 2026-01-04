@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
-import { getCorruptions, retryCorruptions, ignoreCorruptions, deleteCorruptions } from '../lib/api';
+import { getCorruptions, retryCorruptions, ignoreCorruptions, deleteCorruptions, getScanPaths } from '../lib/api';
 import DataGrid from '../components/ui/DataGrid';
 import RemediationJourney from '../components/RemediationJourney';
 import clsx from 'clsx';
@@ -69,6 +69,20 @@ const Corruptions = () => {
         queryFn: () => getCorruptions(page, limit, sortBy, sortOrder, statusFilter, pathIdFilter),
         // Polling removed - WebSocket invalidates queries on events
     });
+
+    // Query scan paths to resolve path_id to actual path name
+    const { data: scanPaths } = useQuery({
+        queryKey: ['scanPaths'],
+        queryFn: getScanPaths,
+        staleTime: 60000, // Cache for 1 minute
+    });
+
+    // Resolve path_id to the actual path name
+    const resolvedPathName = useMemo(() => {
+        if (pathIdFilter === undefined || !scanPaths) return null;
+        const matchingPath = scanPaths.find(p => p.id === pathIdFilter);
+        return matchingPath?.local_path || null;
+    }, [pathIdFilter, scanPaths]);
 
     // Query for manual intervention count (always fetch to show alert banner)
     const { data: manualInterventionData } = useQuery({
@@ -196,12 +210,12 @@ const Corruptions = () => {
             {pathIdFilter !== undefined && (
                 <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 flex items-center gap-3">
                     <FolderOpen className="w-5 h-5 text-blue-500 dark:text-blue-400 shrink-0" />
-                    <div className="flex-1">
+                    <div className="flex-1 min-w-0">
                         <p className="text-blue-600 dark:text-blue-300 font-medium">
-                            Filtering by scan path ID: {pathIdFilter}
+                            Filtering by scan path
                         </p>
-                        <p className="text-sm text-blue-500/80 dark:text-blue-400/80 mt-0.5">
-                            Showing corruptions from a specific scan path.
+                        <p className="text-sm text-blue-500/80 dark:text-blue-400/80 mt-0.5 font-mono truncate" title={resolvedPathName || `ID: ${pathIdFilter}`}>
+                            {resolvedPathName || `Path ID: ${pathIdFilter}`}
                         </p>
                     </div>
                     <button

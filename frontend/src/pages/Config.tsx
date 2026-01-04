@@ -2409,20 +2409,94 @@ const AboutSection = () => {
         retry: 1,
     });
 
+    // Parse inline markdown elements (bold, links, URLs) into React nodes
+    const parseInlineMarkdown = (text: string, keyPrefix: string): React.ReactNode[] => {
+        const result: React.ReactNode[] = [];
+        let remaining = text;
+        let partIndex = 0;
+
+        while (remaining.length > 0) {
+            // Match markdown links [text](url), bold **text**, or bare URLs
+            const mdLinkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
+            const boldMatch = remaining.match(/\*\*([^*]+)\*\*/);
+            const urlMatch = remaining.match(/(https?:\/\/[^\s<>\[\]()]+)/);
+
+            // Find the earliest match
+            const matches = [
+                mdLinkMatch ? { type: 'mdLink', match: mdLinkMatch, index: mdLinkMatch.index! } : null,
+                boldMatch ? { type: 'bold', match: boldMatch, index: boldMatch.index! } : null,
+                urlMatch ? { type: 'url', match: urlMatch, index: urlMatch.index! } : null,
+            ].filter(Boolean).sort((a, b) => a!.index - b!.index);
+
+            if (matches.length === 0) {
+                // No more matches, add remaining text
+                if (remaining) result.push(remaining);
+                break;
+            }
+
+            const first = matches[0]!;
+
+            // Add text before the match
+            if (first.index > 0) {
+                result.push(remaining.substring(0, first.index));
+            }
+
+            if (first.type === 'mdLink') {
+                const [fullMatch, linkText, linkUrl] = first.match as RegExpMatchArray;
+                result.push(
+                    <a
+                        key={`${keyPrefix}-link-${partIndex++}`}
+                        href={linkUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-500 hover:text-blue-400 underline"
+                    >
+                        {linkText}
+                    </a>
+                );
+                remaining = remaining.substring(first.index + fullMatch.length);
+            } else if (first.type === 'bold') {
+                const [fullMatch, boldText] = first.match as RegExpMatchArray;
+                result.push(
+                    <strong key={`${keyPrefix}-bold-${partIndex++}`} className="font-semibold text-slate-700 dark:text-slate-300">
+                        {boldText}
+                    </strong>
+                );
+                remaining = remaining.substring(first.index + fullMatch.length);
+            } else if (first.type === 'url') {
+                const [fullMatch] = first.match as RegExpMatchArray;
+                result.push(
+                    <a
+                        key={`${keyPrefix}-url-${partIndex++}`}
+                        href={fullMatch}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-500 hover:text-blue-400 underline break-all"
+                    >
+                        {fullMatch}
+                    </a>
+                );
+                remaining = remaining.substring(first.index + fullMatch.length);
+            }
+        }
+
+        return result;
+    };
+
     // Simple markdown-to-JSX renderer for changelog
     const renderMarkdown = (text: string) => {
         if (!text) return null;
 
         const lines = text.split('\n');
         const elements: React.ReactNode[] = [];
-        let listItems: string[] = [];
+        let listItems: { key: string; content: React.ReactNode[] }[] = [];
 
         const flushList = () => {
             if (listItems.length > 0) {
                 elements.push(
                     <ul key={`list-${elements.length}`} className="list-disc list-inside space-y-1 text-slate-600 dark:text-slate-400 ml-2">
-                        {listItems.map((item, i) => (
-                            <li key={i}>{item}</li>
+                        {listItems.map((item) => (
+                            <li key={item.key}>{item.content}</li>
                         ))}
                     </ul>
                 );
@@ -2438,27 +2512,30 @@ const AboutSection = () => {
                 flushList();
                 elements.push(
                     <h4 key={index} className="text-md font-semibold text-slate-800 dark:text-slate-200 mt-4 mb-2">
-                        {trimmed.substring(4)}
+                        {parseInlineMarkdown(trimmed.substring(4), `h4-${index}`)}
                     </h4>
                 );
             } else if (trimmed.startsWith('## ')) {
                 flushList();
                 elements.push(
                     <h3 key={index} className="text-lg font-bold text-slate-900 dark:text-white mt-4 mb-2">
-                        {trimmed.substring(3)}
+                        {parseInlineMarkdown(trimmed.substring(3), `h3-${index}`)}
                     </h3>
                 );
             } else if (trimmed.startsWith('# ')) {
                 flushList();
                 elements.push(
                     <h2 key={index} className="text-xl font-bold text-slate-900 dark:text-white mt-4 mb-2">
-                        {trimmed.substring(2)}
+                        {parseInlineMarkdown(trimmed.substring(2), `h2-${index}`)}
                     </h2>
                 );
             }
             // List items
             else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-                listItems.push(trimmed.substring(2));
+                listItems.push({
+                    key: `li-${index}`,
+                    content: parseInlineMarkdown(trimmed.substring(2), `li-${index}`)
+                });
             }
             // Empty lines
             else if (trimmed === '') {
@@ -2469,7 +2546,7 @@ const AboutSection = () => {
                 flushList();
                 elements.push(
                     <p key={index} className="text-slate-600 dark:text-slate-400 my-2">
-                        {trimmed}
+                        {parseInlineMarkdown(trimmed, `p-${index}`)}
                     </p>
                 );
             }

@@ -317,13 +317,13 @@ const Help = () => {
                                 </tr>
                                 <tr>
                                     <td className="py-2 px-3 font-mono text-cyan-400">HEALARR_DATA_DIR</td>
-                                    <td className="py-2 px-3 text-slate-600 dark:text-slate-400">./config</td>
-                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Base directory for all persistent data (database, logs)</td>
+                                    <td className="py-2 px-3 text-slate-600 dark:text-slate-400">/config</td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Base directory for all persistent data (database, logs). <span className="text-amber-400">Must be an absolute path in Docker.</span></td>
                                 </tr>
                                 <tr>
                                     <td className="py-2 px-3 font-mono text-cyan-400">HEALARR_DATABASE_PATH</td>
-                                    <td className="py-2 px-3 text-slate-600 dark:text-slate-400">{`{DATA_DIR}/healarr.db`}</td>
-                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">SQLite database file path (overrides DATA_DIR)</td>
+                                    <td className="py-2 px-3 text-slate-600 dark:text-slate-400">/config/healarr.db</td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">SQLite database file path. If not set, defaults to <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">healarr.db</code> inside the data directory.</td>
                                 </tr>
                                 <tr>
                                     <td className="py-2 px-3 font-mono text-cyan-400">HEALARR_VERIFICATION_TIMEOUT</td>
@@ -372,22 +372,26 @@ const Help = () => {
     image: ghcr.io/mescon/healarr:latest
     container_name: healarr
     environment:
+      - TZ=Europe/London
       - HEALARR_PORT=3090
       - HEALARR_LOG_LEVEL=info
-      - HEALARR_DATABASE_PATH=/config/healarr.db
-      - HEALARR_VERIFICATION_TIMEOUT=72h
-      - HEALARR_VERIFICATION_INTERVAL=30s
-      - HEALARR_DEFAULT_MAX_RETRIES=3
-      - HEALARR_RETENTION_DAYS=90       # Days to keep old data (0 to disable)
       # - HEALARR_DRY_RUN=true          # Test mode - no files deleted
       # - HEALARR_BASE_PATH=/healarr    # Uncomment for reverse proxy with subpath
     volumes:
-      - ./config:/config
-      - /path/to/media:/media:ro  # Or mount as /tv, /movies to match *arr paths
+      # Persistent data - use absolute path on host
+      - /path/to/appdata/healarr:/config
+      # Media libraries - mount as read-only (:ro)
+      - /path/to/media:/media:ro
     ports:
       - "3090:3090"
     restart: unless-stopped`}
                         </pre>
+                        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mt-2">
+                            <p className="text-xs text-amber-600 dark:text-amber-300">
+                                <strong>⚠️ Important:</strong> Always use absolute paths for volume mounts (e.g., <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">/path/to/appdata/healarr:/config</code>).
+                                Relative paths like <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">./config</code> can cause data loss when updating containers.
+                            </p>
+                        </div>
                     </div>
 
                     <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-4 space-y-3">
