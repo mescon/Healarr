@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"math"
@@ -15,6 +16,9 @@ import (
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
 )
+
+// verifierQueryTimeout is the maximum time for database queries in verifier service.
+const verifierQueryTimeout = 10 * time.Second
 
 // VerificationMeta stores quality/release info captured from history for VerificationSuccess events
 type VerificationMeta struct {
@@ -109,9 +113,12 @@ func (v *VerifierService) clearVerifyMeta(corruptionID string) {
 func (v *VerifierService) getDurationMetrics(corruptionID string) (int64, int64) {
 	now := time.Now()
 
+	ctx, cancel := context.WithTimeout(context.Background(), verifierQueryTimeout)
+	defer cancel()
+
 	// Get CorruptionDetected timestamp
 	var corruptionTime time.Time
-	err := v.db.QueryRow(`
+	err := v.db.QueryRowContext(ctx, `
 		SELECT created_at FROM events
 		WHERE aggregate_id = ? AND event_type = 'CorruptionDetected'
 		ORDER BY created_at ASC LIMIT 1
@@ -124,7 +131,7 @@ func (v *VerifierService) getDurationMetrics(corruptionID string) (int64, int64)
 
 	// Get first DownloadProgress timestamp (if any)
 	var downloadStartTime time.Time
-	err = v.db.QueryRow(`
+	err = v.db.QueryRowContext(ctx, `
 		SELECT created_at FROM events
 		WHERE aggregate_id = ? AND event_type = 'DownloadProgress'
 		ORDER BY created_at ASC LIMIT 1
@@ -717,8 +724,11 @@ func (v *VerifierService) getVerificationTimeout(pathID int64) time.Duration {
 		return defaultTimeout
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), verifierQueryTimeout)
+	defer cancel()
+
 	var timeoutHours sql.NullInt64
-	err := v.db.QueryRow("SELECT verification_timeout_hours FROM scan_paths WHERE id = ?", pathID).Scan(&timeoutHours)
+	err := v.db.QueryRowContext(ctx, "SELECT verification_timeout_hours FROM scan_paths WHERE id = ?", pathID).Scan(&timeoutHours)
 	if err != nil || !timeoutHours.Valid {
 		return defaultTimeout
 	}

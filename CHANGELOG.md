@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.13] - 2026-01-05
+
+### Fixed
+- **Database connection starvation under load**: Background services could block API responses
+  - Changed SQLite connection pool from `MaxOpenConns(1)` to `MaxOpenConns(10)` for WAL mode concurrency
+  - SQLite WAL mode safely supports multiple concurrent readers with one writer
+- **Context deadlines in background services**: All database queries now have proper timeouts
+  - Added 10-30 second context timeouts to scanner, verifier, notifier, and recovery services
+  - Prevents individual slow queries from blocking the entire application
+  - Uses exponential backoff retry for SQLITE_BUSY errors
+- **Removed dead code**: Cleaned up unused `filepath.Clean()` call in health checker
+
+### Added
+- **Database performance index**: New migration adds optimized index for file_path lookups
+  - Generated column `file_path_extracted` for efficient JSON field indexing
+  - Compound index on `(event_type, file_path_extracted)` for common query patterns
+  - Significantly improves corruption lookup performance on large databases
+
 ## [1.1.12] - 2026-01-04
 
 ### Fixed

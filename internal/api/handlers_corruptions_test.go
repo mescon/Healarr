@@ -358,11 +358,11 @@ func TestGetCorruptions_AdditionalStatusFilters(t *testing.T) {
 		filter   string
 		expected int
 	}{
-		{"active", 4},               // All non-resolved/orphaned/ignored
-		{"in_progress", 1},          // Only RemediationQueued
-		{"failed", 1},               // Only DeletionFailed
-		{"manual_intervention", 2},  // ImportBlocked + ManuallyRemoved
-		{"invalid_filter", 4},       // Invalid filter should return all
+		{"active", 4},              // All non-resolved/orphaned/ignored
+		{"in_progress", 1},         // Only RemediationQueued
+		{"failed", 1},              // Only DeletionFailed
+		{"manual_intervention", 2}, // ImportBlocked + ManuallyRemoved
+		{"invalid_filter", 4},      // Invalid filter should return all
 	}
 
 	for _, tt := range tests {

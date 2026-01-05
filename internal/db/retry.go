@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -8,6 +9,9 @@ import (
 
 	"github.com/mescon/Healarr/internal/logger"
 )
+
+// retryQueryTimeout is the maximum time for each individual query attempt.
+const retryQueryTimeout = 15 * time.Second
 
 // ExecWithRetry executes a SQL statement with retry logic for SQLITE_BUSY errors.
 // This function works with any *sql.DB and is useful for high-concurrency scenarios
@@ -17,15 +21,17 @@ func ExecWithRetry(db *sql.DB, query string, args ...interface{}) (sql.Result, e
 	var err error
 
 	for attempt := 0; attempt < MaxRetries; attempt++ {
-		result, err = db.Exec(query, args...)
+		ctx, cancel := context.WithTimeout(context.Background(), retryQueryTimeout)
+		result, err = db.ExecContext(ctx, query, args...)
+		cancel()
 		if err == nil {
 			return result, nil
 		}
 
-		// Check if error is SQLITE_BUSY (database is locked)
+		// Check if error is SQLITE_BUSY (database is locked) or context deadline
 		errStr := err.Error()
-		if !strings.Contains(errStr, "SQLITE_BUSY") && !strings.Contains(errStr, "database is locked") {
-			// Not a busy error, don't retry
+		if !strings.Contains(errStr, "SQLITE_BUSY") && !strings.Contains(errStr, "database is locked") && !strings.Contains(errStr, "context deadline exceeded") {
+			// Not a busy/timeout error, don't retry
 			return nil, err
 		}
 
@@ -46,14 +52,16 @@ func QueryWithRetry(db *sql.DB, query string, args ...interface{}) (*sql.Rows, e
 	var err error
 
 	for attempt := 0; attempt < MaxRetries; attempt++ {
-		rows, err = db.Query(query, args...)
+		ctx, cancel := context.WithTimeout(context.Background(), retryQueryTimeout)
+		rows, err = db.QueryContext(ctx, query, args...)
+		cancel()
 		if err == nil {
 			return rows, nil
 		}
 
-		// Check if error is SQLITE_BUSY
+		// Check if error is SQLITE_BUSY or context deadline
 		errStr := err.Error()
-		if !strings.Contains(errStr, "SQLITE_BUSY") && !strings.Contains(errStr, "database is locked") {
+		if !strings.Contains(errStr, "SQLITE_BUSY") && !strings.Contains(errStr, "database is locked") && !strings.Contains(errStr, "context deadline exceeded") {
 			return nil, err
 		}
 

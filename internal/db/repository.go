@@ -41,10 +41,11 @@ func NewRepository(dbPath string) (*Repository, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Configure connection pool for SQLite
-	// SQLite benefits from limited connections to avoid lock contention
-	db.SetMaxOpenConns(1)                  // SQLite only supports one writer at a time
-	db.SetMaxIdleConns(1)                  // Keep one connection ready
+	// Configure connection pool for SQLite with WAL mode
+	// WAL mode allows multiple concurrent readers + 1 writer
+	// Higher connection count enables parallel reads for better concurrency
+	db.SetMaxOpenConns(10)                 // Allow concurrent readers (WAL mode safe)
+	db.SetMaxIdleConns(5)                  // Keep connections ready for reuse
 	db.SetConnMaxLifetime(0)               // Don't close connections due to age
 	db.SetConnMaxIdleTime(5 * time.Minute) // Close idle connections after 5 minutes
 

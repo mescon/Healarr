@@ -1014,4 +1014,3 @@ func TestBrowseDirectory_CannotAccessDirectory(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &response)
 	assert.Equal(t, "Cannot access directory", response["error"])
 }
-

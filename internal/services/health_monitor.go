@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"database/sql"
 	"sync"
 	"time"
@@ -10,6 +11,10 @@ import (
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
 )
+
+// queryTimeout is the maximum time allowed for background service database queries.
+// This prevents any single query from blocking the database connection indefinitely.
+const queryTimeout = 10 * time.Second
 
 // HealthMonitorService monitors system health and detects stuck remediations
 type HealthMonitorService struct {
@@ -128,7 +133,10 @@ func (h *HealthMonitorService) checkStuckRemediations() {
 	`
 
 	thresholdHours := int(h.stuckThreshold.Hours())
-	rows, err := h.db.Query(query, thresholdHours)
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+
+	rows, err := h.db.QueryContext(ctx, query, thresholdHours)
 	if err != nil {
 		logger.Debugf("Health monitor: failed to check stuck remediations: %v", err)
 		return
@@ -188,7 +196,10 @@ func (h *HealthMonitorService) checkRepeatedFailures() {
 		HAVING COUNT(DISTINCT e1.aggregate_id) >= ?
 	`
 
-	rows, err := h.db.Query(query, h.repeatedFailureCount)
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+
+	rows, err := h.db.QueryContext(ctx, query, h.repeatedFailureCount)
 	if err != nil {
 		logger.Debugf("Health monitor: failed to check repeated failures: %v", err)
 		return
@@ -343,7 +354,9 @@ func (h *HealthMonitorService) GetHealthStatus() map[string]interface{} {
 	if h.db != nil {
 		var stuckCount int
 		thresholdHours := int(h.stuckThreshold.Hours())
-		if err := h.db.QueryRow(`
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
+		if err := h.db.QueryRowContext(ctx, `
 			SELECT COUNT(DISTINCT e1.aggregate_id)
 			FROM events e1
 			JOIN events e2 ON e1.aggregate_id = e2.aggregate_id
@@ -423,7 +436,10 @@ func (h *HealthMonitorService) syncWithArrState() {
 		AND cs.last_updated_at > datetime('now', '-7 days')
 	`
 
-	rows, err := h.db.Query(query)
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+
+	rows, err := h.db.QueryContext(ctx, query)
 	if err != nil {
 		logger.Debugf("Health monitor: failed to query in-progress items: %v", err)
 		return

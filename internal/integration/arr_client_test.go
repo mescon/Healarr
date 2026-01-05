@@ -1900,9 +1900,9 @@ func TestHTTPArrClient_FindMissingEpisodesForPath_Success(t *testing.T) {
 				Monitored     bool  `json:"monitored"`
 			}{
 				{ID: 1, SeasonNumber: 1, EpisodeNumber: 1, HasFile: true, Monitored: true},
-				{ID: 2, SeasonNumber: 1, EpisodeNumber: 2, HasFile: false, Monitored: true}, // Missing
+				{ID: 2, SeasonNumber: 1, EpisodeNumber: 2, HasFile: false, Monitored: true},  // Missing
 				{ID: 3, SeasonNumber: 1, EpisodeNumber: 3, HasFile: false, Monitored: false}, // Not monitored
-				{ID: 4, SeasonNumber: 2, EpisodeNumber: 1, HasFile: false, Monitored: true}, // Missing
+				{ID: 4, SeasonNumber: 2, EpisodeNumber: 1, HasFile: false, Monitored: true},  // Missing
 			}
 			json.NewEncoder(w).Encode(episodes)
 			return
@@ -2202,21 +2202,21 @@ func TestHTTPArrClient_GetDownloadStatus_Success(t *testing.T) {
 		// Return queue with some items
 		response := struct {
 			Records []struct {
-				ID           int64   `json:"id"`
-				Title        string  `json:"title"`
-				Status       string  `json:"status"`
-				DownloadId   string  `json:"downloadId"`
-				Sizeleft     int64   `json:"sizeleft"`
-				Size         int64   `json:"size"`
+				ID         int64  `json:"id"`
+				Title      string `json:"title"`
+				Status     string `json:"status"`
+				DownloadId string `json:"downloadId"`
+				Sizeleft   int64  `json:"sizeleft"`
+				Size       int64  `json:"size"`
 			} `json:"records"`
 		}{
 			Records: []struct {
-				ID           int64   `json:"id"`
-				Title        string  `json:"title"`
-				Status       string  `json:"status"`
-				DownloadId   string  `json:"downloadId"`
-				Sizeleft     int64   `json:"sizeleft"`
-				Size         int64   `json:"size"`
+				ID         int64  `json:"id"`
+				Title      string `json:"title"`
+				Status     string `json:"status"`
+				DownloadId string `json:"downloadId"`
+				Sizeleft   int64  `json:"sizeleft"`
+				Size       int64  `json:"size"`
 			}{
 				{ID: 1, Title: "Test.Show.S01E01", Status: "downloading", DownloadId: "abc123", Sizeleft: 500, Size: 1000},
 			},
@@ -2362,15 +2362,15 @@ func TestHTTPArrClient_FindQueueItemsByMediaID_MultipleItems(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		response := struct {
 			Records []struct {
-				ID      int64 `json:"id"`
-				SeriesID int64 `json:"seriesId"`
-				Title   string `json:"title"`
+				ID       int64  `json:"id"`
+				SeriesID int64  `json:"seriesId"`
+				Title    string `json:"title"`
 			} `json:"records"`
 		}{
 			Records: []struct {
-				ID      int64 `json:"id"`
-				SeriesID int64 `json:"seriesId"`
-				Title   string `json:"title"`
+				ID       int64  `json:"id"`
+				SeriesID int64  `json:"seriesId"`
+				Title    string `json:"title"`
 			}{
 				{ID: 1, SeriesID: 123, Title: "Test.Show.S01E01"},
 				{ID: 2, SeriesID: 123, Title: "Test.Show.S01E02"},
@@ -2685,12 +2685,16 @@ func TestHTTPArrClient_GetAllInstances_MultipleTypes(t *testing.T) {
 	defer db.Close()
 
 	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(struct{ Status string `json:"status"` }{Status: "ok"})
+		json.NewEncoder(w).Encode(struct {
+			Status string `json:"status"`
+		}{Status: "ok"})
 	}))
 	defer server1.Close()
 
 	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(struct{ Status string `json:"status"` }{Status: "ok"})
+		json.NewEncoder(w).Encode(struct {
+			Status string `json:"status"`
+		}{Status: "ok"})
 	}))
 	defer server2.Close()
 
@@ -2721,7 +2725,9 @@ func TestHTTPArrClient_RecordSuccess_AfterFailures(t *testing.T) {
 			return
 		}
 		// Then succeed to test recovery
-		json.NewEncoder(w).Encode(struct{ Version string `json:"version"` }{Version: "4.0.0"})
+		json.NewEncoder(w).Encode(struct {
+			Version string `json:"version"`
+		}{Version: "4.0.0"})
 	}))
 	defer server.Close()
 
@@ -3409,7 +3415,9 @@ func TestHTTPArrClient_RefreshMonitoredDownloads_CommandSent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v3/command" && r.Method == "POST" {
 			commandReceived = true
-			json.NewEncoder(w).Encode(struct{ ID int64 `json:"id"` }{ID: 1})
+			json.NewEncoder(w).Encode(struct {
+				ID int64 `json:"id"`
+			}{ID: 1})
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -4346,26 +4354,26 @@ func TestHTTPArrClient_GetDownloadStatus_Complete(t *testing.T) {
 				PageSize     int `json:"pageSize"`
 				TotalRecords int `json:"totalRecords"`
 				Records      []struct {
-					ID                   int64   `json:"id"`
-					DownloadID           string  `json:"downloadId"`
-					Status               string  `json:"status"`
-					TrackedDownloadState string  `json:"trackedDownloadState"`
-					MovieID              int64   `json:"movieId"`
-					Size                 int64   `json:"size"`
-					SizeLeft             int64   `json:"sizeleft"`
+					ID                   int64  `json:"id"`
+					DownloadID           string `json:"downloadId"`
+					Status               string `json:"status"`
+					TrackedDownloadState string `json:"trackedDownloadState"`
+					MovieID              int64  `json:"movieId"`
+					Size                 int64  `json:"size"`
+					SizeLeft             int64  `json:"sizeleft"`
 				} `json:"records"`
 			}{
 				Page:         1,
 				PageSize:     1000,
 				TotalRecords: 1,
 				Records: []struct {
-					ID                   int64   `json:"id"`
-					DownloadID           string  `json:"downloadId"`
-					Status               string  `json:"status"`
-					TrackedDownloadState string  `json:"trackedDownloadState"`
-					MovieID              int64   `json:"movieId"`
-					Size                 int64   `json:"size"`
-					SizeLeft             int64   `json:"sizeleft"`
+					ID                   int64  `json:"id"`
+					DownloadID           string `json:"downloadId"`
+					Status               string `json:"status"`
+					TrackedDownloadState string `json:"trackedDownloadState"`
+					MovieID              int64  `json:"movieId"`
+					Size                 int64  `json:"size"`
+					SizeLeft             int64  `json:"sizeleft"`
 				}{
 					{ID: 1, DownloadID: "abc123", Status: "completed", TrackedDownloadState: "importPending", MovieID: 42, Size: 1000, SizeLeft: 0},
 				},

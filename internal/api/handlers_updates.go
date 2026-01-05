@@ -27,14 +27,14 @@ type GitHubRelease struct {
 
 // UpdateCheckResponse is the response returned to the frontend
 type UpdateCheckResponse struct {
-	CurrentVersion   string            `json:"current_version"`
-	LatestVersion    string            `json:"latest_version"`
-	UpdateAvailable  bool              `json:"update_available"`
-	ReleaseURL       string            `json:"release_url"`
-	Changelog        string            `json:"changelog"`
-	PublishedAt      string            `json:"published_at"`
-	DownloadURLs     map[string]string `json:"download_urls"`
-	DockerPullCmd    string            `json:"docker_pull_cmd"`
+	CurrentVersion     string             `json:"current_version"`
+	LatestVersion      string             `json:"latest_version"`
+	UpdateAvailable    bool               `json:"update_available"`
+	ReleaseURL         string             `json:"release_url"`
+	Changelog          string             `json:"changelog"`
+	PublishedAt        string             `json:"published_at"`
+	DownloadURLs       map[string]string  `json:"download_urls"`
+	DockerPullCmd      string             `json:"docker_pull_cmd"`
 	UpdateInstructions UpdateInstructions `json:"update_instructions"`
 }
 

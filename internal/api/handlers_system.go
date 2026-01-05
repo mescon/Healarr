@@ -15,35 +15,35 @@ import (
 
 // SystemInfo contains runtime environment information
 type SystemInfo struct {
-	Version     string            `json:"version"`
-	Environment string            `json:"environment"` // "docker" or "native"
-	OS          string            `json:"os"`
-	Arch        string            `json:"arch"`
-	GoVersion   string            `json:"go_version"`
-	Uptime      string            `json:"uptime"`
-	UptimeSecs  int64             `json:"uptime_seconds"`
-	StartedAt   time.Time         `json:"started_at"`
-	Config      SystemConfigInfo  `json:"config"`
-	Mounts      []MountInfo       `json:"mounts,omitempty"`
-	Links       SystemLinks       `json:"links"`
+	Version     string           `json:"version"`
+	Environment string           `json:"environment"` // "docker" or "native"
+	OS          string           `json:"os"`
+	Arch        string           `json:"arch"`
+	GoVersion   string           `json:"go_version"`
+	Uptime      string           `json:"uptime"`
+	UptimeSecs  int64            `json:"uptime_seconds"`
+	StartedAt   time.Time        `json:"started_at"`
+	Config      SystemConfigInfo `json:"config"`
+	Mounts      []MountInfo      `json:"mounts,omitempty"`
+	Links       SystemLinks      `json:"links"`
 }
 
 // SystemConfigInfo contains configuration details
 type SystemConfigInfo struct {
-	Port                 string `json:"port"`
-	BasePath             string `json:"base_path"`
-	BasePathSource       string `json:"base_path_source"`
-	LogLevel             string `json:"log_level"`
-	DataDir              string `json:"data_dir"`
-	DatabasePath         string `json:"database_path"`
-	LogDir               string `json:"log_dir"`
-	DryRunMode           bool   `json:"dry_run_mode"`
-	RetentionDays        int    `json:"retention_days"`
-	DefaultMaxRetries    int    `json:"default_max_retries"`
-	VerificationTimeout  string `json:"verification_timeout"`
-	VerificationInterval string `json:"verification_interval"`
+	Port                 string  `json:"port"`
+	BasePath             string  `json:"base_path"`
+	BasePathSource       string  `json:"base_path_source"`
+	LogLevel             string  `json:"log_level"`
+	DataDir              string  `json:"data_dir"`
+	DatabasePath         string  `json:"database_path"`
+	LogDir               string  `json:"log_dir"`
+	DryRunMode           bool    `json:"dry_run_mode"`
+	RetentionDays        int     `json:"retention_days"`
+	DefaultMaxRetries    int     `json:"default_max_retries"`
+	VerificationTimeout  string  `json:"verification_timeout"`
+	VerificationInterval string  `json:"verification_interval"`
 	ArrRateLimitRPS      float64 `json:"arr_rate_limit_rps"`
-	ArrRateLimitBurst    int    `json:"arr_rate_limit_burst"`
+	ArrRateLimitBurst    int     `json:"arr_rate_limit_burst"`
 }
 
 // MountInfo contains information about a mounted volume
@@ -56,11 +56,11 @@ type MountInfo struct {
 
 // SystemLinks contains useful links
 type SystemLinks struct {
-	GitHub       string `json:"github"`
-	Issues       string `json:"issues"`
-	Releases     string `json:"releases"`
-	Wiki         string `json:"wiki"`
-	Discussions  string `json:"discussions"`
+	GitHub      string `json:"github"`
+	Issues      string `json:"issues"`
+	Releases    string `json:"releases"`
+	Wiki        string `json:"wiki"`
+	Discussions string `json:"discussions"`
 }
 
 // handleSystemInfo returns runtime environment information

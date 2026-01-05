@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -345,11 +346,11 @@ func TestRepository_ConcurrentAccess(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	// Test concurrent inserts
+	// Test concurrent inserts using ExecWithRetry to handle SQLite contention
 	done := make(chan bool, 10)
 	for i := 0; i < 10; i++ {
 		go func(n int) {
-			_, err := repo.DB.Exec(`
+			_, err := ExecWithRetry(repo.DB, `
 				INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version)
 				VALUES (?, ?, ?, ?, ?)
 			`, "concurrent", "test", "ConcurrentEvent", "{}", 1)
@@ -383,9 +384,9 @@ func TestRepository_ConnectionPool(t *testing.T) {
 
 	stats := repo.DB.Stats()
 
-	// Verify connection pool settings
-	if stats.MaxOpenConnections != 1 {
-		t.Errorf("Expected MaxOpenConnections=1, got %d", stats.MaxOpenConnections)
+	// Verify connection pool settings (10 connections for concurrent reads with WAL mode)
+	if stats.MaxOpenConnections != 10 {
+		t.Errorf("Expected MaxOpenConnections=10, got %d", stats.MaxOpenConnections)
 	}
 }
 
@@ -2946,10 +2947,12 @@ func TestRepository_CheckIntegrity_AfterManyOperations(t *testing.T) {
 
 	// Perform many database operations
 	for i := 0; i < 100; i++ {
+		// Build valid JSON string - SQLite's generated column requires valid JSON
+		eventData := fmt.Sprintf(`{"iteration": %d}`, i)
 		_, err := repo.DB.Exec(`
 			INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data, created_at)
-			VALUES (?, 'test', 'IntegrityTestEvent', '{"iteration": ?}', datetime('now'))
-		`, i, i)
+			VALUES (?, 'test', 'IntegrityTestEvent', ?, datetime('now'))
+		`, i, eventData)
 		if err != nil {
 			t.Fatalf("Failed to insert event: %v", err)
 		}

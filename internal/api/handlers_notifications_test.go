@@ -854,4 +854,3 @@ func TestGetNotificationLog_DBError(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
-

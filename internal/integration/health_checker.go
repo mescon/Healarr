@@ -36,10 +36,6 @@ func validateMediaPath(path string) error {
 		return fmt.Errorf("path contains newline: %s", path)
 	}
 
-	// Clean the path to resolve any .. or . components
-	// This normalizes the path but doesn't reject valid paths
-	_ = filepath.Clean(path)
-
 	return nil
 }
 

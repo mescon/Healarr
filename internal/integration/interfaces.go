@@ -53,7 +53,7 @@ type QueueItemInfo struct {
 	StatusMessages        []string // detailed status/warning messages from *arr
 	Protocol              string   // usenet, torrent
 	DownloadClient        string
-	Indexer               string   // Source indexer (NZBgeek, 1337x, etc.)
+	Indexer               string // Source indexer (NZBgeek, 1337x, etc.)
 	Size                  int64
 	SizeLeft              int64
 	Progress              float64 // calculated: (size - sizeleft) / size * 100

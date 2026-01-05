@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"time"
@@ -10,6 +11,9 @@ import (
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
 )
+
+// recoveryQueryTimeout is the maximum time for database queries in recovery service.
+const recoveryQueryTimeout = 30 * time.Second
 
 // RecoveryService recovers stale in-progress items on startup.
 // It runs once when the application starts to reconcile Healarr state
@@ -111,7 +115,10 @@ func (r *RecoveryService) findStaleItems() ([]staleItem, error) {
 		AND cs.last_updated_at < ?
 	`
 
-	rows, err := r.db.Query(query, cutoffTime)
+	ctx, cancel := context.WithTimeout(context.Background(), recoveryQueryTimeout)
+	defer cancel()
+
+	rows, err := r.db.QueryContext(ctx, query, cutoffTime)
 	if err != nil {
 		return nil, err
 	}
@@ -270,10 +277,10 @@ func (r *RecoveryService) emitVerificationSuccess(item staleItem, filePath strin
 		AggregateType: "corruption",
 		EventType:     domain.VerificationSuccess,
 		EventData: map[string]interface{}{
-			"file_path":      filePath,
-			"path_id":        item.PathID,
+			"file_path":       filePath,
+			"path_id":         item.PathID,
 			"recovery_action": "auto_recovered",
-			"original_state": item.CurrentState,
+			"original_state":  item.CurrentState,
 		},
 	}); err != nil {
 		logger.Errorf("Recovery: Failed to publish VerificationSuccess for %s: %v", item.CorruptionID, err)
@@ -287,10 +294,15 @@ func (r *RecoveryService) emitVerificationSuccess(item staleItem, filePath strin
 func (r *RecoveryService) emitSearchExhausted(item staleItem, reason string) string {
 	// Get retry count from database
 	var retryCount int
-	r.db.QueryRow(`
+	ctx, cancel := context.WithTimeout(context.Background(), recoveryQueryTimeout)
+	defer cancel()
+
+	if err := r.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM events
 		WHERE aggregate_id = ? AND event_type IN ('RetryScheduled', 'SearchStarted')
-	`, item.CorruptionID).Scan(&retryCount)
+	`, item.CorruptionID).Scan(&retryCount); err != nil {
+		logger.Debugf("Recovery: Failed to get retry count for %s: %v", item.CorruptionID, err)
+	}
 
 	eventData := map[string]interface{}{
 		"file_path":        item.FilePath,

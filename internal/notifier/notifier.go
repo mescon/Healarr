@@ -2,6 +2,7 @@ package notifier
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,9 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/logger"
 )
+
+// notifierQueryTimeout is the maximum time for database queries in notifier.
+const notifierQueryTimeout = 10 * time.Second
 
 // Provider types
 const (
@@ -345,7 +349,10 @@ func (n *Notifier) backgroundWorker() {
 }
 
 func (n *Notifier) loadConfigs() error {
-	rows, err := n.db.Query(`
+	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
+	defer cancel()
+
+	rows, err := n.db.QueryContext(ctx, `
 		SELECT id, name, provider_type, config, events, enabled, throttle_seconds, created_at, updated_at
 		FROM notifications
 		WHERE enabled = 1
@@ -886,7 +893,10 @@ func (n *Notifier) formatTitle(eventType string, fileName string) string {
 }
 
 func (n *Notifier) logNotification(notificationID int64, eventType, message, status, errorMsg string) {
-	_, err := n.db.Exec(`
+	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
+	defer cancel()
+
+	_, err := n.db.ExecContext(ctx, `
 		INSERT INTO notification_log (notification_id, event_type, message, status, error)
 		VALUES (?, ?, ?, ?, ?)
 	`, notificationID, eventType, message, status, errorMsg)
@@ -896,9 +906,12 @@ func (n *Notifier) logNotification(notificationID int64, eventType, message, sta
 }
 
 func (n *Notifier) cleanupOldLogs() {
+	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
+	defer cancel()
+
 	// Delete logs older than 7 days
-	result, err := n.db.Exec(`
-		DELETE FROM notification_log 
+	result, err := n.db.ExecContext(ctx, `
+		DELETE FROM notification_log
 		WHERE sent_at < datetime('now', '-7 days')
 	`)
 	if err != nil {
@@ -911,11 +924,11 @@ func (n *Notifier) cleanupOldLogs() {
 	}
 
 	// Also limit to 100 entries per notification
-	_, err = n.db.Exec(`
-		DELETE FROM notification_log 
+	_, err = n.db.ExecContext(ctx, `
+		DELETE FROM notification_log
 		WHERE id NOT IN (
-			SELECT id FROM notification_log 
-			ORDER BY sent_at DESC 
+			SELECT id FROM notification_log
+			ORDER BY sent_at DESC
 			LIMIT 100
 		)
 	`)
@@ -942,7 +955,10 @@ func (n *Notifier) SendTestNotification(cfg *NotificationConfig) error {
 
 // GetAllConfigs returns all notification configurations (for API)
 func (n *Notifier) GetAllConfigs() ([]*NotificationConfig, error) {
-	rows, err := n.db.Query(`
+	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
+	defer cancel()
+
+	rows, err := n.db.QueryContext(ctx, `
 		SELECT id, name, provider_type, config, events, enabled, throttle_seconds, created_at, updated_at
 		FROM notifications
 		ORDER BY name
@@ -978,11 +994,14 @@ func (n *Notifier) GetAllConfigs() ([]*NotificationConfig, error) {
 
 // GetConfig returns a specific notification configuration
 func (n *Notifier) GetConfig(id int64) (*NotificationConfig, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
+	defer cancel()
+
 	var cfg NotificationConfig
 	var configJSON string
 	var eventsJSON string
 
-	err := n.db.QueryRow(`
+	err := n.db.QueryRowContext(ctx, `
 		SELECT id, name, provider_type, config, events, enabled, throttle_seconds, created_at, updated_at
 		FROM notifications
 		WHERE id = ?
@@ -1018,7 +1037,10 @@ func (n *Notifier) CreateConfig(cfg *NotificationConfig) (int64, error) {
 		return 0, fmt.Errorf("failed to encrypt config: %w", err)
 	}
 
-	result, err := n.db.Exec(`
+	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
+	defer cancel()
+
+	result, err := n.db.ExecContext(ctx, `
 		INSERT INTO notifications (name, provider_type, config, events, enabled, throttle_seconds)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, cfg.Name, cfg.ProviderType, encryptedConfig, string(eventsJSON), cfg.Enabled, cfg.ThrottleSeconds)
@@ -1048,8 +1070,11 @@ func (n *Notifier) UpdateConfig(cfg *NotificationConfig) error {
 		return fmt.Errorf("failed to encrypt config: %w", err)
 	}
 
-	_, err = n.db.Exec(`
-		UPDATE notifications 
+	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
+	defer cancel()
+
+	_, err = n.db.ExecContext(ctx, `
+		UPDATE notifications
 		SET name = ?, provider_type = ?, config = ?, events = ?, enabled = ?, throttle_seconds = ?, updated_at = datetime('now')
 		WHERE id = ?
 	`, cfg.Name, cfg.ProviderType, encryptedConfig, string(eventsJSON), cfg.Enabled, cfg.ThrottleSeconds, cfg.ID)
@@ -1063,13 +1088,16 @@ func (n *Notifier) UpdateConfig(cfg *NotificationConfig) error {
 
 // DeleteConfig deletes a notification configuration
 func (n *Notifier) DeleteConfig(id int64) error {
-	_, err := n.db.Exec(`DELETE FROM notifications WHERE id = ?`, id)
+	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
+	defer cancel()
+
+	_, err := n.db.ExecContext(ctx, `DELETE FROM notifications WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
 
 	// Also delete related logs
-	if _, logErr := n.db.Exec(`DELETE FROM notification_log WHERE notification_id = ?`, id); logErr != nil {
+	if _, logErr := n.db.ExecContext(ctx, `DELETE FROM notification_log WHERE notification_id = ?`, id); logErr != nil {
 		logger.Warnf("Failed to cleanup notification logs for id=%d: %v", id, logErr)
 	}
 
@@ -1088,6 +1116,9 @@ func (n *Notifier) GetNotificationLog(notificationID int64, limit int) ([]Notifi
 		limit = 50
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
+	defer cancel()
+
 	query := `
 		SELECT id, notification_id, event_type, message, status, error, sent_at
 		FROM notification_log
@@ -1102,7 +1133,7 @@ func (n *Notifier) GetNotificationLog(notificationID int64, limit int) ([]Notifi
 	query += ` ORDER BY sent_at DESC LIMIT ?`
 	args = append(args, limit)
 
-	rows, err := n.db.Query(query, args...)
+	rows, err := n.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

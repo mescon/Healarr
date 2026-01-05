@@ -19,6 +19,9 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
+// scannerQueryTimeout is the maximum time for database queries in scanner service.
+const scannerQueryTimeout = 10 * time.Second
+
 // Default media file extensions to scan
 var defaultMediaExtensions = map[string]bool{
 	".mkv":  true,
@@ -188,10 +191,12 @@ func (s *ScannerService) Shutdown() {
 		if scan.Type == "path" && scan.ScanDBID > 0 {
 			logger.Infof("Scanner: saving state for scan %s (file %d/%d)", scanID, scan.FilesDone, scan.TotalFiles)
 			// Mark as interrupted in database - state is already saved during scanning
-			_, err := s.db.Exec(`
+			ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+			_, err := s.db.ExecContext(ctx, `
 				UPDATE scans SET status = 'interrupted', current_file_index = ?
 				WHERE id = ?
 			`, scan.FilesDone, scan.ScanDBID)
+			cancel()
 			if err != nil {
 				logger.Errorf("Failed to save scan state for %s: %v", scanID, err)
 			}
@@ -221,7 +226,10 @@ func (s *ScannerService) Shutdown() {
 
 // ResumeInterruptedScans checks for scans that were interrupted by shutdown and resumes them
 func (s *ScannerService) ResumeInterruptedScans() {
-	rows, err := s.db.Query(`
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.path_id, s.path, s.total_files, s.current_file_index, s.file_list, s.detection_config, s.auto_remediate, COALESCE(s.dry_run, 0)
 		FROM scans s
 		WHERE s.status = 'interrupted' AND s.file_list IS NOT NULL
@@ -334,7 +342,9 @@ func (s *ScannerService) resumeScan(scanDBID, pathID int64, localPath string, to
 	s.mu.Unlock()
 
 	// Update scan status to running
-	_, err := s.db.Exec(`UPDATE scans SET status = 'running' WHERE id = ?`, scanDBID)
+	statusCtx, statusCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	_, err := s.db.ExecContext(statusCtx, `UPDATE scans SET status = 'running' WHERE id = ?`, scanDBID)
+	statusCancel()
 	if err != nil {
 		logger.Errorf("Failed to update scan status: %v", err)
 	}
@@ -344,10 +354,12 @@ func (s *ScannerService) resumeScan(scanDBID, pathID int64, localPath string, to
 		if progress.Status == "cancelled" || progress.Status == "interrupted" {
 			finalStatus = progress.Status
 		}
-		_, err := s.db.Exec(`
+		deferCtx, deferCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+		_, err := s.db.ExecContext(deferCtx, `
 			UPDATE scans SET status = ?, files_scanned = ?, completed_at = datetime('now')
 			WHERE id = ?
 		`, finalStatus, progress.FilesDone, scanDBID)
+		deferCancel()
 		if err != nil {
 			logger.Errorf("Failed to update scan record: %v", err)
 		}
@@ -537,10 +549,12 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 	var dryRun bool
 	var detectionMethod, detectionMode string
 	var detectionArgsJSON sql.NullString
-	err := s.db.QueryRow(`
-		SELECT auto_remediate, dry_run, detection_method, detection_args, detection_mode 
+	configCtx, configCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	err := s.db.QueryRowContext(configCtx, `
+		SELECT auto_remediate, dry_run, detection_method, detection_args, detection_mode
 		FROM scan_paths WHERE id = ?
 	`, pathID).Scan(&autoRemediate, &dryRun, &detectionMethod, &detectionArgsJSON, &detectionMode)
+	configCancel()
 	if err != nil {
 		// Log error but proceed with defaults
 		logger.Errorf("Error querying scan path config: %v", err)
@@ -655,10 +669,12 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 
 	// Record scan start in database with resumability data
 	var scanDBID int64
-	result, err := s.db.Exec(`
+	insertCtx, insertCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	result, err := s.db.ExecContext(insertCtx, `
 		INSERT INTO scans (path, path_id, status, files_scanned, corruptions_found, total_files, current_file_index, file_list, detection_config, auto_remediate, dry_run, started_at)
 		VALUES (?, ?, 'running', 0, 0, ?, 0, ?, ?, ?, ?, datetime('now'))
 	`, localPath, pathID, len(files), string(fileListJSON), string(detectionConfigJSON), autoRemediate, dryRun)
+	insertCancel()
 	if err != nil {
 		logger.Errorf("Failed to record scan start: %v", err)
 	} else {
@@ -680,11 +696,13 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 				finalStatus = "cancelled"
 			}
 			if scanDBID > 0 {
-				_, err := s.db.Exec(`
-					UPDATE scans 
+				updateCtx, updateCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+				_, err := s.db.ExecContext(updateCtx, `
+					UPDATE scans
 					SET status = ?, files_scanned = ?, completed_at = datetime('now')
 					WHERE id = ?
 				`, finalStatus, progress.FilesDone, scanDBID)
+				updateCancel()
 				if err != nil {
 					logger.Errorf("Failed to update scan record: %v", err)
 				}
@@ -773,9 +791,11 @@ func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProg
 
 	// Save current position
 	if scanDBID > 0 {
-		if _, err := s.db.Exec(`UPDATE scans SET current_file_index = ?, status = 'paused' WHERE id = ?`, fileIndex, scanDBID); err != nil {
+		pauseCtx, pauseCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+		if _, err := s.db.ExecContext(pauseCtx, `UPDATE scans SET current_file_index = ?, status = 'paused' WHERE id = ?`, fileIndex, scanDBID); err != nil {
 			logger.Warnf("Failed to update scan pause state for scan %d: %v", scanDBID, err)
 		}
+		pauseCancel()
 	}
 
 	// Wait for resume or cancel
@@ -787,9 +807,11 @@ func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProg
 		progress.isPaused = false
 		s.mu.Unlock()
 		if scanDBID > 0 {
-			if _, err := s.db.Exec(`UPDATE scans SET status = 'running' WHERE id = ?`, scanDBID); err != nil {
+			resumeCtx, resumeCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+			if _, err := s.db.ExecContext(resumeCtx, `UPDATE scans SET status = 'running' WHERE id = ?`, scanDBID); err != nil {
 				logger.Warnf("Failed to update scan resume state for scan %d: %v", scanDBID, err)
 			}
+			resumeCancel()
 		}
 		s.emitProgress(progress)
 		return scanContinue
@@ -1062,9 +1084,11 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 		if i%10 == 0 || i == len(files)-1 {
 			s.emitProgress(progress)
 			if scanDBID > 0 {
-				if _, err := s.db.Exec(`UPDATE scans SET current_file_index = ?, files_scanned = ? WHERE id = ?`, i, progress.FilesDone, scanDBID); err != nil {
+				progressCtx, progressCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+				if _, err := s.db.ExecContext(progressCtx, `UPDATE scans SET current_file_index = ?, files_scanned = ? WHERE id = ?`, i, progress.FilesDone, scanDBID); err != nil {
 					logger.Warnf("Failed to save scan progress for scan %d: %v", scanDBID, err)
 				}
+				progressCancel()
 			}
 		}
 
@@ -1245,7 +1269,10 @@ func (s *ScannerService) refreshScanPathCache() error {
 		return nil
 	}
 
-	rows, err := s.db.Query("SELECT local_path, auto_remediate, COALESCE(dry_run, 0) FROM scan_paths WHERE enabled = 1")
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx, "SELECT local_path, auto_remediate, COALESCE(dry_run, 0) FROM scan_paths WHERE enabled = 1")
 	if err != nil {
 		return err
 	}
@@ -1371,8 +1398,11 @@ func (s *ScannerService) verifyPathAccessible(path string) error {
 func (s *ScannerService) hasActiveCorruption(filePath string) bool {
 	// Check for any CorruptionDetected event for this file that hasn't been resolved
 	// A corruption is "active" if it has no VerificationSuccess or has MaxRetriesReached
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
 	var count int
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM events e1
 		WHERE e1.event_type = 'CorruptionDetected'
 		AND json_extract(e1.event_data, '$.file_path') = ?
@@ -1398,8 +1428,11 @@ func (s *ScannerService) hasActiveCorruption(filePath string) bool {
 func (s *ScannerService) LoadActiveCorruptionsForPath(rootPath string) map[string]bool {
 	result := make(map[string]bool)
 
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
 	// Get all active corruptions for files under this path in a single query
-	rows, err := s.db.Query(`
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT DISTINCT json_extract(e1.event_data, '$.file_path') as file_path
 		FROM events e1
 		WHERE e1.event_type = 'CorruptionDetected'
@@ -1434,7 +1467,10 @@ func (s *ScannerService) LoadActiveCorruptionsForPath(rootPath string) map[strin
 func (s *ScannerService) queueForRescan(filePath string, pathID int64, errorType, errorMessage string) {
 	// Calculate next retry time with exponential backoff
 	// First retry: 5 minutes, then 15, 30, 60, 120 minutes
-	_, err := s.db.Exec(`
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO pending_rescans (file_path, path_id, error_type, error_message, next_retry_at)
 		VALUES (?, ?, ?, ?, datetime('now', '+5 minutes'))
 		ON CONFLICT(file_path) DO UPDATE SET
@@ -1473,8 +1509,11 @@ func (s *ScannerService) StartRescanWorker() {
 
 // processPendingRescans checks files that previously had infrastructure errors
 func (s *ScannerService) processPendingRescans() {
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
 	// Get files ready for retry
-	rows, err := s.db.Query(`
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, file_path, path_id, retry_count, max_retries
 		FROM pending_rescans
 		WHERE status = 'pending'
@@ -1535,20 +1574,23 @@ func (s *ScannerService) processPendingRescans() {
 
 		if healthy {
 			// File is now accessible and healthy - mark as resolved
-			if _, err := s.db.Exec(`
+			resolveCtx, resolveCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+			if _, err := s.db.ExecContext(resolveCtx, `
 				UPDATE pending_rescans
 				SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, resolution = 'healthy'
 				WHERE id = ?
 			`, f.id); err != nil {
 				logger.Warnf("Failed to mark pending rescan %d as resolved: %v", f.id, err)
 			}
+			resolveCancel()
 			logger.Infof("Pending rescan resolved as healthy: %s", f.filePath)
 			continue
 		}
 
 		if healthErr.IsRecoverable() {
 			// Still having infrastructure issues - update retry time
-			if _, err := s.db.Exec(`
+			retryCtx, retryCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+			if _, err := s.db.ExecContext(retryCtx, `
 				UPDATE pending_rescans
 				SET retry_count = retry_count + 1,
 				    last_attempt_at = CURRENT_TIMESTAMP,
@@ -1559,16 +1601,19 @@ func (s *ScannerService) processPendingRescans() {
 			`, healthErr.Type, healthErr.Message, f.id); err != nil {
 				logger.Warnf("Failed to update pending rescan %d retry state: %v", f.id, err)
 			}
+			retryCancel()
 
 			// Check if we've exceeded max retries
 			if f.retryCount+1 >= f.maxRetries {
-				if _, err := s.db.Exec(`
+				abandonCtx, abandonCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+				if _, err := s.db.ExecContext(abandonCtx, `
 					UPDATE pending_rescans
 					SET status = 'abandoned', resolved_at = CURRENT_TIMESTAMP, resolution = 'abandoned'
 					WHERE id = ?
 				`, f.id); err != nil {
 					logger.Warnf("Failed to mark pending rescan %d as abandoned: %v", f.id, err)
 				}
+				abandonCancel()
 				logger.Infof("Pending rescan abandoned after %d retries: %s", f.maxRetries, f.filePath)
 			} else {
 				logger.Debugf("Pending rescan still inaccessible, will retry: %s", f.filePath)
@@ -1580,13 +1625,15 @@ func (s *ScannerService) processPendingRescans() {
 		logger.Infof("Pending rescan revealed corruption: %s (Type: %s)", f.filePath, healthErr.Type)
 
 		// Mark as resolved with corruption
-		if _, err := s.db.Exec(`
+		corruptCtx, corruptCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+		if _, err := s.db.ExecContext(corruptCtx, `
 			UPDATE pending_rescans
 			SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, resolution = 'corrupt'
 			WHERE id = ?
 		`, f.id); err != nil {
 			logger.Warnf("Failed to mark pending rescan %d as corrupt: %v", f.id, err)
 		}
+		corruptCancel()
 
 		// Get scan path config for this path
 		autoRemediate, dryRun, _ := s.getScanPathConfig(f.filePath)
@@ -1620,8 +1667,11 @@ func (s *ScannerService) processPendingRescans() {
 
 // GetPendingRescanStats returns statistics about pending rescans
 func (s *ScannerService) GetPendingRescanStats() (pending, abandoned, resolved int, err error) {
-	err = s.db.QueryRow(`
-		SELECT 
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
+	err = s.db.QueryRowContext(ctx, `
+		SELECT
 			COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'abandoned' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END), 0)
