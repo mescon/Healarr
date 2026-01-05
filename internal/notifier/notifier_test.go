@@ -181,7 +181,7 @@ func TestGetEventGroups_ContainsScanEvents(t *testing.T) {
 	for _, expected := range expectedEvents {
 		found := false
 		for _, event := range scanGroup.Events {
-			if event == expected {
+			if event.Name == expected {
 				found = true
 				break
 			}

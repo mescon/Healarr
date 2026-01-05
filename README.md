@@ -395,6 +395,8 @@ Restart Healarr - you'll be prompted to set a new password.
 
 ### ffprobe/MediaInfo Not Found
 
+> **Tip:** Healarr displays tool availability in **Config → About** and **Help → About**. A warning banner appears when required tools are missing.
+
 **Linux:** Install via package manager:
 ```bash
 # Debian/Ubuntu
@@ -433,3 +435,4 @@ GNU General Public License v3.0 - see [LICENSE](LICENSE)
 - [Sonarr](https://sonarr.tv/), [Radarr](https://radarr.video/), [Whisparr](https://whisparr.com/)
 - The *arr community
 - [/r/selfhosted](https://reddit.com/r/selfhosted) and [/r/DataHoarder](https://reddit.com/r/DataHoarder) communities
+- Icons from [dashboard-icons](https://github.com/homarr-labs/dashboard-icons) by homarr-labs

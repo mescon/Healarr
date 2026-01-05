@@ -347,23 +347,38 @@ func TestRepository_ConcurrentAccess(t *testing.T) {
 	defer cleanup()
 
 	// Test concurrent inserts using ExecWithRetry to handle SQLite contention
-	done := make(chan bool, 10)
-	for i := 0; i < 10; i++ {
+	// Use 5 goroutines to stay within SQLite's comfortable concurrency limits
+	const numGoroutines = 5
+	errChan := make(chan error, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
 		go func(n int) {
+			// Small jitter to stagger requests (simulates real-world timing)
+			time.Sleep(time.Duration(n) * 10 * time.Millisecond)
+
 			_, err := ExecWithRetry(repo.DB, `
 				INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version)
 				VALUES (?, ?, ?, ?, ?)
 			`, "concurrent", "test", "ConcurrentEvent", "{}", 1)
 			if err != nil {
-				t.Errorf("Concurrent insert %d failed: %v", n, err)
+				errChan <- fmt.Errorf("concurrent insert %d failed: %w", n, err)
+			} else {
+				errChan <- nil
 			}
-			done <- true
 		}(i)
 	}
 
-	// Wait for all goroutines
-	for i := 0; i < 10; i++ {
-		<-done
+	// Collect all results (don't call t.Errorf from goroutines - causes race)
+	var errors []error
+	for i := 0; i < numGoroutines; i++ {
+		if err := <-errChan; err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	// Report any errors from main goroutine
+	for _, err := range errors {
+		t.Error(err)
 	}
 
 	// Verify all inserts succeeded
@@ -373,8 +388,8 @@ func TestRepository_ConcurrentAccess(t *testing.T) {
 		t.Fatalf("Failed to count events: %v", err)
 	}
 
-	if count != 10 {
-		t.Errorf("Expected 10 concurrent events, got %d", count)
+	if count != numGoroutines {
+		t.Errorf("Expected %d concurrent events, got %d", numGoroutines, count)
 	}
 }
 

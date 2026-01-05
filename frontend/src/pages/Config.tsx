@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder, Info, ExternalLink, ArrowUpCircle, Github, Bug, HardDrive } from 'lucide-react';
+import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder, Info } from 'lucide-react';
 import FileBrowser from '../components/ui/FileBrowser';
 import { useDateFormat, type DateFormatPreset } from '../lib/useDateFormat';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -15,13 +15,12 @@ import {
     testNotification, getNotificationEvents, getNotificationLog,
     triggerScanAll, exportConfig, importConfig, downloadDatabaseBackup,
     pauseAllScans, resumeAllScans, cancelAllScans, getDetectionPreview,
-    checkForUpdates,
-    getSystemInfo,
     type ArrInstance, type ScanPath, type NotificationConfig, type NotificationLogEntry, type ConfigExport
 } from '../lib/api';
 import clsx from 'clsx';
 import { useToast } from '../contexts/ToastContext';
 import ConfigWarningBanner from '../components/ConfigWarningBanner';
+import AboutSection from '../components/AboutSection';
 
 const ServerStatus = ({ url, apiKey, isManuallyTesting }: { url: string; apiKey: string; isManuallyTesting?: boolean }) => {
     const { data, isLoading, isError, isFetching } = useQuery({
@@ -2197,7 +2196,15 @@ const PROVIDER_EMOJI_FALLBACK: Record<string, string> = {
 const ProviderIcon = ({ provider, className = "w-5 h-5" }: { provider: string; className?: string }) => {
     const iconPath = PROVIDER_ICON_PATHS[provider];
     if (iconPath) {
-        return <img src={iconPath} alt={provider} className={className} />;
+        // Matrix logo is white, so invert it on light mode to make it visible
+        const needsInvert = provider === 'matrix';
+        return (
+            <img
+                src={iconPath}
+                alt={provider}
+                className={clsx(className, needsInvert && "invert dark:invert-0")}
+            />
+        );
     }
     return <span className="text-lg">{PROVIDER_EMOJI_FALLBACK[provider] || '📢'}</span>;
 };
@@ -2527,597 +2534,6 @@ const PROVIDER_CONFIGS = {
     }
 };
 
-// Platform icons as inline SVGs
-const DockerIcon = ({ className }: { className?: string }) => (
-    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
-        <path d="M13.983 11.078h2.119a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.119a.185.185 0 00-.185.185v1.888c0 .102.083.185.185.185m-2.954-5.43h2.118a.186.186 0 00.186-.186V3.574a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.186m0 2.716h2.118a.187.187 0 00.186-.186V6.29a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.887c0 .102.082.185.185.186m-2.93 0h2.12a.186.186 0 00.184-.186V6.29a.185.185 0 00-.185-.185H8.1a.185.185 0 00-.185.185v1.887c0 .102.083.185.185.186m-2.964 0h2.119a.186.186 0 00.185-.186V6.29a.185.185 0 00-.185-.185H5.136a.186.186 0 00-.186.185v1.887c0 .102.084.185.186.186m5.893 2.715h2.118a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.185m-2.93 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.083.185.185.185m-2.964 0h2.119a.185.185 0 00.185-.185V9.006a.185.185 0 00-.185-.186h-2.119a.186.186 0 00-.186.186v1.887c0 .102.084.185.186.185m-2.92 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.082.185.185.185M23.763 9.89c-.065-.051-.672-.51-1.954-.51-.338.001-.676.03-1.01.087-.248-1.7-1.653-2.53-1.716-2.566l-.344-.199-.226.327c-.284.438-.49.922-.612 1.43-.23.97-.09 1.882.403 2.661-.595.332-1.55.413-1.744.42H.751a.751.751 0 00-.75.748 11.376 11.376 0 00.692 4.062c.545 1.428 1.355 2.48 2.41 3.124 1.18.723 3.1 1.137 5.275 1.137.983.003 1.963-.086 2.93-.266a12.248 12.248 0 003.823-1.389c.98-.567 1.86-1.288 2.61-2.136 1.252-1.418 1.998-2.997 2.553-4.4h.221c1.372 0 2.215-.549 2.68-1.009.309-.293.55-.65.707-1.046l.098-.288z"/>
-    </svg>
-);
-
-const LinuxIcon = ({ className }: { className?: string }) => (
-    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
-        <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002c.186-.133.36-.2.53-.2zm-1.062 2.674c.05 0 .105.003.156.018a.5.5 0 01.077.022l-.074-.005h-.002c-.104.003-.203.02-.296.07-.09.049-.175.115-.26.199-.09.135-.168.2-.213.335h.002c-.03.098-.045.198-.05.3-.004.098.004.2.02.3.012.066.03.132.05.197a.39.39 0 00.076.155c.036.042.09.09.136.111.046.024.1.039.154.039.111 0 .199-.068.299-.2.1-.135.18-.27.24-.404.059-.066.12-.2.179-.335.06-.134.124-.268.178-.402.01-.02.017-.038.024-.055a.093.093 0 01.007-.013l.001-.003.003-.005-.001.001.002-.005h.004l.006-.008.006-.007.003-.004.004-.005.006-.006-.001.001.002-.002c.016-.013.032-.024.048-.034.016-.009.032-.015.05-.02a.2.2 0 01.05-.008c.027-.002.053-.002.08-.002z"/>
-    </svg>
-);
-
-const AppleIcon = ({ className }: { className?: string }) => (
-    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
-        <path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/>
-    </svg>
-);
-
-const WindowsIcon = ({ className }: { className?: string }) => (
-    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
-        <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/>
-    </svg>
-);
-
-// About Section - Version info, changelog, and update instructions
-const AboutSection = () => {
-    const { data: updateInfo, isLoading: updateLoading, error: updateError, refetch } = useQuery({
-        queryKey: ['updateCheck'],
-        queryFn: checkForUpdates,
-        staleTime: 300000, // 5 minutes
-        retry: 1,
-    });
-
-    const { data: systemInfo, isLoading: systemLoading } = useQuery({
-        queryKey: ['systemInfo'],
-        queryFn: getSystemInfo,
-        staleTime: 60000, // 1 minute
-        retry: 1,
-    });
-
-    // Determine platform from system info
-    const currentPlatform = systemInfo?.environment === 'docker' ? 'docker' : systemInfo?.os || 'unknown';
-
-    // Update instructions collapsed state - expanded by default when update available
-    const [updateInstructionsExpanded, setUpdateInstructionsExpanded] = useState(false);
-
-    // Auto-expand when update becomes available
-    useEffect(() => {
-        if (updateInfo?.update_available) {
-            setUpdateInstructionsExpanded(true);
-        }
-    }, [updateInfo?.update_available]);
-
-    // Parse inline markdown elements (bold, links, URLs, code) into React nodes
-    const parseInlineMarkdown = (text: string, keyPrefix: string): React.ReactNode[] => {
-        const result: React.ReactNode[] = [];
-        let remaining = text;
-        let partIndex = 0;
-
-        while (remaining.length > 0) {
-            // Match markdown links [text](url), bold **text**, inline code `text`, or bare URLs
-            const mdLinkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
-            const boldMatch = remaining.match(/\*\*([^*]+)\*\*/);
-            const codeMatch = remaining.match(/`([^`]+)`/);
-            const urlMatch = remaining.match(/(https?:\/\/[^\s<>\[\]()]+)/);
-
-            // Find the earliest match
-            const matches = [
-                mdLinkMatch ? { type: 'mdLink', match: mdLinkMatch, index: mdLinkMatch.index! } : null,
-                boldMatch ? { type: 'bold', match: boldMatch, index: boldMatch.index! } : null,
-                codeMatch ? { type: 'code', match: codeMatch, index: codeMatch.index! } : null,
-                urlMatch ? { type: 'url', match: urlMatch, index: urlMatch.index! } : null,
-            ].filter(Boolean).sort((a, b) => a!.index - b!.index);
-
-            if (matches.length === 0) {
-                // No more matches, add remaining text
-                if (remaining) result.push(remaining);
-                break;
-            }
-
-            const first = matches[0]!;
-
-            // Add text before the match
-            if (first.index > 0) {
-                result.push(remaining.substring(0, first.index));
-            }
-
-            if (first.type === 'mdLink') {
-                const [fullMatch, linkText, linkUrl] = first.match as RegExpMatchArray;
-                result.push(
-                    <a
-                        key={`${keyPrefix}-link-${partIndex++}`}
-                        href={linkUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-500 hover:text-blue-400 underline"
-                    >
-                        {linkText}
-                    </a>
-                );
-                remaining = remaining.substring(first.index + fullMatch.length);
-            } else if (first.type === 'bold') {
-                const [fullMatch, boldText] = first.match as RegExpMatchArray;
-                result.push(
-                    <strong key={`${keyPrefix}-bold-${partIndex++}`} className="font-semibold text-slate-700 dark:text-slate-300">
-                        {boldText}
-                    </strong>
-                );
-                remaining = remaining.substring(first.index + fullMatch.length);
-            } else if (first.type === 'code') {
-                const [fullMatch, codeText] = first.match as RegExpMatchArray;
-                result.push(
-                    <code key={`${keyPrefix}-code-${partIndex++}`} className="px-1.5 py-0.5 bg-slate-200 dark:bg-slate-800 rounded text-sm font-mono text-slate-700 dark:text-slate-300">
-                        {codeText}
-                    </code>
-                );
-                remaining = remaining.substring(first.index + fullMatch.length);
-            } else if (first.type === 'url') {
-                const [fullMatch] = first.match as RegExpMatchArray;
-                result.push(
-                    <a
-                        key={`${keyPrefix}-url-${partIndex++}`}
-                        href={fullMatch}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-500 hover:text-blue-400 underline break-all"
-                    >
-                        {fullMatch}
-                    </a>
-                );
-                remaining = remaining.substring(first.index + fullMatch.length);
-            }
-        }
-
-        return result;
-    };
-
-    // Simple markdown-to-JSX renderer for changelog
-    const renderMarkdown = (text: string) => {
-        if (!text) return null;
-
-        const lines = text.split('\n');
-        const elements: React.ReactNode[] = [];
-        let listItems: { key: string; content: React.ReactNode[] }[] = [];
-
-        const flushList = () => {
-            if (listItems.length > 0) {
-                elements.push(
-                    <ul key={`list-${elements.length}`} className="list-disc list-inside space-y-1 text-slate-600 dark:text-slate-400 ml-2">
-                        {listItems.map((item) => (
-                            <li key={item.key}>{item.content}</li>
-                        ))}
-                    </ul>
-                );
-                listItems = [];
-            }
-        };
-
-        lines.forEach((line, index) => {
-            const trimmed = line.trim();
-
-            // Headers
-            if (trimmed.startsWith('### ')) {
-                flushList();
-                elements.push(
-                    <h4 key={index} className="text-md font-semibold text-slate-800 dark:text-slate-200 mt-4 mb-2">
-                        {parseInlineMarkdown(trimmed.substring(4), `h4-${index}`)}
-                    </h4>
-                );
-            } else if (trimmed.startsWith('## ')) {
-                flushList();
-                elements.push(
-                    <h3 key={index} className="text-lg font-bold text-slate-900 dark:text-white mt-4 mb-2">
-                        {parseInlineMarkdown(trimmed.substring(3), `h3-${index}`)}
-                    </h3>
-                );
-            } else if (trimmed.startsWith('# ')) {
-                flushList();
-                elements.push(
-                    <h2 key={index} className="text-xl font-bold text-slate-900 dark:text-white mt-4 mb-2">
-                        {parseInlineMarkdown(trimmed.substring(2), `h2-${index}`)}
-                    </h2>
-                );
-            }
-            // List items
-            else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-                listItems.push({
-                    key: `li-${index}`,
-                    content: parseInlineMarkdown(trimmed.substring(2), `li-${index}`)
-                });
-            }
-            // Empty lines
-            else if (trimmed === '') {
-                flushList();
-            }
-            // Regular text
-            else if (trimmed) {
-                flushList();
-                elements.push(
-                    <p key={index} className="text-slate-600 dark:text-slate-400 my-2">
-                        {parseInlineMarkdown(trimmed, `p-${index}`)}
-                    </p>
-                );
-            }
-        });
-
-        flushList();
-        return elements;
-    };
-
-    const isLoading = updateLoading || systemLoading;
-    const error = updateError;
-
-    if (isLoading) {
-        return (
-            <div className="p-6 text-center">
-                <div className="animate-spin w-6 h-6 border-2 border-slate-300 border-t-green-500 rounded-full mx-auto mb-2"></div>
-                <p className="text-slate-500">Checking for updates...</p>
-            </div>
-        );
-    }
-
-    if (error) {
-        return (
-            <div className="p-6 text-center">
-                <p className="text-red-400 mb-2">Unable to check for updates</p>
-                <p className="text-slate-500 text-sm mb-4">Please check your internet connection</p>
-                <button
-                    onClick={() => refetch()}
-                    className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors cursor-pointer"
-                >
-                    Retry
-                </button>
-            </div>
-        );
-    }
-
-    return (
-        <div className="space-y-6">
-            {/* Version Status */}
-            <div className="flex items-center justify-between p-4 rounded-xl bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-                <div className="flex items-center gap-4">
-                    <div className={clsx(
-                        "p-3 rounded-xl",
-                        updateInfo?.update_available
-                            ? "bg-amber-500/20 border border-amber-500/30"
-                            : "bg-green-500/20 border border-green-500/30"
-                    )}>
-                        {updateInfo?.update_available ? (
-                            <ArrowUpCircle className="w-6 h-6 text-amber-500" />
-                        ) : (
-                            <Check className="w-6 h-6 text-green-500" />
-                        )}
-                    </div>
-                    <div>
-                        <div className="flex items-center gap-2">
-                            <span className="font-semibold text-slate-900 dark:text-white">
-                                Current Version: {updateInfo?.current_version || 'Unknown'}
-                            </span>
-                            {updateInfo?.update_available && (
-                                <span className="px-2 py-0.5 text-xs bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-full border border-amber-500/30">
-                                    Update Available
-                                </span>
-                            )}
-                        </div>
-                        {updateInfo?.update_available && (
-                            <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-                                Latest: {updateInfo.latest_version} (released {updateInfo.published_at})
-                            </p>
-                        )}
-                        {!updateInfo?.update_available && (
-                            <p className="text-sm text-green-600 dark:text-green-400 mt-1">
-                                You're running the latest version
-                            </p>
-                        )}
-                    </div>
-                </div>
-                {updateInfo?.release_url && (
-                    <a
-                        href={updateInfo.release_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-2 px-4 py-2 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 rounded-lg transition-colors"
-                    >
-                        <ExternalLink className="w-4 h-4" />
-                        View on GitHub
-                    </a>
-                )}
-            </div>
-
-            {/* Changelog */}
-            {updateInfo?.changelog && (
-                <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/40 overflow-hidden">
-                    <div className="px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
-                        <h4 className="font-semibold text-slate-900 dark:text-white">
-                            {updateInfo.update_available ? 'What\'s New' : 'Current Release Notes'}
-                        </h4>
-                    </div>
-                    <div className="p-4 max-h-64 overflow-y-auto prose prose-sm dark:prose-invert prose-slate">
-                        {renderMarkdown(updateInfo.changelog)}
-                    </div>
-                </div>
-            )}
-
-            {/* Update Instructions - Always visible, collapsible */}
-            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/40 overflow-hidden">
-                <button
-                    onClick={() => setUpdateInstructionsExpanded(!updateInstructionsExpanded)}
-                    className="w-full px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 transition-colors"
-                >
-                    <h4 className="font-semibold text-slate-900 dark:text-white">How to Update</h4>
-                    <ChevronDown className={clsx(
-                        "w-5 h-5 text-slate-500 transition-transform duration-200",
-                        updateInstructionsExpanded && "rotate-180"
-                    )} />
-                </button>
-                <AnimatePresence initial={false}>
-                    {updateInstructionsExpanded && (
-                        <motion.div
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: "auto", opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.2 }}
-                            className="overflow-hidden"
-                        >
-                            <div className="p-4 space-y-4">
-                        {/* Docker */}
-                        <div className={clsx(
-                            "p-4 rounded-lg border",
-                            currentPlatform === 'docker'
-                                ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700"
-                                : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
-                        )}>
-                            <div className="flex items-center gap-2 mb-2">
-                                <DockerIcon className="w-5 h-5 text-[#2496ED]" />
-                                <h5 className="font-medium text-slate-900 dark:text-white">Docker</h5>
-                                {currentPlatform === 'docker' && (
-                                    <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
-                                )}
-                            </div>
-                            <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
-                                {updateInfo?.update_instructions?.docker || 'docker compose pull && docker compose up -d'}
-                            </pre>
-                        </div>
-
-                        {/* Linux */}
-                        <div className={clsx(
-                            "p-4 rounded-lg border",
-                            currentPlatform === 'linux'
-                                ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700"
-                                : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
-                        )}>
-                            <div className="flex items-center gap-2 mb-2">
-                                <LinuxIcon className="w-5 h-5 text-slate-700 dark:text-slate-300" />
-                                <h5 className="font-medium text-slate-900 dark:text-white">Linux</h5>
-                                {currentPlatform === 'linux' && (
-                                    <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
-                                )}
-                            </div>
-                            <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
-                                {updateInfo?.update_instructions?.linux || 'Download the latest binary from GitHub releases'}
-                            </pre>
-                            {updateInfo?.download_urls?.linux_amd64 && (
-                                <a
-                                    href={updateInfo.download_urls.linux_amd64}
-                                    className="inline-flex items-center gap-2 mt-2 text-sm text-blue-500 hover:text-blue-400"
-                                >
-                                    <Download className="w-4 h-4" />
-                                    Download (amd64)
-                                </a>
-                            )}
-                            {updateInfo?.download_urls?.linux_arm64 && (
-                                <a
-                                    href={updateInfo.download_urls.linux_arm64}
-                                    className="inline-flex items-center gap-2 mt-2 ml-4 text-sm text-blue-500 hover:text-blue-400"
-                                >
-                                    <Download className="w-4 h-4" />
-                                    Download (arm64)
-                                </a>
-                            )}
-                        </div>
-
-                        {/* macOS */}
-                        <div className={clsx(
-                            "p-4 rounded-lg border",
-                            currentPlatform === 'darwin'
-                                ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700"
-                                : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
-                        )}>
-                            <div className="flex items-center gap-2 mb-2">
-                                <AppleIcon className="w-5 h-5 text-slate-700 dark:text-slate-300" />
-                                <h5 className="font-medium text-slate-900 dark:text-white">macOS</h5>
-                                {currentPlatform === 'darwin' && (
-                                    <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
-                                )}
-                            </div>
-                            <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
-                                {updateInfo?.update_instructions?.macos || 'Download the latest binary from GitHub releases'}
-                            </pre>
-                            {updateInfo?.download_urls?.macos_amd64 && (
-                                <a
-                                    href={updateInfo.download_urls.macos_amd64}
-                                    className="inline-flex items-center gap-2 mt-2 text-sm text-blue-500 hover:text-blue-400"
-                                >
-                                    <Download className="w-4 h-4" />
-                                    Download (Intel)
-                                </a>
-                            )}
-                            {updateInfo?.download_urls?.macos_arm64 && (
-                                <a
-                                    href={updateInfo.download_urls.macos_arm64}
-                                    className="inline-flex items-center gap-2 mt-2 ml-4 text-sm text-blue-500 hover:text-blue-400"
-                                >
-                                    <Download className="w-4 h-4" />
-                                    Download (Apple Silicon)
-                                </a>
-                            )}
-                        </div>
-
-                        {/* Windows */}
-                        <div className={clsx(
-                            "p-4 rounded-lg border",
-                            currentPlatform === 'windows'
-                                ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700"
-                                : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
-                        )}>
-                            <div className="flex items-center gap-2 mb-2">
-                                <WindowsIcon className="w-5 h-5 text-[#0078D4]" />
-                                <h5 className="font-medium text-slate-900 dark:text-white">Windows</h5>
-                                {currentPlatform === 'windows' && (
-                                    <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
-                                )}
-                            </div>
-                            <pre className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono bg-slate-100 dark:bg-slate-800 p-3 rounded-lg">
-                                {updateInfo?.update_instructions?.windows || 'Download the latest .exe from GitHub releases'}
-                            </pre>
-                            {updateInfo?.download_urls?.windows_amd64 && (
-                                <a
-                                    href={updateInfo.download_urls.windows_amd64}
-                                    className="inline-flex items-center gap-2 mt-2 text-sm text-blue-500 hover:text-blue-400"
-                                >
-                                    <Download className="w-4 h-4" />
-                                    Download (.exe)
-                                </a>
-                            )}
-                        </div>
-                            </div>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-            </div>
-
-            {/* System Information */}
-            {systemInfo && (
-                <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/40 overflow-hidden">
-                    <div className="px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
-                        <h4 className="font-semibold text-slate-900 dark:text-white">System Information</h4>
-                    </div>
-                    <div className="p-4 space-y-4">
-                        {/* Runtime Environment */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                            <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50">
-                                <div className="p-2 rounded-lg bg-slate-200 dark:bg-slate-700">
-                                    {systemInfo.environment === 'docker' ? (
-                                        <DockerIcon className="w-4 h-4 text-[#2496ED]" />
-                                    ) : (
-                                        <Server className="w-4 h-4 text-slate-600 dark:text-slate-400" />
-                                    )}
-                                </div>
-                                <div>
-                                    <div className="text-xs text-slate-500 dark:text-slate-400">Environment</div>
-                                    <div className="text-sm font-medium text-slate-900 dark:text-white capitalize">{systemInfo.environment}</div>
-                                </div>
-                            </div>
-                            <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50">
-                                <div className="p-2 rounded-lg bg-slate-200 dark:bg-slate-700">
-                                    <Monitor className="w-4 h-4 text-slate-600 dark:text-slate-400" />
-                                </div>
-                                <div>
-                                    <div className="text-xs text-slate-500 dark:text-slate-400">Platform</div>
-                                    <div className="text-sm font-medium text-slate-900 dark:text-white">{systemInfo.os}/{systemInfo.arch}</div>
-                                </div>
-                            </div>
-                            <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50">
-                                <div className="p-2 rounded-lg bg-slate-200 dark:bg-slate-700">
-                                    <Clock className="w-4 h-4 text-slate-600 dark:text-slate-400" />
-                                </div>
-                                <div>
-                                    <div className="text-xs text-slate-500 dark:text-slate-400">Uptime</div>
-                                    <div className="text-sm font-medium text-slate-900 dark:text-white">{systemInfo.uptime}</div>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Configuration Details */}
-                        <div className="space-y-2">
-                            <h5 className="text-sm font-medium text-slate-700 dark:text-slate-300">Configuration</h5>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
-                                    <span className="text-slate-500 dark:text-slate-400">Data Directory</span>
-                                    <code className="text-slate-700 dark:text-slate-300 font-mono">{systemInfo.config.data_dir}</code>
-                                </div>
-                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
-                                    <span className="text-slate-500 dark:text-slate-400">Database</span>
-                                    <code className="text-slate-700 dark:text-slate-300 font-mono">{systemInfo.config.database_path}</code>
-                                </div>
-                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
-                                    <span className="text-slate-500 dark:text-slate-400">Log Directory</span>
-                                    <code className="text-slate-700 dark:text-slate-300 font-mono">{systemInfo.config.log_dir}</code>
-                                </div>
-                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
-                                    <span className="text-slate-500 dark:text-slate-400">Log Level</span>
-                                    <span className="text-slate-700 dark:text-slate-300">{systemInfo.config.log_level}</span>
-                                </div>
-                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
-                                    <span className="text-slate-500 dark:text-slate-400">Retention</span>
-                                    <span className="text-slate-700 dark:text-slate-300">{systemInfo.config.retention_days} days</span>
-                                </div>
-                                <div className="flex justify-between p-2 rounded bg-slate-50 dark:bg-slate-800/30">
-                                    <span className="text-slate-500 dark:text-slate-400">Go Version</span>
-                                    <span className="text-slate-700 dark:text-slate-300">{systemInfo.go_version}</span>
-                                </div>
-                                {systemInfo.config.dry_run_mode && (
-                                    <div className="flex justify-between p-2 rounded bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 md:col-span-2">
-                                        <span className="text-amber-600 dark:text-amber-400">Dry Run Mode</span>
-                                        <span className="text-amber-700 dark:text-amber-300 font-medium">Enabled</span>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
-                        {/* Mounted Volumes (Docker only) */}
-                        {systemInfo.mounts && systemInfo.mounts.length > 0 && (
-                            <div className="space-y-2">
-                                <h5 className="text-sm font-medium text-slate-700 dark:text-slate-300">Mounted Volumes</h5>
-                                <div className="space-y-1">
-                                    {systemInfo.mounts.map((mount, idx) => (
-                                        <div key={idx} className="flex items-center gap-2 p-2 rounded bg-slate-50 dark:bg-slate-800/30 text-sm font-mono">
-                                            <HardDrive className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                                            <span className="text-slate-700 dark:text-slate-300 truncate">{mount.destination}</span>
-                                            {mount.read_only && (
-                                                <span className="text-xs px-1.5 py-0.5 bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 rounded">RO</span>
-                                            )}
-                                            <span className="text-slate-400 dark:text-slate-500 text-xs ml-auto">{mount.type}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Links */}
-                        <div className="space-y-2">
-                            <h5 className="text-sm font-medium text-slate-700 dark:text-slate-300">Links</h5>
-                            <div className="flex flex-wrap gap-2">
-                                <a
-                                    href={systemInfo.links.github}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm text-slate-700 dark:text-slate-300 transition-colors"
-                                >
-                                    <Github className="w-4 h-4" />
-                                    GitHub
-                                </a>
-                                <a
-                                    href={systemInfo.links.issues}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm text-slate-700 dark:text-slate-300 transition-colors"
-                                >
-                                    <Bug className="w-4 h-4" />
-                                    Issues
-                                </a>
-                                <a
-                                    href={systemInfo.links.releases}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-sm text-slate-700 dark:text-slate-300 transition-colors"
-                                >
-                                    <Download className="w-4 h-4" />
-                                    Releases
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-        </div>
-    );
-};
-
 const NotificationsSection = () => {
     const queryClient = useQueryClient();
     const toast = useToast();
@@ -3273,17 +2689,18 @@ const NotificationsSection = () => {
         }));
     };
 
-    const toggleEventGroup = (events: string[]) => {
-        const allSelected = events.every(e => formData.events.includes(e));
+    const toggleEventGroup = (eventInfos: { name: string }[]) => {
+        const eventNames = eventInfos.map(e => e.name);
+        const allSelected = eventNames.every(e => formData.events.includes(e));
         if (allSelected) {
             setFormData(prev => ({
                 ...prev,
-                events: prev.events.filter(e => !events.includes(e))
+                events: prev.events.filter(e => !eventNames.includes(e))
             }));
         } else {
             setFormData(prev => ({
                 ...prev,
-                events: [...new Set([...prev.events, ...events])]
+                events: [...new Set([...prev.events, ...eventNames])]
             }));
         }
     };
@@ -3438,7 +2855,7 @@ const NotificationsSection = () => {
                                                 <div className="flex items-center gap-3 mb-3">
                                                     <input
                                                         type="checkbox"
-                                                        checked={group.events.every(e => formData.events.includes(e))}
+                                                        checked={group.events.every(e => formData.events.includes(e.name))}
                                                         onChange={() => toggleEventGroup(group.events)}
                                                         className="w-4 h-4 text-pink-500 bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 rounded focus:ring-pink-500"
                                                     />
@@ -3447,17 +2864,18 @@ const NotificationsSection = () => {
                                                 <div className="flex flex-wrap gap-2 ml-7">
                                                     {group.events.map(event => (
                                                         <button
-                                                            key={event}
+                                                            key={event.name}
                                                             type="button"
-                                                            onClick={() => toggleEvent(event)}
+                                                            onClick={() => toggleEvent(event.name)}
+                                                            title={event.description}
                                                             className={clsx(
                                                                 "px-2 py-1 text-xs rounded-lg border transition-colors cursor-pointer",
-                                                                formData.events.includes(event)
+                                                                formData.events.includes(event.name)
                                                                     ? "bg-pink-500/20 border-pink-500/50 text-pink-600 dark:text-pink-300"
                                                                     : "bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-slate-400 dark:hover:border-slate-600"
                                                             )}
                                                         >
-                                                            {event}
+                                                            {event.label}
                                                         </button>
                                                     ))}
                                                 </div>

@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mescon/Healarr/internal/config"
+	"github.com/mescon/Healarr/internal/integration"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,9 +35,12 @@ func TestHandleSystemInfo(t *testing.T) {
 		ArrRateLimitBurst:    20,
 	})
 
+	toolChecker := integration.NewToolChecker()
+	toolChecker.CheckAllTools() // Populate tools status
 	s := &RESTServer{
-		router:    gin.New(),
-		startTime: time.Now().Add(-1 * time.Hour), // Started 1 hour ago
+		router:      gin.New(),
+		startTime:   time.Now().Add(-1 * time.Hour), // Started 1 hour ago
+		toolChecker: toolChecker,
 	}
 
 	s.router.GET("/api/system/info", s.handleSystemInfo)
@@ -78,6 +82,14 @@ func TestHandleSystemInfo(t *testing.T) {
 	assert.Equal(t, "https://github.com/mescon/Healarr/releases", response.Links.Releases)
 	assert.Equal(t, "https://github.com/mescon/Healarr/wiki", response.Links.Wiki)
 	assert.Equal(t, "https://github.com/mescon/Healarr/discussions", response.Links.Discussions)
+
+	// Check tools - should have entries for required tools
+	assert.NotNil(t, response.Tools)
+	// ffprobe should always be in the tools map (whether available or not)
+	ffprobe, exists := response.Tools["ffprobe"]
+	assert.True(t, exists, "ffprobe should be in tools map")
+	assert.Equal(t, "ffprobe", ffprobe.Name)
+	assert.True(t, ffprobe.Required, "ffprobe should be marked as required")
 }
 
 func TestHandleSystemInfo_UptimeFormatting(t *testing.T) {
@@ -113,9 +125,11 @@ func TestHandleSystemInfo_UptimeFormatting(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			toolChecker := integration.NewToolChecker()
 			s := &RESTServer{
-				router:    gin.New(),
-				startTime: tt.startTime,
+				router:      gin.New(),
+				startTime:   tt.startTime,
+				toolChecker: toolChecker,
 			}
 
 			s.router.GET("/api/system/info", s.handleSystemInfo)
@@ -180,9 +194,11 @@ func TestSystemInfoEnvironmentField(t *testing.T) {
 		VerificationInterval: 4 * time.Hour,
 	})
 
+	toolChecker := integration.NewToolChecker()
 	s := &RESTServer{
-		router:    gin.New(),
-		startTime: time.Now(),
+		router:      gin.New(),
+		startTime:   time.Now(),
+		toolChecker: toolChecker,
 	}
 
 	s.router.GET("/api/system/info", s.handleSystemInfo)
@@ -209,9 +225,11 @@ func TestSystemInfoLinksAreValid(t *testing.T) {
 		VerificationInterval: 4 * time.Hour,
 	})
 
+	toolChecker := integration.NewToolChecker()
 	s := &RESTServer{
-		router:    gin.New(),
-		startTime: time.Now(),
+		router:      gin.New(),
+		startTime:   time.Now(),
+		toolChecker: toolChecker,
 	}
 
 	s.router.GET("/api/system/info", s.handleSystemInfo)

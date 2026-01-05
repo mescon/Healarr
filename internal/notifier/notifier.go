@@ -185,70 +185,77 @@ type GenericConfig struct {
 	ExtraData     string `json:"extra_data"`     // Extra JSON data ($key=value, one per line)
 }
 
-// Event groups for UI organization
-type EventGroup struct {
-	Name   string   `json:"name"`
-	Events []string `json:"events"`
+// EventInfo contains details about a single event type
+type EventInfo struct {
+	Name        string `json:"name"`        // Event type name (e.g., "ScanStarted")
+	Label       string `json:"label"`       // Friendly display name (e.g., "Scan Started")
+	Description string `json:"description"` // Tooltip description explaining when this event triggers
 }
 
-// GetEventGroups returns all available event groups
+// EventGroup organizes related events for UI display
+type EventGroup struct {
+	Name   string      `json:"name"`
+	Events []EventInfo `json:"events"`
+}
+
+// GetEventGroups returns all available event groups with labels and descriptions
 func GetEventGroups() []EventGroup {
 	return []EventGroup{
 		{
 			Name: "Scan Events",
-			Events: []string{
-				string(domain.ScanStarted),
-				string(domain.ScanCompleted),
-				string(domain.ScanFailed),
+			Events: []EventInfo{
+				{string(domain.ScanStarted), "Scan Started", "When a scan begins on a configured media path"},
+				{string(domain.ScanCompleted), "Scan Completed", "When a scan finishes with results"},
+				{string(domain.ScanFailed), "Scan Failed", "When a scan encounters an error and cannot continue"},
 			},
 		},
 		{
 			Name: "Detection Events",
-			Events: []string{
-				string(domain.CorruptionDetected),
+			Events: []EventInfo{
+				{string(domain.CorruptionDetected), "Corruption Detected", "When a file fails health check during scanning"},
 			},
 		},
 		{
 			Name: "Remediation Events",
-			Events: []string{
-				string(domain.RemediationQueued),
-				string(domain.DeletionStarted),
-				string(domain.DeletionCompleted),
-				string(domain.DeletionFailed),
-				string(domain.SearchStarted),
-				string(domain.SearchCompleted),
-				string(domain.SearchFailed),
+			Events: []EventInfo{
+				{string(domain.RemediationQueued), "Remediation Queued", "When a corrupt file is queued for automatic repair"},
+				{string(domain.DeletionStarted), "File Deletion Started", "When the corrupt file is about to be deleted"},
+				{string(domain.DeletionCompleted), "File Deleted", "When the corrupt file has been successfully removed"},
+				{string(domain.DeletionFailed), "Deletion Failed", "When the file could not be deleted (check permissions)"},
+				{string(domain.SearchStarted), "Search Triggered", "When *arr is asked to find a replacement"},
+				{string(domain.SearchCompleted), "Replacement Found", "When *arr finds and grabs a replacement download"},
+				{string(domain.SearchFailed), "Search Failed", "When *arr search encounters an error"},
 			},
 		},
 		{
 			Name: "Verification Events",
-			Events: []string{
-				string(domain.VerificationStarted),
-				string(domain.VerificationSuccess),
-				string(domain.VerificationFailed),
-				string(domain.DownloadTimeout),
+			Events: []EventInfo{
+				{string(domain.VerificationStarted), "Verification Started", "When checking if the new download is healthy"},
+				{string(domain.VerificationSuccess), "Successfully Repaired", "When the replacement file passes health checks"},
+				{string(domain.VerificationFailed), "Replacement Corrupt", "When the new download is also corrupt"},
+				{string(domain.DownloadTimeout), "Download Timeout", "When the replacement download takes too long"},
 			},
 		},
 		{
 			Name: "Manual Intervention Required",
-			Events: []string{
-				string(domain.ImportBlocked),
-				string(domain.ManuallyRemoved),
-				string(domain.DownloadIgnored),
-				string(domain.SearchExhausted),
+			Events: []EventInfo{
+				{string(domain.ImportBlocked), "Import Blocked", "When *arr blocks import (quality/cutoff issues)"},
+				{string(domain.ManuallyRemoved), "Manually Removed", "When user removes item from *arr queue"},
+				{string(domain.DownloadIgnored), "Download Ignored", "When download was skipped or ignored by *arr"},
+				{string(domain.SearchExhausted), "No Replacement Found", "When indexers have no candidates after retries"},
 			},
 		},
 		{
 			Name: "Retry Events",
-			Events: []string{
-				string(domain.RetryScheduled),
-				string(domain.MaxRetriesReached),
+			Events: []EventInfo{
+				{string(domain.RetryScheduled), "Retry Scheduled", "When a manual retry is triggered for an item"},
+				{string(domain.MaxRetriesReached), "Max Retries", "When remediation has failed too many times"},
 			},
 		},
 		{
 			Name: "System Events",
-			Events: []string{
-				string(domain.SystemHealthDegraded),
+			Events: []EventInfo{
+				{string(domain.SystemHealthDegraded), "System Health Degraded", "When system health checks detect issues"},
 			},
 		},
 	}
@@ -393,7 +400,9 @@ func (n *Notifier) loadConfigs() error {
 func (n *Notifier) getAllEvents() []string {
 	events := []string{}
 	for _, group := range GetEventGroups() {
-		events = append(events, group.Events...)
+		for _, eventInfo := range group.Events {
+			events = append(events, eventInfo.Name)
+		}
 	}
 	return events
 }

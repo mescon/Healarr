@@ -11,21 +11,23 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mescon/Healarr/internal/config"
+	"github.com/mescon/Healarr/internal/integration"
 )
 
 // SystemInfo contains runtime environment information
 type SystemInfo struct {
-	Version     string           `json:"version"`
-	Environment string           `json:"environment"` // "docker" or "native"
-	OS          string           `json:"os"`
-	Arch        string           `json:"arch"`
-	GoVersion   string           `json:"go_version"`
-	Uptime      string           `json:"uptime"`
-	UptimeSecs  int64            `json:"uptime_seconds"`
-	StartedAt   time.Time        `json:"started_at"`
-	Config      SystemConfigInfo `json:"config"`
-	Mounts      []MountInfo      `json:"mounts,omitempty"`
-	Links       SystemLinks      `json:"links"`
+	Version     string                             `json:"version"`
+	Environment string                             `json:"environment"` // "docker" or "native"
+	OS          string                             `json:"os"`
+	Arch        string                             `json:"arch"`
+	GoVersion   string                             `json:"go_version"`
+	Uptime      string                             `json:"uptime"`
+	UptimeSecs  int64                              `json:"uptime_seconds"`
+	StartedAt   time.Time                          `json:"started_at"`
+	Config      SystemConfigInfo                   `json:"config"`
+	Mounts      []MountInfo                        `json:"mounts,omitempty"`
+	Tools       map[string]*integration.ToolStatus `json:"tools"`
+	Links       SystemLinks                        `json:"links"`
 }
 
 // SystemConfigInfo contains configuration details
@@ -112,6 +114,7 @@ func (s *RESTServer) handleSystemInfo(c *gin.Context) {
 			ArrRateLimitRPS:      cfg.ArrRateLimitRPS,
 			ArrRateLimitBurst:    cfg.ArrRateLimitBurst,
 		},
+		Tools: s.toolChecker.GetToolStatus(),
 		Links: SystemLinks{
 			GitHub:      "https://github.com/mescon/Healarr",
 			Issues:      "https://github.com/mescon/Healarr/issues",

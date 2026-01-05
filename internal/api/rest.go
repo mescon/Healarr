@@ -25,17 +25,18 @@ import (
 )
 
 type RESTServer struct {
-	router     *gin.Engine
-	httpServer *http.Server
-	db         *sql.DB
-	eventBus   *eventbus.EventBus
-	scanner    services.Scanner
-	pathMapper integration.PathMapper
-	scheduler  services.Scheduler
-	notifier   *notifier.Notifier
-	metrics    *metrics.MetricsService
-	hub        *WebSocketHub
-	startTime  time.Time
+	router      *gin.Engine
+	httpServer  *http.Server
+	db          *sql.DB
+	eventBus    *eventbus.EventBus
+	scanner     services.Scanner
+	pathMapper  integration.PathMapper
+	scheduler   services.Scheduler
+	notifier    *notifier.Notifier
+	metrics     *metrics.MetricsService
+	hub         *WebSocketHub
+	startTime   time.Time
+	toolChecker *integration.ToolChecker
 }
 
 func NewRESTServer(db *sql.DB, eb *eventbus.EventBus, scanner services.Scanner, pm integration.PathMapper, scheduler services.Scheduler, n *notifier.Notifier, m *metrics.MetricsService) *RESTServer {
@@ -100,17 +101,22 @@ func NewRESTServer(db *sql.DB, eb *eventbus.EventBus, scanner services.Scanner, 
 		c.Next()
 	})
 
+	// Initialize tool checker and check all tools at startup
+	toolChecker := integration.NewToolChecker()
+	toolChecker.CheckAllTools()
+
 	s := &RESTServer{
-		router:     r,
-		db:         db,
-		eventBus:   eb,
-		scanner:    scanner,
-		pathMapper: pm,
-		scheduler:  scheduler,
-		notifier:   n,
-		metrics:    m,
-		hub:        NewWebSocketHub(eb),
-		startTime:  time.Now(),
+		router:      r,
+		db:          db,
+		eventBus:    eb,
+		scanner:     scanner,
+		pathMapper:  pm,
+		scheduler:   scheduler,
+		notifier:    n,
+		metrics:     m,
+		hub:         NewWebSocketHub(eb),
+		startTime:   time.Now(),
+		toolChecker: toolChecker,
 	}
 
 	s.setupRoutes()

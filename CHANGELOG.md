@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.15] - 2026-01-05
+
+### Added
+- **Tool detection at startup**: Healarr now checks for required detection tools on startup
+  - Detects ffprobe, ffmpeg (required), mediainfo, and HandBrakeCLI (optional)
+  - Shows version and path for available tools
+  - Red warning banner displayed when required tools are missing
+  - Tool status shown in System Information section
+- **About section on Help page**: Version info, system information, and tool status now available on Help page
+  - Collapsed accordion at bottom of Help page
+  - Shows same information as Config → About section
+  - Shared `AboutSection` component for consistent UI
+- **Notification event labels and tooltips**: Events now display friendly names with hover descriptions
+  - "ScanStarted" → "Scan Started" with tooltip "When a scan begins on a configured media path"
+  - All 19 event types have human-readable labels and contextual descriptions
+  - Backend returns `EventInfo` objects with `name`, `label`, and `description` fields
+- **Verbose update instructions**: "How to Update" section now shows detailed, commented commands
+  - Docker: Step-by-step with directory navigation, pull, restart, and log verification
+  - Linux: Includes distro-specific ffprobe installation (Debian/Ubuntu, Fedora/RHEL, Arch)
+  - Linux: Now shows both curl and wget options for downloading
+  - macOS: Apple Silicon download example with Homebrew ffprobe installation
+  - Windows: Includes ffprobe installation instructions
+
+### Fixed
+- **Matrix logo visibility**: Matrix notification provider icon now visible on light mode
+  - Uses CSS `invert` filter on light backgrounds to flip white logo to black
+  - Automatically reverts on dark mode
+
+### Changed
+- README now acknowledges [dashboard-icons](https://github.com/homarr-labs/dashboard-icons) for service icons
+- AboutSection extracted to shared component (`components/AboutSection.tsx`)
+- `/api/system-info` now returns `tools` object with detection tool availability
+
 ## [1.1.14] - 2026-01-05
 
 ### Fixed

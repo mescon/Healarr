@@ -423,9 +423,15 @@ export interface NotificationConfig {
     updated_at?: string;
 }
 
+export interface EventInfo {
+    name: string;        // Event type name (e.g., "ScanStarted")
+    label: string;       // Friendly display name (e.g., "Scan Started")
+    description: string; // Tooltip description
+}
+
 export interface EventGroup {
     name: string;
-    events: string[];
+    events: EventInfo[];
 }
 
 export interface NotificationLogEntry {
@@ -666,6 +672,15 @@ export interface SystemLinks {
     discussions: string;
 }
 
+export interface ToolStatus {
+    name: string;
+    available: boolean;
+    path?: string;
+    version?: string;
+    required: boolean;
+    description: string;
+}
+
 export interface SystemInfo {
     version: string;
     environment: 'docker' | 'native';
@@ -677,6 +692,7 @@ export interface SystemInfo {
     started_at: string;
     config: SystemConfigInfo;
     mounts?: MountInfo[];
+    tools: Record<string, ToolStatus>;
     links: SystemLinks;
 }
 

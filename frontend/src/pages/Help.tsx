@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { HelpCircle, Play, Webhook, Clock, Container, Activity, Globe, ChevronDown, Heart, Zap, Bell } from 'lucide-react';
+import { HelpCircle, Play, Webhook, Clock, Container, Activity, Globe, ChevronDown, Heart, Zap, Bell, Info } from 'lucide-react';
 import clsx from 'clsx';
+import AboutSection from '../components/AboutSection';
 
 // Accordion component for collapsible sections
 const Accordion = ({ 
@@ -1151,6 +1152,22 @@ server {
                             </div>
                         </div>
                     </div>
+                </Accordion>
+            </motion.div>
+
+            {/* About Section */}
+            <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.7 }}
+            >
+                <Accordion
+                    title="About"
+                    icon={<Info className="w-5 h-5 text-purple-400" />}
+                    iconBgClass="bg-purple-500/10 border-purple-500/20"
+                    defaultOpen={false}
+                >
+                    <AboutSection />
                 </Accordion>
             </motion.div>
         </div>
