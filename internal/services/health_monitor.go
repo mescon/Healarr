@@ -308,9 +308,8 @@ func (h *HealthMonitorService) checkInstanceHealth() {
 	}
 
 	for _, instance := range instances {
-		// Try to make a simple API call to check health
-		// We'll use the queue endpoint as a simple health check
-		_, err := h.arrClient.GetQueueForPath("/" + instance.Type) // Dummy path to trigger instance selection
+		// Check instance health using the system status endpoint
+		err := h.arrClient.CheckInstanceHealth(instance.ID)
 		if err != nil {
 			logger.Warnf("*arr instance unreachable: %s (%s) - %v", instance.Name, instance.URL, err)
 

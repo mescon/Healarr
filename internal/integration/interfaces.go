@@ -23,6 +23,7 @@ type ArrClient interface {
 	// Instance management
 	GetAllInstances() ([]*ArrInstanceInfo, error)
 	GetInstanceByID(id int64) (*ArrInstanceInfo, error)
+	CheckInstanceHealth(instanceID int64) error
 
 	// Queue monitoring - track active downloads
 	GetQueueForPath(arrPath string) ([]QueueItemInfo, error)

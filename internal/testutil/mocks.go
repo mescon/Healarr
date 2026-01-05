@@ -188,6 +188,7 @@ type MockArrClient struct {
 	TriggerSearchFunc                   func(mediaID int64, path string, episodeIDs []int64) error
 	GetAllInstancesFunc                 func() ([]*integration.ArrInstanceInfo, error)
 	GetInstanceByIDFunc                 func(id int64) (*integration.ArrInstanceInfo, error)
+	CheckInstanceHealthFunc             func(instanceID int64) error
 	GetQueueForPathFunc                 func(arrPath string) ([]integration.QueueItemInfo, error)
 	FindQueueItemsByMediaIDForPathFunc  func(arrPath string, mediaID int64) ([]integration.QueueItemInfo, error)
 	GetDownloadStatusForPathFunc        func(arrPath string, downloadID string) (status string, progress float64, errMsg string, err error)
@@ -287,6 +288,14 @@ func (m *MockArrClient) GetInstanceByID(id int64) (*integration.ArrInstanceInfo,
 		return m.GetInstanceByIDFunc(id)
 	}
 	return nil, nil
+}
+
+func (m *MockArrClient) CheckInstanceHealth(instanceID int64) error {
+	m.recordCall("CheckInstanceHealth", instanceID)
+	if m.CheckInstanceHealthFunc != nil {
+		return m.CheckInstanceHealthFunc(instanceID)
+	}
+	return nil
 }
 
 func (m *MockArrClient) GetQueueForPath(arrPath string) ([]integration.QueueItemInfo, error) {

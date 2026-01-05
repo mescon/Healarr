@@ -287,6 +287,7 @@ func (s *RESTServer) setupRoutes() {
 		}
 		webFS := web.GetFS()
 		base.StaticFS("/assets", http.FS(mustSub(webFS, "assets")))
+		base.StaticFS("/icons", http.FS(mustSub(webFS, "icons")))
 
 		// Helper to serve embedded files directly (avoids http.FS redirect behavior)
 		serveEmbeddedFile := func(c *gin.Context, filename string, contentType string) {
@@ -340,6 +341,7 @@ func (s *RESTServer) setupRoutes() {
 			// Filesystem mode - web directory exists
 			logger.Infof("Serving web assets from filesystem: %s", webDir)
 			base.Static("/assets", filepath.Join(webDir, "assets"))
+			base.Static("/icons", filepath.Join(webDir, "icons"))
 			base.StaticFile("/favicon.png", filepath.Join(webDir, "favicon.png"))
 			base.StaticFile("/healarr.svg", filepath.Join(webDir, "healarr.svg"))
 

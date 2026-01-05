@@ -2424,10 +2424,8 @@ func TestNotifier_SendGenericWebhook_URLWithoutScheme(t *testing.T) {
 	// We're mainly testing the URL scheme logic here
 	err := n.sendGenericWebhook(cfg, string(domain.CorruptionDetected), map[string]interface{}{})
 	// Expect error because https:// will be added but server is http
-	if err == nil {
-		// If no error, the connection might have worked differently
-		// This is acceptable as we're testing the scheme-adding logic
-	}
+	// If no error, the connection might have worked differently - acceptable as we're testing scheme-adding logic
+	_ = err
 }
 
 func TestNotifier_SendGenericWebhook_ConnectionError(t *testing.T) {

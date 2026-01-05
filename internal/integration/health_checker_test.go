@@ -956,6 +956,7 @@ func TestCmdHealthChecker_CheckAccessibility_ParentIsFile(t *testing.T) {
 		err := hc.checkAccessibility(fakeChild)
 		if err == nil {
 			t.Error("Expected error for parent that is a file")
+			return
 		}
 		// Should fail trying to stat parent or child, result in some error
 		// The exact error type depends on OS behavior

@@ -160,6 +160,53 @@ func setupConfigTestServer(t *testing.T, db *sql.DB, pm *testutil.MockPathMapper
 	return r, apiKey, cleanup
 }
 
+func setupConfigTestServerWithScheduler(t *testing.T, db *sql.DB, pm *testutil.MockPathMapper, scheduler *testutil.MockSchedulerService, n *notifier.Notifier) (*gin.Engine, string, func()) {
+	t.Helper()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	eb := eventbus.NewEventBus(db)
+	hub := NewWebSocketHub(eb)
+
+	s := &RESTServer{
+		router:     r,
+		db:         db,
+		eventBus:   eb,
+		hub:        hub,
+		pathMapper: pm,
+		scheduler:  scheduler,
+		notifier:   n,
+	}
+
+	// Setup API key for authentication
+	apiKey, err := auth.GenerateAPIKey()
+	require.NoError(t, err)
+	encryptedKey, err := crypto.Encrypt(apiKey)
+	require.NoError(t, err)
+	_, err = db.Exec("INSERT INTO settings (key, value) VALUES ('api_key', ?)", encryptedKey)
+	require.NoError(t, err)
+
+	// Register routes with authentication
+	api := r.Group("/api")
+	protected := api.Group("")
+	protected.Use(s.authMiddleware())
+	{
+		protected.PUT("/config/settings", s.updateSettings)
+		protected.GET("/config/export", s.exportConfig)
+		protected.POST("/config/import", s.importConfig)
+		protected.GET("/config/backup", s.downloadDatabaseBackup)
+		protected.POST("/config/restart", s.restartServer)
+	}
+
+	cleanup := func() {
+		hub.Shutdown()
+		eb.Shutdown()
+	}
+
+	return r, apiKey, cleanup
+}
+
 // =============================================================================
 // updateSettings Tests
 // =============================================================================
@@ -700,13 +747,15 @@ func TestExportConfig_WithSchedules(t *testing.T) {
 	var response map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &response)
 
-	// Schedules are exported at top level, not nested in paths
+	// Schedules are exported at top level with local_path for reference
 	schedules, ok := response["schedules"].([]interface{})
 	assert.True(t, ok, "schedules should be in response")
 	assert.Len(t, schedules, 1)
 
 	schedule := schedules[0].(map[string]interface{})
 	assert.Equal(t, "0 * * * *", schedule["cron_expression"])
+	assert.Equal(t, "/media/tv", schedule["local_path"], "schedule should include local_path for import reference")
+	assert.Equal(t, true, schedule["enabled"])
 }
 
 func TestExportConfig_WithNotifications(t *testing.T) {
@@ -932,4 +981,128 @@ func TestRestartServer_ReturnsOK(t *testing.T) {
 	// Wait for the goroutine to call the restart function
 	time.Sleep(600 * time.Millisecond)
 	assert.True(t, restartCalled, "restart function should have been called")
+}
+
+func TestImportConfig_WithSchedulesAndNotifications(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Create a mock scheduler that tracks LoadSchedules calls
+	loadSchedulesCalled := 0
+	mockScheduler := &testutil.MockSchedulerService{
+		LoadSchedulesFunc: func() error {
+			loadSchedulesCalled++
+			return nil
+		},
+	}
+
+	mockPathMapper := &testutil.MockPathMapper{
+		ReloadFunc: func() error {
+			return nil
+		},
+	}
+
+	// Set up server with notifier
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+	n := notifier.NewNotifier(db, eb)
+	require.NoError(t, n.Start())
+	defer n.Stop()
+
+	router, apiKey, serverCleanup := setupConfigTestServerWithScheduler(t, db, mockPathMapper, mockScheduler, n)
+	defer serverCleanup()
+
+	body := bytes.NewBufferString(`{
+		"arr_instances": [],
+		"scan_paths": [
+			{"local_path": "/media/tv", "arr_path": "/tv", "enabled": true}
+		],
+		"schedules": [
+			{"local_path": "/media/tv", "cron_expression": "0 3 * * *", "enabled": true}
+		],
+		"notifications": [
+			{
+				"name": "Discord Test",
+				"provider_type": "discord",
+				"config": {"webhook_url": "https://discord.com/api/webhooks/test"},
+				"events": ["CorruptionDetected"],
+				"enabled": true,
+				"throttle_seconds": 60
+			}
+		]
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Equal(t, "Import complete", response["message"])
+
+	imported := response["imported"].(map[string]interface{})
+	assert.Equal(t, float64(1), imported["scan_paths"])
+	assert.Equal(t, float64(1), imported["schedules"])
+	assert.Equal(t, float64(1), imported["notifications"])
+
+	// Verify schedule was imported
+	var schedCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM scan_schedules").Scan(&schedCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, schedCount)
+
+	// Verify notification was imported
+	var notifCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM notifications").Scan(&notifCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, notifCount)
+
+	// Verify scheduler was reloaded
+	assert.Equal(t, 1, loadSchedulesCalled)
+}
+
+func TestImportConfig_ScheduleWithExistingPath(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Pre-create a scan path
+	_, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path) VALUES (?, ?)", "/media/movies", "/movies")
+	require.NoError(t, err)
+
+	mockScheduler := &testutil.MockSchedulerService{
+		LoadSchedulesFunc: func() error { return nil },
+	}
+	mockPathMapper := &testutil.MockPathMapper{
+		ReloadFunc: func() error { return nil },
+	}
+
+	router, apiKey, serverCleanup := setupConfigTestServerWithScheduler(t, db, mockPathMapper, mockScheduler, nil)
+	defer serverCleanup()
+
+	// Import schedule referencing existing path (not in import)
+	body := bytes.NewBufferString(`{
+		"arr_instances": [],
+		"scan_paths": [],
+		"schedules": [
+			{"local_path": "/media/movies", "cron_expression": "0 4 * * *", "enabled": true}
+		]
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	imported := response["imported"].(map[string]interface{})
+	assert.Equal(t, float64(1), imported["schedules"], "should find existing path and import schedule")
 }

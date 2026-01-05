@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +15,14 @@ import (
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/notifier"
 )
+
+// Type alias for cleaner code
+type notifierConfig = notifier.NotificationConfig
+
+// jsonMarshal is a helper for json.Marshal
+var jsonMarshal = json.Marshal
 
 func (s *RESTServer) updateSettings(c *gin.Context) {
 	var req struct {
@@ -147,8 +155,12 @@ func (s *RESTServer) exportConfig(c *gin.Context) {
 		export["scan_paths"] = paths
 	}
 
-	// Export schedules
-	schedRows, err := s.db.Query("SELECT scan_path_id, cron_expression, enabled FROM scan_schedules")
+	// Export schedules (with local_path for reference during import)
+	schedRows, err := s.db.Query(`
+		SELECT ss.cron_expression, ss.enabled, sp.local_path
+		FROM scan_schedules ss
+		JOIN scan_paths sp ON ss.scan_path_id = sp.id
+	`)
 	if err != nil {
 		logger.Debugf("Failed to query schedules for export: %v", err)
 	}
@@ -156,15 +168,14 @@ func (s *RESTServer) exportConfig(c *gin.Context) {
 		defer schedRows.Close()
 		var schedules []gin.H
 		for schedRows.Next() {
-			var scanPathID int
-			var cronExpr string
+			var cronExpr, localPath string
 			var enabled bool
-			if err := schedRows.Scan(&scanPathID, &cronExpr, &enabled); err != nil {
+			if err := schedRows.Scan(&cronExpr, &enabled, &localPath); err != nil {
 				logger.Errorf("Failed to scan schedule for export: %v", err)
 				continue
 			}
 			schedules = append(schedules, gin.H{
-				"scan_path_id": scanPathID, "cron_expression": cronExpr, "enabled": enabled,
+				"local_path": localPath, "cron_expression": cronExpr, "enabled": enabled,
 			})
 		}
 		export["schedules"] = schedules
@@ -211,14 +222,28 @@ func (s *RESTServer) importConfig(c *gin.Context) {
 			MaxRetries               int    `json:"max_retries"`
 			VerificationTimeoutHours *int   `json:"verification_timeout_hours"`
 		} `json:"scan_paths"`
+		Schedules []struct {
+			LocalPath      string `json:"local_path"`
+			CronExpression string `json:"cron_expression"`
+			Enabled        bool   `json:"enabled"`
+		} `json:"schedules"`
+		Notifications []struct {
+			Name            string   `json:"name"`
+			ProviderType    string   `json:"provider_type"`
+			Config          any      `json:"config"`
+			Events          []string `json:"events"`
+			Enabled         bool     `json:"enabled"`
+			ThrottleSeconds int      `json:"throttle_seconds"`
+		} `json:"notifications"`
 	}
 	if err := c.BindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	imported := gin.H{"arr_instances": 0, "scan_paths": 0}
+	imported := gin.H{"arr_instances": 0, "scan_paths": 0, "schedules": 0, "notifications": 0}
 
+	// Import arr instances
 	for _, inst := range req.ArrInstances {
 		// Encrypt API key before storage
 		encryptedKey, err := crypto.Encrypt(inst.APIKey)
@@ -235,6 +260,8 @@ func (s *RESTServer) importConfig(c *gin.Context) {
 		}
 	}
 
+	// Import scan paths and track local_path -> new ID mapping for schedules
+	scanPathIDs := make(map[string]int64) // local_path -> new scan_path ID
 	for _, path := range req.ScanPaths {
 		method := path.DetectionMethod
 		if method == "" {
@@ -254,21 +281,79 @@ func (s *RESTServer) importConfig(c *gin.Context) {
 			arrPath = path.LocalPath
 		}
 
-		_, err := s.db.Exec(`INSERT INTO scan_paths
+		result, err := s.db.Exec(`INSERT INTO scan_paths
 			(local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			path.LocalPath, arrPath, path.ArrInstanceID, path.Enabled, path.AutoRemediate, path.DryRun,
 			method, path.DetectionArgs, mode, retries, path.VerificationTimeoutHours)
 		if err == nil {
 			imported["scan_paths"] = imported["scan_paths"].(int) + 1
+			if newID, idErr := result.LastInsertId(); idErr == nil {
+				scanPathIDs[path.LocalPath] = newID
+			}
 		} else {
 			logger.Errorf("Failed to import scan path %s: %v", path.LocalPath, err)
 		}
 	}
 
+	// Import schedules using local_path to find the new scan_path_id
+	for _, sched := range req.Schedules {
+		scanPathID, exists := scanPathIDs[sched.LocalPath]
+		if !exists {
+			// Try to find existing scan path by local_path
+			row := s.db.QueryRow("SELECT id FROM scan_paths WHERE local_path = ?", sched.LocalPath)
+			if err := row.Scan(&scanPathID); err != nil {
+				logger.Errorf("Failed to find scan path for schedule (local_path=%s): %v", sched.LocalPath, err)
+				continue
+			}
+		}
+
+		_, err := s.db.Exec("INSERT INTO scan_schedules (scan_path_id, cron_expression, enabled) VALUES (?, ?, ?)",
+			scanPathID, sched.CronExpression, sched.Enabled)
+		if err == nil {
+			imported["schedules"] = imported["schedules"].(int) + 1
+		} else {
+			logger.Errorf("Failed to import schedule for %s: %v", sched.LocalPath, err)
+		}
+	}
+
+	// Import notifications
+	if s.notifier != nil {
+		for _, notif := range req.Notifications {
+			// Convert config to JSON bytes
+			configBytes, err := jsonMarshal(notif.Config)
+			if err != nil {
+				logger.Errorf("Failed to marshal notification config for %s: %v", notif.Name, err)
+				continue
+			}
+
+			cfg := &notifierConfig{
+				Name:            notif.Name,
+				ProviderType:    notif.ProviderType,
+				Config:          configBytes,
+				Events:          notif.Events,
+				Enabled:         notif.Enabled,
+				ThrottleSeconds: notif.ThrottleSeconds,
+			}
+
+			if _, err := s.notifier.CreateConfig(cfg); err == nil {
+				imported["notifications"] = imported["notifications"].(int) + 1
+			} else {
+				logger.Errorf("Failed to import notification %s: %v", notif.Name, err)
+			}
+		}
+	}
+
+	// Reload path mappings and scheduler
 	if err := s.pathMapper.Reload(); err != nil {
 		logger.Errorf("Failed to reload path mappings after import: %v", err)
 	}
+	if s.scheduler != nil {
+		if err := s.scheduler.LoadSchedules(); err != nil {
+			logger.Errorf("Failed to reload schedules after import: %v", err)
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "Import complete", "imported": imported})
 }
 

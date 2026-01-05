@@ -407,7 +407,7 @@ const Corruptions = () => {
                                             {row.download_client && (
                                                 <img src={getDownloadClientIcon(row.download_client)} alt="" className="w-4 h-4" />
                                             )}
-                                            <span className={clsx("px-2 py-0.5 rounded-full text-xs font-medium border", colorClass)}>
+                                            <span className={clsx("px-2 py-0.5 rounded-full text-xs font-medium border whitespace-nowrap", colorClass)}>
                                                 {progress}%
                                             </span>
                                         </div>
@@ -424,7 +424,7 @@ const Corruptions = () => {
                             if (row.state === 'VerificationSuccess' && row.total_duration_seconds) {
                                 return (
                                     <div className="flex flex-col">
-                                        <span className={clsx("px-2 py-1 rounded-full text-xs font-medium border", colorClass)}>
+                                        <span className={clsx("px-2 py-1 rounded-full text-xs font-medium border whitespace-nowrap", colorClass)}>
                                             {label}
                                         </span>
                                         <span className="text-xs text-slate-500 mt-0.5">
@@ -436,7 +436,7 @@ const Corruptions = () => {
 
                             // Default status badge
                             return (
-                                <span className={clsx("px-2 py-1 rounded-full text-xs font-medium border", colorClass)}>
+                                <span className={clsx("px-2 py-1 rounded-full text-xs font-medium border whitespace-nowrap", colorClass)}>
                                     {label}
                                 </span>
                             );

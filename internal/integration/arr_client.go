@@ -1136,6 +1136,25 @@ func (c *HTTPArrClient) RefreshMonitoredDownloads(instance *ArrInstance) error {
 	return nil
 }
 
+// CheckInstanceHealth checks if an *arr instance is reachable by calling its system status endpoint
+func (c *HTTPArrClient) CheckInstanceHealth(instanceID int64) error {
+	instance, err := c.getInstanceByIDInternal(instanceID)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.doRequest(instance, "GET", "/api/v3/system/status", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unhealthy: %s", resp.Status)
+	}
+	return nil
+}
+
 // =============================================================================
 // Interface-compatible wrapper methods (take arrPath, find instance internally)
 // =============================================================================

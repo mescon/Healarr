@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.14] - 2026-01-05
+
+### Fixed
+- **Health monitor instance checks**: Now uses proper `/api/v3/system/status` endpoint
+  - Previously incorrectly used path-based queue lookup which failed with "no instance found for path: /sonarr"
+  - Added `CheckInstanceHealth(instanceID)` method to ArrClient interface for proper health verification
+- **Notification provider icons**: Now display proper SVG icons instead of emojis
+  - Custom dropdown component (`ProviderSelect`) with full icon support
+  - Provider icons shown in notification list cards and settings header
+  - 18 provider icons included: Discord, Slack, Telegram, Pushover, Gotify, ntfy, and more
+- **Config export/import**: Now properly handles schedules and notifications
+  - Import function maps schedules by `local_path` to correct `scan_path_id`
+  - Notifications import properly creates configurations with all fields
+- **Status badge text wrapping**: Badges like "No Replacement Found" no longer break onto two lines
+  - Added `whitespace-nowrap` CSS class to all status badge spans
+- **Icon static file serving**: Provider icons now load correctly in browser
+  - Added `/icons` route to serve embedded icon assets (was falling back to SPA routing)
+
+### Added
+- **StuckRemediation state**: New UI state for items stuck in remediation for 24+ hours
+  - Orange color scheme to indicate attention needed
+  - Description: "Item stuck for 24+ hours - check *arr queue or retry"
+- **Provider icon component**: Reusable `ProviderIcon` component for consistent icon rendering
+  - SVG icons for 18 notification providers
+  - Emoji fallback for providers without icons (Email, Join, Custom)
+
+### Changed
+- Health monitor now calls `CheckInstanceHealth()` instead of queue-based checks
+- Provider selection dropdown uses custom component instead of native `<select>`
+- Cleaned up linting issues in test files (nil checks, `strings.ReplaceAll`)
+
 ## [1.1.13] - 2026-01-05
 
 ### Fixed

@@ -1887,7 +1887,7 @@ func TestRepository_RecreateViews_WithCorruptionData(t *testing.T) {
 		_, err := repo.DB.Exec(`
 			INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version)
 			VALUES (?, ?, ?, ?, ?)
-		`, "corruption", strings.Replace(strings.ToLower(state), " ", "-", -1)+"-"+string(rune('0'+i)),
+		`, "corruption", strings.ReplaceAll(strings.ToLower(state), " ", "-")+"-"+string(rune('0'+i)),
 			state, `{"file_path":"/test.mkv","corruption_type":"header_corruption"}`, 1)
 		if err != nil {
 			t.Fatalf("Failed to insert event for %s: %v", state, err)

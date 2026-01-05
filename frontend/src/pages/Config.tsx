@@ -2164,11 +2164,137 @@ const ServerSettingsSection = ({ runtimeConfig, queryClient, toast }: ServerSett
 };
 
 // Provider configuration schemas - all Shoutrrr-supported services
+// Provider icon paths map - centralized for reuse
+const PROVIDER_ICON_PATHS: Record<string, string> = {
+    discord: '/icons/notifications/discord.svg',
+    slack: '/icons/notifications/slack.svg',
+    telegram: '/icons/notifications/telegram.svg',
+    pushover: '/icons/notifications/pushover.svg',
+    gotify: '/icons/notifications/gotify.svg',
+    ntfy: '/icons/notifications/ntfy.svg',
+    pushbullet: '/icons/notifications/pushbullet.svg',
+    bark: '/icons/notifications/bark.png',
+    whatsapp: '/icons/notifications/whatsapp.svg',
+    signal: '/icons/notifications/signal.svg',
+    matrix: '/icons/notifications/matrix.svg',
+    teams: '/icons/notifications/teams.svg',
+    googlechat: '/icons/notifications/google-chat.svg',
+    mattermost: '/icons/notifications/mattermost.svg',
+    rocketchat: '/icons/notifications/rocketchat.svg',
+    zulip: '/icons/notifications/zulip.svg',
+    ifttt: '/icons/notifications/ifttt-dark.svg',
+    generic: '/icons/notifications/webhook.svg',
+};
+
+// Fallback emojis for providers without SVG icons
+const PROVIDER_EMOJI_FALLBACK: Record<string, string> = {
+    email: '📧',
+    join: '🔗',
+    custom: '🔧',
+};
+
+// Helper component for provider icons - uses SVG when available, falls back to emoji
+const ProviderIcon = ({ provider, className = "w-5 h-5" }: { provider: string; className?: string }) => {
+    const iconPath = PROVIDER_ICON_PATHS[provider];
+    if (iconPath) {
+        return <img src={iconPath} alt={provider} className={className} />;
+    }
+    return <span className="text-lg">{PROVIDER_EMOJI_FALLBACK[provider] || '📢'}</span>;
+};
+
+// Custom dropdown for provider selection with proper icon support
+const ProviderSelect = ({
+    value,
+    onChange
+}: {
+    value: string;
+    onChange: (value: string) => void;
+}) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const dropdownRef = useRef<HTMLDivElement>(null);
+
+    // Close on click outside
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+                setIsOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+
+    const categories = [
+        { key: 'popular', label: 'Popular', emoji: '📱' },
+        { key: 'push', label: 'Push Notifications', emoji: '🔔' },
+        { key: 'messaging', label: 'Messaging', emoji: '💬' },
+        { key: 'team', label: 'Team Collaboration', emoji: '👥' },
+        { key: 'automation', label: 'Automation', emoji: '⚡' },
+        { key: 'integration', label: 'Integration', emoji: '🌐' },
+        { key: 'advanced', label: 'Advanced', emoji: '🔧' },
+    ];
+
+    const selectedConfig = PROVIDER_CONFIGS[value as keyof typeof PROVIDER_CONFIGS];
+
+    return (
+        <div ref={dropdownRef} className="relative">
+            {/* Selected value button */}
+            <button
+                type="button"
+                onClick={() => setIsOpen(!isOpen)}
+                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-pink-500 flex items-center justify-between cursor-pointer"
+            >
+                <div className="flex items-center gap-2">
+                    <ProviderIcon provider={value} className="w-5 h-5" />
+                    <span>{selectedConfig?.label || 'Select provider'}</span>
+                </div>
+                <ChevronDown className={clsx("w-4 h-4 transition-transform", isOpen && "rotate-180")} />
+            </button>
+
+            {/* Dropdown menu */}
+            {isOpen && (
+                <div className="absolute z-50 w-full mt-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg shadow-lg max-h-80 overflow-y-auto">
+                    {categories.map(category => {
+                        const providers = Object.entries(PROVIDER_CONFIGS).filter(
+                            ([, config]) => config.category === category.key
+                        );
+                        if (providers.length === 0) return null;
+                        return (
+                            <div key={category.key}>
+                                <div className="px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/50 sticky top-0">
+                                    {category.emoji} {category.label}
+                                </div>
+                                {providers.map(([key, config]) => (
+                                    <button
+                                        key={key}
+                                        type="button"
+                                        onClick={() => {
+                                            onChange(key);
+                                            setIsOpen(false);
+                                        }}
+                                        className={clsx(
+                                            "w-full px-3 py-2 flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer text-left",
+                                            value === key && "bg-pink-50 dark:bg-pink-900/20"
+                                        )}
+                                    >
+                                        <ProviderIcon provider={key} className="w-5 h-5" />
+                                        <span className="text-slate-900 dark:text-white">{config.label}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+};
+
 const PROVIDER_CONFIGS = {
     // Popular services
     discord: {
         label: 'Discord',
-        icon: '🎮',
+        icon: '🎮', // For dropdown (can't use images in <option>)
         category: 'popular',
         fields: [
             { key: 'webhook_url', label: 'Webhook URL', type: 'text', placeholder: 'https://discord.com/api/webhooks/...' }
@@ -3228,47 +3354,10 @@ const NotificationsSection = () => {
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Provider</label>
-                                        <select
+                                        <ProviderSelect
                                             value={formData.provider_type}
-                                            onChange={e => setFormData({ ...formData, provider_type: e.target.value, config: {} })}
-                                            className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-pink-500"
-                                        >
-                                            <optgroup label="📱 Popular">
-                                                {Object.entries(PROVIDER_CONFIGS).filter(([, config]) => config.category === 'popular').map(([key, config]) => (
-                                                    <option key={key} value={key}>{config.icon} {config.label}</option>
-                                                ))}
-                                            </optgroup>
-                                            <optgroup label="🔔 Push Notifications">
-                                                {Object.entries(PROVIDER_CONFIGS).filter(([, config]) => config.category === 'push').map(([key, config]) => (
-                                                    <option key={key} value={key}>{config.icon} {config.label}</option>
-                                                ))}
-                                            </optgroup>
-                                            <optgroup label="💬 Messaging">
-                                                {Object.entries(PROVIDER_CONFIGS).filter(([, config]) => config.category === 'messaging').map(([key, config]) => (
-                                                    <option key={key} value={key}>{config.icon} {config.label}</option>
-                                                ))}
-                                            </optgroup>
-                                            <optgroup label="👥 Team Collaboration">
-                                                {Object.entries(PROVIDER_CONFIGS).filter(([, config]) => config.category === 'team').map(([key, config]) => (
-                                                    <option key={key} value={key}>{config.icon} {config.label}</option>
-                                                ))}
-                                            </optgroup>
-                                            <optgroup label="⚡ Automation">
-                                                {Object.entries(PROVIDER_CONFIGS).filter(([, config]) => config.category === 'automation').map(([key, config]) => (
-                                                    <option key={key} value={key}>{config.icon} {config.label}</option>
-                                                ))}
-                                            </optgroup>
-                                            <optgroup label="🌐 Integration">
-                                                {Object.entries(PROVIDER_CONFIGS).filter(([, config]) => config.category === 'integration').map(([key, config]) => (
-                                                    <option key={key} value={key}>{config.icon} {config.label}</option>
-                                                ))}
-                                            </optgroup>
-                                            <optgroup label="🔧 Advanced">
-                                                {Object.entries(PROVIDER_CONFIGS).filter(([, config]) => config.category === 'advanced').map(([key, config]) => (
-                                                    <option key={key} value={key}>{config.icon} {config.label}</option>
-                                                ))}
-                                            </optgroup>
-                                        </select>
+                                            onChange={provider => setFormData({ ...formData, provider_type: provider, config: {} })}
+                                        />
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Throttle (seconds)</label>
@@ -3286,7 +3375,10 @@ const NotificationsSection = () => {
                                 {/* Provider-specific fields */}
                                 <div className="space-y-4">
                                     <div className="flex items-center justify-between">
-                                        <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300">{providerConfig?.icon} {providerConfig?.label} Settings</h4>
+                                        <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                                            <ProviderIcon provider={formData.provider_type} className="w-5 h-5" />
+                                            {providerConfig?.label} Settings
+                                        </h4>
                                         {'description' in providerConfig && providerConfig.description && (
                                             <p className="text-xs text-slate-500">{providerConfig.description}</p>
                                         )}
@@ -3463,7 +3555,7 @@ const NotificationsSection = () => {
                                             )} />
                                             <div>
                                                 <div className="flex items-center gap-2">
-                                                    <span className="text-lg">{provider?.icon || '📢'}</span>
+                                                    <ProviderIcon provider={notification.provider_type} className="w-5 h-5" />
                                                     <span className="font-medium text-slate-900 dark:text-white">{notification.name}</span>
                                                     <span className="text-xs text-slate-600 dark:text-slate-500 bg-slate-200 dark:bg-slate-800 px-2 py-0.5 rounded">
                                                         {provider?.label || notification.provider_type}

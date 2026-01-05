@@ -58,6 +58,11 @@ export function formatCorruptionState(state: string): { label: string; colorClas
         return { label: 'No Replacement Found', colorClass: 'bg-amber-500/10 text-amber-400 border-amber-500/20' };
     }
 
+    // Stuck remediation - item hasn't progressed in 24+ hours (orange - needs attention)
+    if (state === 'StuckRemediation') {
+        return { label: 'Stuck Remediation', colorClass: 'bg-orange-500/10 text-orange-400 border-orange-500/20' };
+    }
+
     // Manual intervention required (purple/magenta - needs user attention)
     if (state === 'ImportBlocked') {
         return { label: '⚠️ Import Blocked', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
@@ -148,7 +153,12 @@ export function getEventColorClass(eventType: string): string {
     if (eventType === 'SearchExhausted') {
         return 'bg-amber-500/20 border-amber-500/30 text-amber-400';
     }
-    
+
+    // Stuck remediation (orange - needs attention)
+    if (eventType === 'StuckRemediation') {
+        return 'bg-orange-500/20 border-orange-500/30 text-orange-400';
+    }
+
     // Ignored (slate/gray)
     if (eventType === 'CorruptionIgnored') {
         return 'bg-slate-500/20 border-slate-500/30 text-slate-400';
@@ -196,6 +206,7 @@ export function getEventDescription(eventType: string, data?: Record<string, unk
         'SearchCompleted': 'Replacement found, downloading',
         'SearchFailed': 'Search for replacement failed',
         'SearchExhausted': 'No replacement found - check indexers or retry manually',
+        'StuckRemediation': 'Item stuck for 24+ hours - check *arr queue or retry',
         'FileDetected': 'New file detected',
         'VerificationStarted': 'Verifying replacement file',
         'VerificationSuccess': 'Verification passed - resolved',

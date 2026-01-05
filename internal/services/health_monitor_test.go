@@ -17,10 +17,11 @@ import (
 // =============================================================================
 
 type mockHealthArrClient struct {
-	instances    []*integration.ArrInstanceInfo
-	queueErr     error
-	queueItems   []integration.QueueItemInfo
-	instancesErr error
+	instances      []*integration.ArrInstanceInfo
+	queueErr       error
+	queueItems     []integration.QueueItemInfo
+	instancesErr   error
+	healthCheckErr error // Error returned by CheckInstanceHealth
 }
 
 // Media operations
@@ -59,6 +60,13 @@ func (m *mockHealthArrClient) GetInstanceByID(id int64) (*integration.ArrInstanc
 		}
 	}
 	return nil, nil
+}
+
+func (m *mockHealthArrClient) CheckInstanceHealth(instanceID int64) error {
+	if m.healthCheckErr != nil {
+		return m.healthCheckErr
+	}
+	return nil
 }
 
 // Queue monitoring
@@ -404,7 +412,7 @@ func TestHealthMonitorService_checkInstanceHealth_UnhealthyInstance(t *testing.T
 		instances: []*integration.ArrInstanceInfo{
 			{ID: 1, Name: "Sonarr", Type: "sonarr", URL: "http://localhost:8989"},
 		},
-		queueErr: sql.ErrNoRows, // Simulate error
+		healthCheckErr: sql.ErrNoRows, // Simulate health check error
 	}
 
 	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
