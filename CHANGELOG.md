@@ -19,8 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Database performance index**: New migration adds optimized index for file_path lookups
-  - Generated column `file_path_extracted` for efficient JSON field indexing
-  - Compound index on `(event_type, file_path_extracted)` for common query patterns
+  - Expression-based index on `json_extract(event_data, '$.file_path')` for efficient lookups
+  - Compound index on `(event_type, file_path)` for common query patterns
   - Significantly improves corruption lookup performance on large databases
 
 ## [1.1.12] - 2026-01-04
