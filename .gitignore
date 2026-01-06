@@ -107,3 +107,8 @@ Thumbs.db
 # Embedded web assets (generated at build time for release binaries)
 # -----------------------------------------------------------------------------
 /internal/web/web/
+
+# -----------------------------------------------------------------------------
+# Claude Code project instructions (local only, not committed)
+# -----------------------------------------------------------------------------
+/CLAUDE.md
