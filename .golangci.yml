@@ -33,6 +33,9 @@ linters:
 
     misspell:
       locale: US
+      extra-words:
+        - typo: "cancelled"
+          correction: "cancelled"  # Accept British spelling (used in DB/API)
 
 formatters:
   enable:
