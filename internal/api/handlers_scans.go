@@ -128,7 +128,7 @@ func (s *RESTServer) getActiveScans(c *gin.Context) {
 func (s *RESTServer) cancelScan(c *gin.Context) {
 	scanID := c.Param("scan_id")
 	if err := s.scanner.CancelScan(scanID); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Scan not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": ErrMsgScanNotFound})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Scan cancelled"})
@@ -199,7 +199,7 @@ func (s *RESTServer) rescanPath(c *gin.Context) {
 	var status string
 	err := s.db.QueryRow("SELECT path, status FROM scans WHERE id = ?", scanID).Scan(&path, &status)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Scan not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": ErrMsgScanNotFound})
 		return
 	}
 	if err != nil {
@@ -265,7 +265,7 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 	`, scanID).Scan(&scan.ID, &scan.Path, &pathID, &scan.Status, &scan.FilesScanned, &scan.CorruptionsFound, &scan.StartedAt, &completedAt)
 
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Scan not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": ErrMsgScanNotFound})
 		return
 	}
 	if err != nil {
@@ -300,7 +300,7 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 	var scanExists int
 	err := s.db.QueryRow("SELECT id FROM scans WHERE id = ?", scanID).Scan(&scanExists)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Scan not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": ErrMsgScanNotFound})
 		return
 	}
 

@@ -23,6 +23,8 @@ import (
 	"github.com/mescon/Healarr/internal/web"
 )
 
+const logSeparator = "========================================"
+
 func main() {
 	// Define command line flags (these override environment variables)
 	showVersion := flag.Bool("version", false, "Print version and exit")
@@ -85,10 +87,10 @@ func main() {
 	// Set log level from config
 	logger.SetLevel(cfg.LogLevel)
 
-	logger.Infof("========================================")
+	logger.Infof(logSeparator)
 	logger.Infof("Starting Healarr %s...", config.Version)
 	logger.Infof("Health Evaluation And Library Auto-Recovery for *aRR")
-	logger.Infof("========================================")
+	logger.Infof(logSeparator)
 
 	// Log initial configuration (base path may be updated from DB)
 	logger.Infof("Configuration:")
@@ -281,22 +283,22 @@ func main() {
 		}
 	}()
 
-	logger.Infof("========================================")
+	logger.Infof(logSeparator)
 	logger.Infof("✓ Healarr %s started successfully", config.Version)
 	logger.Infof("✓ Server listening on port %s", cfg.Port)
 	if cfg.BasePath != "/" {
 		logger.Infof("✓ Web UI available at base path: %s", cfg.BasePath)
 	}
-	logger.Infof("========================================")
+	logger.Infof(logSeparator)
 
 	// Graceful shutdown handling
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 
-	logger.Infof("========================================")
+	logger.Infof(logSeparator)
 	logger.Infof("Received signal %v, initiating graceful shutdown...", sig)
-	logger.Infof("========================================")
+	logger.Infof(logSeparator)
 
 	// Create a context with timeout for graceful shutdown
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -337,7 +339,7 @@ func main() {
 		logger.Infof("✓ Database connection closed")
 	}
 
-	logger.Infof("========================================")
+	logger.Infof(logSeparator)
 	logger.Infof("✓ Healarr shutdown complete")
-	logger.Infof("========================================")
+	logger.Infof(logSeparator)
 }

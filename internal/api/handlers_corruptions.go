@@ -404,7 +404,7 @@ func (s *RESTServer) retryCorruptions(c *gin.Context) {
 	}
 
 	if len(req.IDs) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No IDs provided"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrMsgNoIDsProvided})
 		return
 	}
 
@@ -459,7 +459,7 @@ func (s *RESTServer) ignoreCorruptions(c *gin.Context) {
 	}
 
 	if len(req.IDs) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No IDs provided"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrMsgNoIDsProvided})
 		return
 	}
 
@@ -498,7 +498,7 @@ func (s *RESTServer) deleteCorruptions(c *gin.Context) {
 	}
 
 	if len(req.IDs) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No IDs provided"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrMsgNoIDsProvided})
 		return
 	}
 
