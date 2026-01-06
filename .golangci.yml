@@ -18,49 +18,35 @@ linters:
     - misspell      # Find common spelling mistakes
     - unconvert     # Remove unnecessary type conversions
 
+  # Settings for individual linters (moved from root linters-settings)
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # Too strict for existing codebase
+        - shadow          # Too many false positives
+
+    staticcheck:
+      checks:
+        - all
+        - -SA1019  # Ignore deprecated warnings
+
+    misspell:
+      locale: US
+
 formatters:
   enable:
     - gofmt         # Check formatting
     - goimports     # Check imports
 
-linters-settings:
-  govet:
-    enable-all: true
-    disable:
-      - fieldalignment  # Too strict for existing codebase
-      - shadow          # Too many false positives
-
-  staticcheck:
-    checks:
-      - all
-      - -SA1019  # Ignore deprecated warnings
-
-  goimports:
-    local-prefixes: github.com/mescon/Healarr
-
-  misspell:
-    locale: US
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/mescon/Healarr
 
 issues:
   max-issues-per-linter: 50
   max-same-issues: 10
-
-  exclude-rules:
-    # Exclude linters from ALL test files
-    - path: ".*_test\\.go"
-      linters:
-        - ineffassign
-        - staticcheck
-
-    # Exclude web package (build tag constraints)
-    - path: internal/web/
-      linters:
-        - unused
-
-    # "hardlinked" is correct terminology
-    - linters:
-        - misspell
-      text: "hardlinked"
 
 output:
   formats:
@@ -68,4 +54,3 @@ output:
       path: stdout
       print-issued-lines: true
       print-linter-name: true
-  sort-results: true

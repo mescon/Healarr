@@ -32,14 +32,17 @@ type PaginationConfig struct {
 	AllowedSortBy    map[string]bool
 }
 
-// DefaultPaginationConfig returns a standard config for most endpoints
+// DefaultPaginationConfig returns a standard config for most endpoints.
+// SECURITY NOTE: AllowedSortBy is nil, meaning no sort column validation is performed.
+// This is ONLY safe when the query uses a FIXED ORDER BY clause (not p.SortBy).
+// For dynamic sorting, always specify AllowedSortBy to prevent SQL injection.
 func DefaultPaginationConfig() PaginationConfig {
 	return PaginationConfig{
 		DefaultLimit:     50,
 		MaxLimit:         500,
 		DefaultSortBy:    "id",
 		DefaultSortOrder: "desc",
-		AllowedSortBy:    nil, // No restriction
+		AllowedSortBy:    nil, // Safe only with fixed ORDER BY - see SECURITY NOTE above
 	}
 }
 

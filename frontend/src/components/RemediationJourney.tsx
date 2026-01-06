@@ -19,7 +19,7 @@ interface RemediationJourneyProps {
  * Icon colors match parent status colors:
  * - Pending (amber): CorruptionDetected
  * - In Progress (blue): RemediationQueued, DeletionStarted, DeletionCompleted, SearchStarted, SearchCompleted, FileDetected, VerificationStarted
- * - Resolved (emerald/green): VerificationSuccess, HealthCheckPassed
+ * - Resolved (emerald/green): VerificationSuccess
  * - Failed/Retrying (orange): *Failed states (temporary)
  * - Max Retries (red): MaxRetriesReached
  * - Ignored (slate/gray): CorruptionIgnored
@@ -40,7 +40,6 @@ const EventIcon = ({ type, className }: { type: string, className?: string }) =>
         case 'VerificationStarted': return <FileSearch className={clsx(iconClass, "text-blue-400")} />;
         
         // Resolved (emerald)
-        case 'HealthCheckPassed': return <Shield className={clsx(iconClass, "text-emerald-400")} />;
         case 'VerificationSuccess': return <Shield className={clsx(iconClass, "text-emerald-400")} />;
         
         // Max Retries Reached (red - permanent failure)
@@ -97,7 +96,7 @@ const RemediationJourney: React.FC<RemediationJourneyProps> = ({ corruptionId, o
         const status = lastEvent?.event_type || 'Unknown';
         
         // Determine state
-        const isResolved = status === 'VerificationSuccess' || status === 'HealthCheckPassed';
+        const isResolved = status === 'VerificationSuccess';
         const isFailed = status === 'MaxRetriesReached' || status.includes('Failed');
         const isIgnored = status === 'CorruptionIgnored';
         

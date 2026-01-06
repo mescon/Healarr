@@ -51,6 +51,10 @@ func (pm *SQLPathMapper) Reload() error {
 		mappings = append(mappings, m)
 	}
 
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating path mappings: %w", err)
+	}
+
 	pm.mappings = mappings
 	return nil
 }
