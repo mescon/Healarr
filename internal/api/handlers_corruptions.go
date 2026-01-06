@@ -19,6 +19,50 @@ import (
 // dbTimeout is the maximum time to wait for database operations
 const dbTimeout = 5 * time.Second
 
+// statusFilterClauses maps status filter values to SQL WHERE clauses.
+var statusFilterClauses = map[string]string{
+	"active":              "current_state != 'VerificationSuccess' AND current_state != 'MaxRetriesReached' AND current_state != 'CorruptionIgnored'",
+	"pending":             "current_state = 'CorruptionDetected'",
+	"in_progress":         "(current_state LIKE '%Started' OR current_state LIKE '%Queued' OR current_state LIKE '%Progress' OR current_state = 'RemediationQueued')",
+	"resolved":            "current_state = 'VerificationSuccess'",
+	"failed":              "current_state LIKE '%Failed'",
+	"orphaned":            "current_state = 'MaxRetriesReached'",
+	"ignored":             "current_state = 'CorruptionIgnored'",
+	"manual_intervention": "(current_state = 'ImportBlocked' OR current_state = 'ManuallyRemoved')",
+}
+
+// extractJSONString extracts a string value from a map if it exists and is non-empty.
+func extractJSONString(data map[string]interface{}, key string) (string, bool) {
+	if v, ok := data[key].(string); ok && v != "" {
+		return v, true
+	}
+	return "", false
+}
+
+// extractJSONInt extracts an integer value from a map (stored as float64 in JSON).
+func extractJSONInt(data map[string]interface{}, key string) (int, bool) {
+	if v, ok := data[key].(float64); ok {
+		return int(v), true
+	}
+	return 0, false
+}
+
+// extractJSONInt64 extracts an int64 value from a map (stored as float64 in JSON).
+func extractJSONInt64(data map[string]interface{}, key string) (int64, bool) {
+	if v, ok := data[key].(float64); ok {
+		return int64(v), true
+	}
+	return 0, false
+}
+
+// extractJSONFloat extracts a float64 value from a map.
+func extractJSONFloat(data map[string]interface{}, key string) (float64, bool) {
+	if v, ok := data[key].(float64); ok {
+		return v, true
+	}
+	return 0, false
+}
+
 func (s *RESTServer) getCorruptions(c *gin.Context) {
 	// Create context with timeout to prevent blocking on DB locks
 	ctx, cancel := context.WithTimeout(c.Request.Context(), dbTimeout)
@@ -47,29 +91,9 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	whereClauses := []string{}
 	args := []interface{}{}
 
-	// Status filter
-	if statusFilter != "all" {
-		switch statusFilter {
-		case "active":
-			whereClauses = append(whereClauses, "current_state != 'VerificationSuccess' AND current_state != 'MaxRetriesReached' AND current_state != 'CorruptionIgnored'")
-		case "pending":
-			// Pending = detected but not yet being processed (just CorruptionDetected state)
-			whereClauses = append(whereClauses, "current_state = 'CorruptionDetected'")
-		case "in_progress":
-			// In progress = currently being remediated (Queued, Started, Progress states)
-			whereClauses = append(whereClauses, "(current_state LIKE '%Started' OR current_state LIKE '%Queued' OR current_state LIKE '%Progress' OR current_state = 'RemediationQueued')")
-		case "resolved":
-			whereClauses = append(whereClauses, "current_state = 'VerificationSuccess'")
-		case "failed":
-			whereClauses = append(whereClauses, "current_state LIKE '%Failed'")
-		case "orphaned":
-			whereClauses = append(whereClauses, "current_state = 'MaxRetriesReached'")
-		case "ignored":
-			whereClauses = append(whereClauses, "current_state = 'CorruptionIgnored'")
-		case "manual_intervention":
-			// Items that require manual intervention in *arr (import blocked, manually removed from queue)
-			whereClauses = append(whereClauses, "(current_state = 'ImportBlocked' OR current_state = 'ManuallyRemoved')")
-		}
+	// Status filter - use map lookup instead of switch
+	if clause, ok := statusFilterClauses[statusFilter]; ok {
+		whereClauses = append(whereClauses, clause)
 	}
 
 	// Path ID filter (for filtering by scan path)
@@ -170,129 +194,124 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 // - download progress info from latest DownloadProgress
 func (s *RESTServer) getEnrichedCorruptionData(ctx context.Context, corruptionID string) map[string]interface{} {
 	enriched := make(map[string]interface{})
-
-	// Get file_size from CorruptionDetected event
-	var corruptionEventData sql.NullString
-	err := s.db.QueryRowContext(ctx, `
-		SELECT event_data FROM events
-		WHERE aggregate_id = ? AND event_type = 'CorruptionDetected'
-		ORDER BY created_at ASC LIMIT 1
-	`, corruptionID).Scan(&corruptionEventData)
-	if err == nil && corruptionEventData.Valid {
-		var data map[string]interface{}
-		if unmarshalErr := json.Unmarshal([]byte(corruptionEventData.String), &data); unmarshalErr != nil {
-			logger.Debugf("Failed to unmarshal CorruptionDetected event data for %s: %v", corruptionID, unmarshalErr)
-		} else if fs, ok := data["file_size"].(float64); ok && fs > 0 {
-			enriched["file_size"] = int64(fs)
-		}
-	}
-
-	// Get media info from SearchCompleted event (latest one if multiple)
-	var searchEventData sql.NullString
-	err = s.db.QueryRowContext(ctx, `
-		SELECT event_data FROM events
-		WHERE aggregate_id = ? AND event_type = 'SearchCompleted'
-		ORDER BY created_at DESC LIMIT 1
-	`, corruptionID).Scan(&searchEventData)
-	if err == nil && searchEventData.Valid {
-		var data map[string]interface{}
-		if unmarshalErr := json.Unmarshal([]byte(searchEventData.String), &data); unmarshalErr != nil {
-			logger.Debugf("Failed to unmarshal SearchCompleted event data for %s: %v", corruptionID, unmarshalErr)
-		} else {
-			if title, ok := data["media_title"].(string); ok && title != "" {
-				enriched["media_title"] = title
-			}
-			if year, ok := data["media_year"].(float64); ok {
-				enriched["media_year"] = int(year)
-			}
-			if mediaType, ok := data["media_type"].(string); ok {
-				enriched["media_type"] = mediaType
-			}
-			if season, ok := data["season_number"].(float64); ok {
-				enriched["season_number"] = int(season)
-			}
-			if episode, ok := data["episode_number"].(float64); ok {
-				enriched["episode_number"] = int(episode)
-			}
-			if arrType, ok := data["arr_type"].(string); ok {
-				enriched["arr_type"] = arrType
-			}
-			if instanceName, ok := data["instance_name"].(string); ok {
-				enriched["instance_name"] = instanceName
-			}
-		}
-	}
-
-	// Get quality and duration from VerificationSuccess event (if resolved)
-	var verifyEventData sql.NullString
-	err = s.db.QueryRowContext(ctx, `
-		SELECT event_data FROM events
-		WHERE aggregate_id = ? AND event_type = 'VerificationSuccess'
-		ORDER BY created_at DESC LIMIT 1
-	`, corruptionID).Scan(&verifyEventData)
-	if err == nil && verifyEventData.Valid {
-		var data map[string]interface{}
-		if unmarshalErr := json.Unmarshal([]byte(verifyEventData.String), &data); unmarshalErr != nil {
-			logger.Debugf("Failed to unmarshal VerificationSuccess event data for %s: %v", corruptionID, unmarshalErr)
-		} else {
-			if quality, ok := data["quality"].(string); ok && quality != "" {
-				enriched["quality"] = quality
-			}
-			if releaseGroup, ok := data["release_group"].(string); ok && releaseGroup != "" {
-				enriched["release_group"] = releaseGroup
-			}
-			if totalDur, ok := data["total_duration_seconds"].(float64); ok {
-				enriched["total_duration_seconds"] = int64(totalDur)
-			}
-			if downloadDur, ok := data["download_duration_seconds"].(float64); ok {
-				enriched["download_duration_seconds"] = int64(downloadDur)
-			}
-			if newFilePath, ok := data["new_file_path"].(string); ok {
-				enriched["new_file_path"] = newFilePath
-			}
-			if newFileSize, ok := data["new_file_size"].(float64); ok {
-				enriched["new_file_size"] = int64(newFileSize)
-			}
-		}
-	}
-
-	// Get latest download progress info (for in-progress items)
-	var progressEventData sql.NullString
-	err = s.db.QueryRowContext(ctx, `
-		SELECT event_data FROM events
-		WHERE aggregate_id = ? AND event_type = 'DownloadProgress'
-		ORDER BY created_at DESC LIMIT 1
-	`, corruptionID).Scan(&progressEventData)
-	if err == nil && progressEventData.Valid {
-		var data map[string]interface{}
-		if unmarshalErr := json.Unmarshal([]byte(progressEventData.String), &data); unmarshalErr != nil {
-			logger.Debugf("Failed to unmarshal DownloadProgress event data for %s: %v", corruptionID, unmarshalErr)
-		} else {
-			if progress, ok := data["progress"].(float64); ok {
-				enriched["download_progress"] = progress
-			}
-			if sizeBytes, ok := data["size_bytes"].(float64); ok {
-				enriched["download_size"] = int64(sizeBytes)
-			}
-			if sizeLeft, ok := data["size_remaining_bytes"].(float64); ok {
-				enriched["download_remaining"] = int64(sizeLeft)
-			}
-			if protocol, ok := data["protocol"].(string); ok {
-				enriched["download_protocol"] = protocol
-			}
-			if client, ok := data["download_client"].(string); ok {
-				enriched["download_client"] = client
-			}
-			if indexer, ok := data["indexer"].(string); ok {
-				enriched["indexer"] = indexer
-			}
-			if timeLeft, ok := data["time_left"].(string); ok {
-				enriched["download_time_left"] = timeLeft
-			}
-		}
-	}
-
+	s.enrichFromCorruptionDetected(ctx, corruptionID, enriched)
+	s.enrichFromSearchCompleted(ctx, corruptionID, enriched)
+	s.enrichFromVerificationSuccess(ctx, corruptionID, enriched)
+	s.enrichFromDownloadProgress(ctx, corruptionID, enriched)
 	return enriched
+}
+
+// fetchEventData fetches and unmarshals event data for a specific event type.
+func (s *RESTServer) fetchEventData(ctx context.Context, corruptionID, eventType, order string) map[string]interface{} {
+	var eventData sql.NullString
+	query := fmt.Sprintf(`SELECT event_data FROM events WHERE aggregate_id = ? AND event_type = ? ORDER BY created_at %s LIMIT 1`, order)
+	if err := s.db.QueryRowContext(ctx, query, corruptionID, eventType).Scan(&eventData); err != nil {
+		return nil
+	}
+	if !eventData.Valid {
+		return nil
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(eventData.String), &data); err != nil {
+		logger.Debugf("Failed to unmarshal %s event data for %s: %v", eventType, corruptionID, err)
+		return nil
+	}
+	return data
+}
+
+// enrichFromCorruptionDetected extracts file_size from CorruptionDetected event.
+func (s *RESTServer) enrichFromCorruptionDetected(ctx context.Context, corruptionID string, enriched map[string]interface{}) {
+	data := s.fetchEventData(ctx, corruptionID, "CorruptionDetected", "ASC")
+	if data == nil {
+		return
+	}
+	if fs, ok := extractJSONInt64(data, "file_size"); ok && fs > 0 {
+		enriched["file_size"] = fs
+	}
+}
+
+// enrichFromSearchCompleted extracts media info from SearchCompleted event.
+func (s *RESTServer) enrichFromSearchCompleted(ctx context.Context, corruptionID string, enriched map[string]interface{}) {
+	data := s.fetchEventData(ctx, corruptionID, "SearchCompleted", "DESC")
+	if data == nil {
+		return
+	}
+	if v, ok := extractJSONString(data, "media_title"); ok {
+		enriched["media_title"] = v
+	}
+	if v, ok := extractJSONInt(data, "media_year"); ok {
+		enriched["media_year"] = v
+	}
+	if v, ok := extractJSONString(data, "media_type"); ok {
+		enriched["media_type"] = v
+	}
+	if v, ok := extractJSONInt(data, "season_number"); ok {
+		enriched["season_number"] = v
+	}
+	if v, ok := extractJSONInt(data, "episode_number"); ok {
+		enriched["episode_number"] = v
+	}
+	if v, ok := extractJSONString(data, "arr_type"); ok {
+		enriched["arr_type"] = v
+	}
+	if v, ok := extractJSONString(data, "instance_name"); ok {
+		enriched["instance_name"] = v
+	}
+}
+
+// enrichFromVerificationSuccess extracts quality/duration info from VerificationSuccess event.
+func (s *RESTServer) enrichFromVerificationSuccess(ctx context.Context, corruptionID string, enriched map[string]interface{}) {
+	data := s.fetchEventData(ctx, corruptionID, "VerificationSuccess", "DESC")
+	if data == nil {
+		return
+	}
+	if v, ok := extractJSONString(data, "quality"); ok {
+		enriched["quality"] = v
+	}
+	if v, ok := extractJSONString(data, "release_group"); ok {
+		enriched["release_group"] = v
+	}
+	if v, ok := extractJSONInt64(data, "total_duration_seconds"); ok {
+		enriched["total_duration_seconds"] = v
+	}
+	if v, ok := extractJSONInt64(data, "download_duration_seconds"); ok {
+		enriched["download_duration_seconds"] = v
+	}
+	if v, ok := extractJSONString(data, "new_file_path"); ok {
+		enriched["new_file_path"] = v
+	}
+	if v, ok := extractJSONInt64(data, "new_file_size"); ok {
+		enriched["new_file_size"] = v
+	}
+}
+
+// enrichFromDownloadProgress extracts download progress info from DownloadProgress event.
+func (s *RESTServer) enrichFromDownloadProgress(ctx context.Context, corruptionID string, enriched map[string]interface{}) {
+	data := s.fetchEventData(ctx, corruptionID, "DownloadProgress", "DESC")
+	if data == nil {
+		return
+	}
+	if v, ok := extractJSONFloat(data, "progress"); ok {
+		enriched["download_progress"] = v
+	}
+	if v, ok := extractJSONInt64(data, "size_bytes"); ok {
+		enriched["download_size"] = v
+	}
+	if v, ok := extractJSONInt64(data, "size_remaining_bytes"); ok {
+		enriched["download_remaining"] = v
+	}
+	if v, ok := extractJSONString(data, "protocol"); ok {
+		enriched["download_protocol"] = v
+	}
+	if v, ok := extractJSONString(data, "download_client"); ok {
+		enriched["download_client"] = v
+	}
+	if v, ok := extractJSONString(data, "indexer"); ok {
+		enriched["indexer"] = v
+	}
+	if v, ok := extractJSONString(data, "time_left"); ok {
+		enriched["download_time_left"] = v
+	}
 }
 
 func (s *RESTServer) getRemediations(c *gin.Context) {
