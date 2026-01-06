@@ -9,7 +9,7 @@ Healarr monitors your media library for corrupted files and automatically trigge
 ![React](https://img.shields.io/badge/react-19-61DAFB.svg)
 [![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/mescon/Healarr?utm_source=oss&utm_medium=github&utm_campaign=mescon%2FHealarr&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 [![codecov](https://codecov.io/gh/mescon/Healarr/graph/badge.svg?token=Y1X1MRQTGX)](https://codecov.io/gh/mescon/Healarr)
-[![Snyk Security](https://snyk.io/test/github/mescon/Healarr/badge.svg)](https://snyk.io/test/github/mescon/Healarr)
+[![Snyk Security](https://img.shields.io/badge/Snyk-monitored-purple?logo=snyk)](https://app.snyk.io/org/mescon)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=mescon_Healarr&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=mescon_Healarr)
 
 ## Features
