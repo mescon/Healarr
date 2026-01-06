@@ -391,6 +391,10 @@ func (n *Notifier) loadConfigs() error {
 		configs[cfg.ID] = &cfg
 	}
 
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating notification configs: %w", err)
+	}
+
 	n.mu.Lock()
 	n.configs = configs
 	n.mu.Unlock()
@@ -998,6 +1002,10 @@ func (n *Notifier) GetAllConfigs() ([]*NotificationConfig, error) {
 		configs = append(configs, &cfg)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating notification configs: %w", err)
+	}
+
 	return configs, nil
 }
 
@@ -1157,6 +1165,10 @@ func (n *Notifier) GetNotificationLog(notificationID int64, limit int) ([]Notifi
 		}
 		entry.Error = errorMsg.String
 		entries = append(entries, entry)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating notification log: %w", err)
 	}
 
 	return entries, nil

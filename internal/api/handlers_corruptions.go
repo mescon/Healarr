@@ -146,6 +146,12 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 		corruptions = append(corruptions, corruption)
 	}
 
+	if err := rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading corruptions"})
+		logger.Errorf("Error iterating corruptions: %v", err)
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"data":       corruptions,
 		"pagination": NewPaginationResponse(p, total),
@@ -169,10 +175,10 @@ func (s *RESTServer) getEnrichedCorruptionData(ctx context.Context, corruptionID
 	`, corruptionID).Scan(&corruptionEventData)
 	if err == nil && corruptionEventData.Valid {
 		var data map[string]interface{}
-		if json.Unmarshal([]byte(corruptionEventData.String), &data) == nil {
-			if fs, ok := data["file_size"].(float64); ok && fs > 0 {
-				enriched["file_size"] = int64(fs)
-			}
+		if unmarshalErr := json.Unmarshal([]byte(corruptionEventData.String), &data); unmarshalErr != nil {
+			logger.Debugf("Failed to unmarshal CorruptionDetected event data for %s: %v", corruptionID, unmarshalErr)
+		} else if fs, ok := data["file_size"].(float64); ok && fs > 0 {
+			enriched["file_size"] = int64(fs)
 		}
 	}
 
@@ -185,7 +191,9 @@ func (s *RESTServer) getEnrichedCorruptionData(ctx context.Context, corruptionID
 	`, corruptionID).Scan(&searchEventData)
 	if err == nil && searchEventData.Valid {
 		var data map[string]interface{}
-		if json.Unmarshal([]byte(searchEventData.String), &data) == nil {
+		if unmarshalErr := json.Unmarshal([]byte(searchEventData.String), &data); unmarshalErr != nil {
+			logger.Debugf("Failed to unmarshal SearchCompleted event data for %s: %v", corruptionID, unmarshalErr)
+		} else {
 			if title, ok := data["media_title"].(string); ok && title != "" {
 				enriched["media_title"] = title
 			}
@@ -219,7 +227,9 @@ func (s *RESTServer) getEnrichedCorruptionData(ctx context.Context, corruptionID
 	`, corruptionID).Scan(&verifyEventData)
 	if err == nil && verifyEventData.Valid {
 		var data map[string]interface{}
-		if json.Unmarshal([]byte(verifyEventData.String), &data) == nil {
+		if unmarshalErr := json.Unmarshal([]byte(verifyEventData.String), &data); unmarshalErr != nil {
+			logger.Debugf("Failed to unmarshal VerificationSuccess event data for %s: %v", corruptionID, unmarshalErr)
+		} else {
 			if quality, ok := data["quality"].(string); ok && quality != "" {
 				enriched["quality"] = quality
 			}
@@ -250,7 +260,9 @@ func (s *RESTServer) getEnrichedCorruptionData(ctx context.Context, corruptionID
 	`, corruptionID).Scan(&progressEventData)
 	if err == nil && progressEventData.Valid {
 		var data map[string]interface{}
-		if json.Unmarshal([]byte(progressEventData.String), &data) == nil {
+		if unmarshalErr := json.Unmarshal([]byte(progressEventData.String), &data); unmarshalErr != nil {
+			logger.Debugf("Failed to unmarshal DownloadProgress event data for %s: %v", corruptionID, unmarshalErr)
+		} else {
 			if progress, ok := data["progress"].(float64); ok {
 				enriched["download_progress"] = progress
 			}
@@ -316,6 +328,12 @@ func (s *RESTServer) getRemediations(c *gin.Context) {
 		})
 	}
 
+	if err := rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading remediations"})
+		logger.Errorf("Error iterating remediations: %v", err)
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"data":       remediations,
 		"pagination": NewPaginationResponse(p, total),
@@ -355,6 +373,12 @@ func (s *RESTServer) getCorruptionHistory(c *gin.Context) {
 			"data":       data,
 			"timestamp":  createdAt,
 		})
+	}
+
+	if err := rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading history"})
+		logger.Errorf("Error iterating corruption history: %v", err)
+		return
 	}
 
 	c.JSON(http.StatusOK, history)

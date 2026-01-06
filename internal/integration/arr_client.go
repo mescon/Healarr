@@ -243,6 +243,10 @@ func (c *HTTPArrClient) getInstanceForPath(arrPath string) (*ArrInstance, error)
 		}
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating instances for path: %w", err)
+	}
+
 	if bestMatch == nil {
 		return nil, fmt.Errorf("no instance found for path: %s", arrPath)
 	}
@@ -925,6 +929,11 @@ func (c *HTTPArrClient) getAllInstancesInternal() ([]*ArrInstance, error) {
 		i.APIKey = decryptedKey
 		instances = append(instances, &i)
 	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating instances: %w", err)
+	}
+
 	return instances, nil
 }
 

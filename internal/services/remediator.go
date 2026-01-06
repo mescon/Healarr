@@ -102,9 +102,9 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 
 	// Use type-safe event data parsing
 	data, ok := event.ParseRetryEventData()
-	if !ok {
-		logger.Errorf("Missing file_path in retry event for %s", corruptionID)
-		r.publishError(corruptionID, domain.SearchFailed, "missing file_path in retry event")
+	if !ok || data.FilePath == "" {
+		logger.Warnf("Invalid retry event data for %s: missing or empty file path", corruptionID)
+		r.publishError(corruptionID, domain.SearchFailed, "missing or empty file_path in retry event")
 		return
 	}
 
@@ -163,6 +163,8 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 							episodeIDs = append(episodeIDs, i)
 						}
 					}
+				default:
+					logger.Debugf("Unexpected type for episode_ids: %T", episodeIDsRaw)
 				}
 			}
 		}

@@ -111,6 +111,9 @@ func (s *RESTServer) exportConfig(c *gin.Context) {
 				"name": name, "type": arrType, "url": url, "api_key": decryptedKey, "enabled": enabled,
 			})
 		}
+		if err := arrRows.Err(); err != nil {
+			logger.Errorf("Error iterating arr instances for export: %v", err)
+		}
 		export["arr_instances"] = instances
 	}
 
@@ -152,6 +155,9 @@ func (s *RESTServer) exportConfig(c *gin.Context) {
 			}
 			paths = append(paths, path)
 		}
+		if err := pathRows.Err(); err != nil {
+			logger.Errorf("Error iterating scan paths for export: %v", err)
+		}
 		export["scan_paths"] = paths
 	}
 
@@ -177,6 +183,9 @@ func (s *RESTServer) exportConfig(c *gin.Context) {
 			schedules = append(schedules, gin.H{
 				"local_path": localPath, "cron_expression": cronExpr, "enabled": enabled,
 			})
+		}
+		if err := schedRows.Err(); err != nil {
+			logger.Errorf("Error iterating schedules for export: %v", err)
 		}
 		export["schedules"] = schedules
 	}

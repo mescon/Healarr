@@ -1,0 +1,28 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 5%
+    patch:
+      default:
+        target: 80%
+        threshold: 5%
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default
+  require_changes: true
+
+flags:
+  backend:
+    paths:
+      - cmd/
+      - internal/
+    carryforward: true
+
+ignore:
+  - "**/*_test.go"
+  - "**/testutil/**"
+  - "frontend/**"
+  - "web/**"
