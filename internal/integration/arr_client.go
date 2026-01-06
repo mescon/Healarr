@@ -21,6 +21,14 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
+// Arr instance type constants
+const (
+	ArrTypeSonarr     = "sonarr"
+	ArrTypeRadarr     = "radarr"
+	ArrTypeWhisparrV2 = "whisparr-v2"
+	ArrTypeWhisparrV3 = "whisparr-v3"
+)
+
 // RateLimiter implements a token bucket rate limiter for API calls
 type RateLimiter struct {
 	mu         sync.Mutex
@@ -398,10 +406,10 @@ func (c *HTTPArrClient) FindMediaByPath(path string) (int64, error) {
 		defer resp.Body.Close()
 		var result ParseResult
 		if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
-			if (instance.Type == "radarr" || instance.Type == "whisparr-v3") && result.Movie != nil {
+			if (instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3) && result.Movie != nil {
 				logger.Infof("Found movie via parse: %s (ID: %d)", result.Movie.Title, result.Movie.ID)
 				return result.Movie.ID, nil
-			} else if (instance.Type == "sonarr" || instance.Type == "whisparr-v2") && result.Series != nil {
+			} else if (instance.Type == ArrTypeSonarr || instance.Type == ArrTypeWhisparrV2) && result.Series != nil {
 				logger.Infof("Found series via parse: %s (ID: %d)", result.Series.Title, result.Series.ID)
 				return result.Series.ID, nil
 			}
@@ -420,7 +428,7 @@ func (c *HTTPArrClient) FindMediaByPath(path string) (int64, error) {
 	logger.Infof("Parse failed, falling back to listing all media for %s", instance.Type)
 	// This is expensive but necessary if parse fails
 	var listEndpoint string
-	if instance.Type == "radarr" || instance.Type == "whisparr-v3" {
+	if instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3 {
 		listEndpoint = "/api/v3/movie"
 	} else {
 		listEndpoint = "/api/v3/series"
@@ -484,7 +492,7 @@ func (c *HTTPArrClient) DeleteFile(mediaID int64, path string) (map[string]inter
 
 	// 1. Get files for media
 	var endpoint string
-	if instance.Type == "radarr" || instance.Type == "whisparr-v3" {
+	if instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3 {
 		endpoint = fmt.Sprintf("/api/v3/moviefile?movieId=%d", mediaID)
 	} else {
 		endpoint = fmt.Sprintf("/api/v3/episodefile?seriesId=%d", mediaID)
@@ -540,7 +548,7 @@ func (c *HTTPArrClient) DeleteFile(mediaID int64, path string) (map[string]inter
 			logger.Infof("File already deleted (not in %s and not on disk): %s", instance.Type, path)
 
 			// Still need to gather metadata for the search phase
-			if instance.Type == "sonarr" || instance.Type == "whisparr-v2" {
+			if instance.Type == ArrTypeSonarr || instance.Type == ArrTypeWhisparrV2 {
 				// For Sonarr, find episodes that are now missing files
 				episodeIDs, err := c.findMissingEpisodesForPath(instance, mediaID, path)
 				if err == nil && len(episodeIDs) > 0 {
@@ -561,7 +569,7 @@ func (c *HTTPArrClient) DeleteFile(mediaID int64, path string) (map[string]inter
 		return nil, fmt.Errorf("file not found in %s but exists on disk: %s", instance.Type, path)
 	}
 
-	if instance.Type == "sonarr" || instance.Type == "whisparr-v2" {
+	if instance.Type == ArrTypeSonarr || instance.Type == ArrTypeWhisparrV2 {
 		// We need to find which episodes use this file.
 		// Since we can't easily get it from /episodefile response (it varies),
 		// let's query episodes for the series and match episodeFileId.
@@ -591,7 +599,7 @@ func (c *HTTPArrClient) DeleteFile(mediaID int64, path string) (map[string]inter
 	// 3. Delete
 	logger.Infof("Deleting file ID %d from %s", fileID, instance.Type)
 	var deleteEndpoint string
-	if instance.Type == "radarr" || instance.Type == "whisparr-v3" {
+	if instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3 {
 		deleteEndpoint = fmt.Sprintf("/api/v3/moviefile/%d", fileID)
 	} else {
 		deleteEndpoint = fmt.Sprintf("/api/v3/episodefile/%d", fileID)
@@ -672,7 +680,7 @@ func (c *HTTPArrClient) GetFilePath(mediaID int64, metadata map[string]interface
 	}
 
 	switch instance.Type {
-	case "radarr", "whisparr-v3":
+	case ArrTypeRadarr, ArrTypeWhisparrV3:
 		// For Radarr/Whisparr v3, just get the movie and check if it has a file
 		endpoint := fmt.Sprintf("/api/v3/movie/%d", mediaID)
 		resp, err := c.doRequest(instance, "GET", endpoint, nil)
@@ -699,7 +707,7 @@ func (c *HTTPArrClient) GetFilePath(mediaID int64, metadata map[string]interface
 		}
 		return movie.MovieFile.Path, nil
 
-	case "sonarr", "whisparr-v2":
+	case ArrTypeSonarr, ArrTypeWhisparrV2:
 		// For Sonarr/Whisparr v2, we need to check the episodes we tracked
 		episodeIDsRaw, ok := metadata["episode_ids"]
 		if !ok {
@@ -798,7 +806,7 @@ func (c *HTTPArrClient) GetAllFilePaths(mediaID int64, metadata map[string]inter
 	}
 
 	switch instance.Type {
-	case "radarr", "whisparr-v3":
+	case ArrTypeRadarr, ArrTypeWhisparrV3:
 		// For movies, there's only one file
 		path, err := c.GetFilePath(mediaID, metadata, referencePath)
 		if err != nil {
@@ -806,7 +814,7 @@ func (c *HTTPArrClient) GetAllFilePaths(mediaID int64, metadata map[string]inter
 		}
 		return []string{path}, nil
 
-	case "sonarr", "whisparr-v2":
+	case ArrTypeSonarr, ArrTypeWhisparrV2:
 		// For Sonarr, check all tracked episodes and collect unique file paths
 		episodeIDsRaw, ok := metadata["episode_ids"]
 		if !ok {
@@ -863,7 +871,7 @@ func (c *HTTPArrClient) TriggerSearch(mediaID int64, path string, episodeIDs []i
 
 	logger.Infof("Triggering search for media ID %d on %s", mediaID, instance.Type)
 	var payload map[string]interface{}
-	if instance.Type == "radarr" || instance.Type == "whisparr-v3" {
+	if instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3 {
 		// For movies, search for the specific movie only
 		payload = map[string]interface{}{
 			"name":     "MoviesSearch",
@@ -1051,7 +1059,7 @@ func (c *HTTPArrClient) GetHistory(instance *ArrInstance, page, pageSize int, ev
 // GetRecentHistoryForMedia retrieves recent history events for a specific media item
 func (c *HTTPArrClient) GetRecentHistoryForMedia(instance *ArrInstance, mediaID int64, limit int) ([]HistoryItem, error) {
 	var endpoint string
-	if instance.Type == "radarr" || instance.Type == "whisparr-v3" {
+	if instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3 {
 		endpoint = fmt.Sprintf("/api/v3/history/movie?movieId=%d&eventType=grabbed", mediaID)
 	} else {
 		endpoint = fmt.Sprintf("/api/v3/history/series?seriesId=%d&eventType=grabbed", mediaID)
@@ -1388,9 +1396,9 @@ func (c *HTTPArrClient) GetMediaDetails(mediaID int64, arrPath string) (*MediaDe
 	}
 
 	switch instance.Type {
-	case "radarr", "whisparr-v3":
+	case ArrTypeRadarr, ArrTypeWhisparrV3:
 		return c.getMovieDetails(instance, mediaID)
-	case "sonarr", "whisparr-v2":
+	case ArrTypeSonarr, ArrTypeWhisparrV2:
 		return c.getSeriesDetails(instance, mediaID)
 	default:
 		return nil, nil
@@ -1470,7 +1478,7 @@ func (c *HTTPArrClient) GetEpisodeDetails(episodeID int64, arrPath string) (*Med
 		return nil, nil
 	}
 
-	if instance.Type != "sonarr" && instance.Type != "whisparr-v2" {
+	if instance.Type != ArrTypeSonarr && instance.Type != ArrTypeWhisparrV2 {
 		return nil, nil // Only valid for Sonarr
 	}
 

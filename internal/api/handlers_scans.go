@@ -69,7 +69,16 @@ func (s *RESTServer) getScans(c *gin.Context) {
 	}
 
 	// Get paginated data with dynamic sorting
-	query := fmt.Sprintf("SELECT id, path, status, files_scanned, corruptions_found, started_at, completed_at FROM scans ORDER BY %s %s LIMIT ? OFFSET ?", p.SortBy, p.SortOrder)
+	// Map frontend sort keys to DB columns (key = API param, value = DB column)
+	allowedSortColumns := map[string]string{
+		"started_at":        "started_at",
+		"path":              "path",
+		"status":            "status",
+		"files_scanned":     "files_scanned",
+		"corruptions_found": "corruptions_found",
+	}
+	orderByClause := SafeOrderByClause(p.SortBy, p.SortOrder, allowedSortColumns, "started_at", "desc")
+	query := fmt.Sprintf("SELECT id, path, status, files_scanned, corruptions_found, started_at, completed_at FROM scans %s LIMIT ? OFFSET ?", orderByClause)
 	rows, err := s.db.Query(query, p.Limit, p.Offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
