@@ -72,17 +72,40 @@ func NewWebSocketHub(eventBus *eventbus.EventBus) *WebSocketHub {
 		eventBus:   eventBus,
 	}
 
-	// Subscribe to all events
+	// Subscribe to all events that affect UI state
 	types := []domain.EventType{
-		domain.CorruptionDetected,
-		domain.DeletionCompleted,
-		domain.VerificationSuccess,
-		domain.VerificationFailed,
-		domain.RetryScheduled,
+		// Scan events
 		domain.ScanStarted,
 		domain.ScanCompleted,
 		domain.ScanFailed,
 		domain.ScanProgress,
+		// Corruption lifecycle events
+		domain.CorruptionDetected,
+		domain.CorruptionIgnored,
+		domain.RemediationQueued,
+		domain.DeletionStarted,
+		domain.DeletionCompleted,
+		domain.DeletionFailed,
+		domain.SearchStarted,
+		domain.SearchCompleted,
+		domain.SearchFailed,
+		domain.SearchExhausted,
+		domain.FileDetected,
+		domain.VerificationStarted,
+		domain.VerificationSuccess,
+		domain.VerificationFailed,
+		domain.DownloadTimeout,
+		domain.DownloadProgress,
+		domain.DownloadFailed,
+		domain.ImportBlocked,
+		domain.ManuallyRemoved,
+		domain.DownloadIgnored,
+		domain.RetryScheduled,
+		domain.MaxRetriesReached,
+		domain.StuckRemediation,
+		// Notification events
+		domain.NotificationSent,
+		domain.NotificationFailed,
 	}
 
 	for _, t := range types {

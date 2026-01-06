@@ -76,14 +76,50 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
 
         ws.onmessage = (event) => {
             try {
-                const message = JSON.parse(event.data);
+                const rawMessage = JSON.parse(event.data);
+
+                // Transform event messages to use event_type as the type
+                // Backend sends: {"type": "event", "data": {"event_type": "ScanProgress", "event_data": {...}}}
+                // Transform to: {"type": "ScanProgress", "data": {...event_data fields...}}
+                let message = rawMessage;
+                if (rawMessage.type === 'event' && rawMessage.data?.event_type) {
+                    const eventData = rawMessage.data.event_data || {};
+                    message = {
+                        type: rawMessage.data.event_type,
+                        data: eventData,
+                        // Keep original event metadata for debugging
+                        _raw: rawMessage.data,
+                    };
+                }
+
                 setLastMessage(message);
 
                 // Invalidate queries based on event type
-                if (message.type === 'scan_started' || message.type === 'scan_completed' || message.type === 'scan_failed') {
+                const eventType = message.type;
+
+                // Scan events - refresh scan list and stats
+                if (eventType === 'ScanStarted' || eventType === 'ScanCompleted' || eventType === 'ScanFailed') {
                     queryClient.invalidateQueries({ queryKey: ['scans'] });
                     queryClient.invalidateQueries({ queryKey: ['dashboardStats'] });
-                } else if (message.type === 'corruption_detected' || message.type === 'remediation_started' || message.type === 'remediation_completed') {
+                }
+
+                // Corruption lifecycle events - refresh corruption list and stats
+                // These are all the events that can change a corruption's status
+                const corruptionEvents = [
+                    'CorruptionDetected',
+                    'CorruptionIgnored',
+                    'RemediationQueued',
+                    'DeletionStarted', 'DeletionCompleted', 'DeletionFailed',
+                    'SearchStarted', 'SearchCompleted', 'SearchFailed', 'SearchExhausted',
+                    'FileDetected',
+                    'VerificationStarted', 'VerificationSuccess', 'VerificationFailed',
+                    'DownloadTimeout', 'DownloadProgress', 'DownloadFailed',
+                    'ImportBlocked', 'ManuallyRemoved', 'DownloadIgnored',
+                    'RetryScheduled', 'MaxRetriesReached',
+                    'StuckRemediation',
+                    'NotificationSent', 'NotificationFailed'
+                ];
+                if (corruptionEvents.includes(eventType)) {
                     queryClient.invalidateQueries({ queryKey: ['corruptions'] });
                     queryClient.invalidateQueries({ queryKey: ['dashboardStats'] });
                 }

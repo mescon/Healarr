@@ -23,14 +23,14 @@ export function formatCorruptionType(type: string): string {
  * Color scheme based on parent status:
  * - Pending (amber): CorruptionDetected
  * - In Progress (blue): RemediationQueued, DeletionStarted, DeletionCompleted, SearchStarted, SearchCompleted, FileDetected, VerificationStarted
- * - Resolved (green/emerald): VerificationSuccess, HealthCheckPassed
+ * - Resolved (green/emerald): VerificationSuccess
  * - Failed/Retrying (orange): *Failed states (temporary)
  * - Max Retries (red): MaxRetriesReached (permanent failure)
  * - Ignored (slate/gray): CorruptionIgnored
  */
 export function formatCorruptionState(state: string): { label: string; colorClass: string } {
     // Resolved states (emerald/green)
-    if (state === 'VerificationSuccess' || state === 'HealthCheckPassed') {
+    if (state === 'VerificationSuccess') {
         return { label: 'Resolved', colorClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' };
     }
     
@@ -137,7 +137,7 @@ export function getEventColorClass(eventType: string): string {
     }
     
     // Resolved status events (emerald/green)
-    if (eventType === 'VerificationSuccess' || eventType === 'HealthCheckPassed') {
+    if (eventType === 'VerificationSuccess') {
         return 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400';
     }
     
@@ -211,7 +211,6 @@ export function getEventDescription(eventType: string, data?: Record<string, unk
         'VerificationStarted': 'Verifying replacement file',
         'VerificationSuccess': 'Verification passed - resolved',
         'VerificationFailed': 'Replacement file also corrupt',
-        'HealthCheckPassed': 'Health check passed - resolved',
         'MaxRetriesReached': 'Maximum retries exhausted',
         'RetryScheduled': 'Retry scheduled',
         'DownloadTimeout': 'Download timed out',

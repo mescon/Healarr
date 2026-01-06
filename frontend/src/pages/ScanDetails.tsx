@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, FileCheck, FileX, Loader2, Filter, HardDrive, Clock, FolderOpen, AlertCircle, X, RefreshCw, ClockArrowDown, ExternalLink } from 'lucide-react';
+import { ArrowLeft, FileCheck, FileX, Loader2, Filter, HardDrive, Clock, FolderOpen, AlertCircle, X, RefreshCw, ClockArrowDown, ExternalLink, Radio } from 'lucide-react';
 import clsx from 'clsx';
-import { getScanDetails, getScanFiles, cancelScan, rescanPath, type ScanFile } from '../lib/api';
+import { getScanDetails, getScanFiles, cancelScan, rescanPath, type ScanFile, type ScanProgress } from '../lib/api';
 import DataGrid from '../components/ui/DataGrid';
 import { useDateFormat } from '../lib/useDateFormat';
 import { useToast } from '../contexts/ToastContext';
+import { useWebSocket } from '../contexts/WebSocketProvider';
 
 const formatFileSize = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -22,10 +23,13 @@ const ScanDetails = () => {
     const [page, setPage] = useState(1);
     const [statusFilter, setStatusFilter] = useState<string>('all');
     const [isActionLoading, setIsActionLoading] = useState(false);
+    const [currentFile, setCurrentFile] = useState<string | null>(null);
+    const [scanProgress, setScanProgress] = useState<{ filesDone: number; totalFiles: number } | null>(null);
     const limit = 50;
     const { formatCompact, formatTime } = useDateFormat();
     const toast = useToast();
     const queryClient = useQueryClient();
+    const { lastMessage } = useWebSocket();
 
     const scanId = parseInt(id || '0', 10);
 
@@ -39,11 +43,38 @@ const ScanDetails = () => {
         },
     });
 
+    const isRunning = scanDetails?.status === 'running';
+
     const { data: filesData, isLoading: isLoadingFiles } = useQuery({
         queryKey: ['scan-files', scanId, page, statusFilter],
         queryFn: () => getScanFiles(scanId, page, limit, statusFilter),
         enabled: scanId > 0,
+        // Auto-refresh files table every 3s when scan is running
+        refetchInterval: isRunning ? 3000 : false,
     });
+
+    // Listen for WebSocket ScanProgress events to show current file
+    useEffect(() => {
+        if (!lastMessage || !isRunning) return;
+
+        if (lastMessage && typeof lastMessage === 'object' && 'type' in lastMessage) {
+            const msg = lastMessage as { type: string; data: ScanProgress };
+            if (msg.type === 'ScanProgress' && msg.data.scan_db_id === scanId) {
+                setCurrentFile(msg.data.current_file);
+                setScanProgress({
+                    filesDone: msg.data.files_done,
+                    totalFiles: msg.data.total_files,
+                });
+            } else if (msg.type === 'ScanCompleted') {
+                // Clear current file indicator when scan completes
+                setCurrentFile(null);
+                setScanProgress(null);
+                // Refresh data
+                queryClient.invalidateQueries({ queryKey: ['scan-details', scanId] });
+                queryClient.invalidateQueries({ queryKey: ['scan-files', scanId] });
+            }
+        }
+    }, [lastMessage, scanId, isRunning, queryClient]);
 
     const handleCancel = async () => {
         setIsActionLoading(true);
@@ -87,6 +118,11 @@ const ScanDetails = () => {
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30">
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         Running
+                        {scanProgress && (
+                            <span className="ml-1 text-blue-300">
+                                ({scanProgress.filesDone}/{scanProgress.totalFiles})
+                            </span>
+                        )}
                     </span>
                 );
             case 'cancelled':
@@ -307,6 +343,38 @@ const ScanDetails = () => {
                 </div>
             </div>
 
+            {/* Currently Scanning Progress (only shown when scan is running) */}
+            {isRunning && currentFile && (
+                <div className="rounded-xl border border-blue-500/30 bg-blue-500/5 dark:bg-blue-500/10 p-4">
+                    <div className="flex items-start gap-3">
+                        <div className="p-2 rounded-lg bg-blue-500/20 border border-blue-500/30">
+                            <Radio className="w-5 h-5 text-blue-400 animate-pulse" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between mb-2">
+                                <h3 className="text-sm font-medium text-blue-400">Currently Scanning</h3>
+                                {scanProgress && (
+                                    <span className="text-xs text-blue-300">
+                                        {Math.round((scanProgress.filesDone / Math.max(scanProgress.totalFiles, 1)) * 100)}%
+                                    </span>
+                                )}
+                            </div>
+                            {scanProgress && (
+                                <div className="h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden mb-2">
+                                    <div
+                                        className="h-full bg-blue-500 transition-all duration-300"
+                                        style={{ width: `${(scanProgress.filesDone / Math.max(scanProgress.totalFiles, 1)) * 100}%` }}
+                                    />
+                                </div>
+                            )}
+                            <p className="text-xs text-slate-600 dark:text-slate-400 truncate font-mono" title={currentFile}>
+                                {currentFile}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Files Table */}
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 overflow-hidden">
                 <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
@@ -333,12 +401,18 @@ const ScanDetails = () => {
                 {!hasFileData ? (
                     <div className="p-8 text-center">
                         <div className="inline-flex p-4 rounded-full bg-slate-100 dark:bg-slate-800/50 mb-4">
-                            <HardDrive className="w-8 h-8 text-slate-500" />
+                            {isRunning ? (
+                                <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+                            ) : (
+                                <HardDrive className="w-8 h-8 text-slate-500" />
+                            )}
                         </div>
-                        <h3 className="text-lg font-medium text-slate-900 dark:text-white mb-2">No File Data Available</h3>
+                        <h3 className="text-lg font-medium text-slate-900 dark:text-white mb-2">
+                            {isRunning ? 'Scan In Progress' : 'No File Data Available'}
+                        </h3>
                         <p className="text-slate-600 dark:text-slate-400 max-w-md mx-auto">
-                            {scanDetails.status === 'running'
-                                ? 'This scan is currently in progress. File data will appear once the scan completes.'
+                            {isRunning
+                                ? 'Files will appear here as they are scanned. The table updates automatically.'
                                 : 'This scan was run before file-level tracking was enabled. Future scans will show individual file results here.'}
                         </p>
                     </div>

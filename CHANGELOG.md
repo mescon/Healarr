@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.16] - 2026-01-06
+
+### Added
+- **Real-time scan progress on ScanDetails page**: View live progress when watching a running scan
+  - Progress bar showing percentage complete with file count
+  - "Currently Scanning" indicator with live file path
+  - Files table auto-refreshes every 3 seconds during scan
+  - WebSocket-powered updates for instant feedback
+- **Scan progress in status badge**: Running scans now show `(X/Y)` file count in the status badge
+
+### Fixed
+- **WebSocket event handling**: Fixed critical bug where real-time events weren't being processed
+  - Backend sent `{"type": "event", "data": {event_type: "ScanProgress", ...}}`
+  - Frontend expected `{"type": "ScanProgress", ...}` - events were silently dropped
+  - Added transformation layer in WebSocketProvider to normalize message format
+  - Dashboard "Active Scans" table now updates in real-time as expected
+- **WebSocket event subscription**: Backend now broadcasts all corruption lifecycle events
+  - Previously only 9 event types were broadcast; now includes all 30 relevant events
+  - Added missing `FileDetected`, `NotificationSent`, `NotificationFailed` subscriptions
+  - Fixes: file detection, verification, search completion, notifications not updating UI
+- **Frontend query invalidation**: Fixed incorrect event names and added missing events
+  - Removed non-existent `RemediationStarted`/`RemediationCompleted` event checks
+  - Removed dead `HealthCheckPassed` code (event type doesn't exist in backend)
+  - Added all corruption lifecycle events including `FileDetected` and notification events
+  - Corruption list now auto-refreshes when any remediation state changes
+- **Scan progress emission frequency**: Progress now emitted after every file (was every 10 files)
+  - UI updates in real-time instead of 10-50 second intervals
+  - Database saves remain every 10 files to minimize I/O overhead
+- **Missing scan_db_id in WebSocket events**: Progress events now include database ID for navigation
+
+### Changed
+- Event type names now use PascalCase consistently (`ScanStarted`, `CorruptionDetected`)
+- WebSocket events include `_raw` field for debugging original event data
+
 ## [1.1.15] - 2026-01-05
 
 ### Added

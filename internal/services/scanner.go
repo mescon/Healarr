@@ -1080,9 +1080,11 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 		progress.FilesDone = i + 1
 		progress.CurrentFile = filePath
 
-		// Emit progress and save state periodically (every 10 files)
+		// Emit progress via WebSocket after every file for real-time UI updates
+		s.emitProgress(progress)
+
+		// Save state to database periodically (every 10 files) to avoid excessive I/O
 		if i%10 == 0 || i == len(files)-1 {
-			s.emitProgress(progress)
 			if scanDBID > 0 {
 				progressCtx, progressCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 				if _, err := s.db.ExecContext(progressCtx, `UPDATE scans SET current_file_index = ?, files_scanned = ? WHERE id = ?`, i, progress.FilesDone, scanDBID); err != nil {
@@ -1164,6 +1166,7 @@ func (s *ScannerService) emitProgress(p *ScanProgress) {
 			"current_file": p.CurrentFile,
 			"status":       p.Status,
 			"start_time":   p.StartTime,
+			"scan_db_id":   p.ScanDBID, // Database ID for frontend navigation
 		},
 	}); err != nil {
 		logger.Debugf("Failed to emit scan progress: %v", err)
