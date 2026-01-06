@@ -21,7 +21,7 @@ jobs:
           go-version: '1.25'
 
       - name: Run tests with coverage
-        run: go test -coverprofile=coverage.out ./...
+        run: go test -coverprofile=coverage.txt ./...
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@master

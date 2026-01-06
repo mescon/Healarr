@@ -24,14 +24,12 @@ jobs:
       - name: Run tests with coverage
         # Note: -race disabled due to pre-existing race conditions in test harness
         # TODO: Fix race conditions in handlers_config_test.go, handlers_scans_test.go, handlers_webhook_test.go
-        run: go test -coverprofile=coverage.out -covermode=atomic ./...
+        run: go test -coverprofile=coverage.txt -covermode=atomic ./...
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
         with:
-          files: ./coverage.out
-          flags: backend
-          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   lint-backend:
     name: Lint Backend (Go)
