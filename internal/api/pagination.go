@@ -127,3 +127,27 @@ func itoa(n int) string {
 	}
 	return string(digits)
 }
+
+// SafeOrderByClause returns a SQL ORDER BY clause with validated column and direction.
+// This function enforces validation at the point of use, making it clear to static
+// analysis tools that the returned string is safe for SQL interpolation.
+// The allowedColumns map contains the ONLY columns that can be used in the ORDER BY.
+// If sortBy is not in allowedColumns, defaultColumn is used.
+// If sortOrder is not "asc" or "desc", defaultOrder is used.
+//
+//nolint:gosec // False positive: values are validated against allowlist before interpolation
+func SafeOrderByClause(sortBy, sortOrder string, allowedColumns map[string]string, defaultColumn, defaultOrder string) string {
+	// Validate column against allowlist - use the mapped DB column name
+	dbColumn, ok := allowedColumns[sortBy]
+	if !ok {
+		dbColumn = defaultColumn
+	}
+
+	// Validate order direction (only "asc" or "desc" allowed)
+	order := strings.ToUpper(sortOrder)
+	if order != "ASC" && order != "DESC" {
+		order = strings.ToUpper(defaultOrder)
+	}
+
+	return "ORDER BY " + dbColumn + " " + order
+}

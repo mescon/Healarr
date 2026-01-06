@@ -7,6 +7,12 @@ import (
 	"strings"
 )
 
+// Protocol prefix constants for URL normalization
+const (
+	httpsPrefix = "https://"
+	httpPrefix  = "http://"
+)
+
 // URLBuilder defines the interface for provider-specific URL building
 type URLBuilder interface {
 	BuildURL(config json.RawMessage) (string, error)
@@ -15,8 +21,8 @@ type URLBuilder interface {
 // normalizeAPIURL strips protocol prefix and trailing slash from a URL for use in shoutrrr URLs
 func normalizeAPIURL(rawURL string) string {
 	rawURL = strings.TrimSuffix(rawURL, "/")
-	rawURL = strings.TrimPrefix(rawURL, "https://")
-	rawURL = strings.TrimPrefix(rawURL, "http://")
+	rawURL = strings.TrimPrefix(rawURL, httpsPrefix)
+	rawURL = strings.TrimPrefix(rawURL, httpPrefix)
 	return rawURL
 }
 
@@ -133,8 +139,8 @@ func (b *gotifyBuilder) BuildURL(config json.RawMessage) (string, error) {
 	if err := json.Unmarshal(config, &c); err != nil {
 		return "", err
 	}
-	serverURL := strings.TrimPrefix(c.ServerURL, "https://")
-	serverURL = strings.TrimPrefix(serverURL, "http://")
+	serverURL := strings.TrimPrefix(c.ServerURL, httpsPrefix)
+	serverURL = strings.TrimPrefix(serverURL, httpPrefix)
 	u := fmt.Sprintf("gotify://%s/%s", serverURL, c.AppToken)
 	if c.Priority > 0 {
 		u += fmt.Sprintf("?priority=%d", c.Priority)
@@ -152,10 +158,10 @@ func (b *ntfyBuilder) BuildURL(config json.RawMessage) (string, error) {
 	}
 	serverURL := c.ServerURL
 	if serverURL == "" {
-		serverURL = "https://ntfy.sh"
+		serverURL = httpsPrefix + "ntfy.sh"
 	}
-	serverURL = strings.TrimPrefix(serverURL, "https://")
-	serverURL = strings.TrimPrefix(serverURL, "http://")
+	serverURL = strings.TrimPrefix(serverURL, httpsPrefix)
+	serverURL = strings.TrimPrefix(serverURL, httpPrefix)
 	u := fmt.Sprintf("ntfy://%s/%s", serverURL, c.Topic)
 	if c.Priority > 0 {
 		u += fmt.Sprintf("?priority=%d", c.Priority)
@@ -173,11 +179,11 @@ func (b *whatsAppBuilder) BuildURL(config json.RawMessage) (string, error) {
 	}
 	apiURL := c.APIURL
 	if apiURL == "" {
-		apiURL = "https://api.callmebot.com/whatsapp.php"
+		apiURL = httpsPrefix + "api.callmebot.com/whatsapp.php"
 	}
-	apiURL = strings.TrimPrefix(apiURL, "https://")
-	apiURL = strings.TrimPrefix(apiURL, "http://")
-	return fmt.Sprintf("generic+https://%s?phone=%s&apikey=%s", apiURL, url.QueryEscape(c.Phone), url.QueryEscape(c.APIKey)), nil
+	apiURL = strings.TrimPrefix(apiURL, httpsPrefix)
+	apiURL = strings.TrimPrefix(apiURL, httpPrefix)
+	return fmt.Sprintf("generic+%s%s?phone=%s&apikey=%s", httpsPrefix, apiURL, url.QueryEscape(c.Phone), url.QueryEscape(c.APIKey)), nil
 }
 
 // signalBuilder builds Signal shoutrrr URLs
@@ -192,7 +198,7 @@ func (b *signalBuilder) BuildURL(config json.RawMessage) (string, error) {
 		return "", fmt.Errorf("signal API URL is required (format: http://hostname:port)")
 	}
 	apiURL := normalizeAPIURL(c.APIURL)
-	return fmt.Sprintf("generic+http://%s/v2/send?number=%s&recipients=%s", apiURL, url.QueryEscape(c.Number), url.QueryEscape(c.Recipient)), nil
+	return fmt.Sprintf("generic+%s%s/v2/send?number=%s&recipients=%s", httpPrefix, apiURL, url.QueryEscape(c.Number), url.QueryEscape(c.Recipient)), nil
 }
 
 // barkBuilder builds Bark shoutrrr URLs
@@ -276,8 +282,8 @@ func (b *matrixBuilder) BuildURL(config json.RawMessage) (string, error) {
 	if err := json.Unmarshal(config, &c); err != nil {
 		return "", err
 	}
-	host := strings.TrimPrefix(c.HomeServer, "https://")
-	host = strings.TrimPrefix(host, "http://")
+	host := strings.TrimPrefix(c.HomeServer, httpsPrefix)
+	host = strings.TrimPrefix(host, httpPrefix)
 	result := fmt.Sprintf("matrix://%s:%s@%s", url.QueryEscape(c.User), url.QueryEscape(c.Password), host)
 	if c.Rooms != "" {
 		result += "/?rooms=" + url.QueryEscape(c.Rooms)
@@ -351,8 +357,8 @@ func (b *zulipBuilder) BuildURL(config json.RawMessage) (string, error) {
 	if err := json.Unmarshal(config, &c); err != nil {
 		return "", err
 	}
-	host := strings.TrimPrefix(c.Host, "https://")
-	host = strings.TrimPrefix(host, "http://")
+	host := strings.TrimPrefix(c.Host, httpsPrefix)
+	host = strings.TrimPrefix(host, httpPrefix)
 	return fmt.Sprintf("zulip://%s:%s@%s/?stream=%s&topic=%s",
 		url.QueryEscape(c.BotEmail), url.QueryEscape(c.BotKey), host,
 		url.QueryEscape(c.Stream), url.QueryEscape(c.Topic)), nil
@@ -368,7 +374,7 @@ func (b *genericBuilder) BuildURL(config json.RawMessage) (string, error) {
 	}
 	targetURL := c.WebhookURL
 	if !strings.HasPrefix(targetURL, "http") {
-		targetURL = "https://" + targetURL
+		targetURL = httpsPrefix + targetURL
 	}
 
 	params := url.Values{}

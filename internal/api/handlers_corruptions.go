@@ -96,13 +96,17 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	}
 
 	// Get paginated data with filter and sort
-	// Map frontend sort keys to DB columns
-	dbSortField := p.SortBy
-	if p.SortBy == "state" {
-		dbSortField = "current_state"
+	// Map frontend sort keys to DB columns (key = API param, value = DB column)
+	allowedSortColumns := map[string]string{
+		"detected_at":     "detected_at",
+		"last_updated_at": "last_updated_at",
+		"file_path":       "file_path",
+		"state":           "current_state",
+		"corruption_type": "corruption_type",
 	}
+	orderByClause := SafeOrderByClause(p.SortBy, p.SortOrder, allowedSortColumns, "last_updated_at", "desc")
 
-	query := fmt.Sprintf("SELECT corruption_id, current_state, retry_count, file_path, path_id, last_error, detected_at, last_updated_at, corruption_type %s%s ORDER BY %s %s LIMIT ? OFFSET ?", baseQuery, whereClause, dbSortField, strings.ToUpper(p.SortOrder))
+	query := fmt.Sprintf("SELECT corruption_id, current_state, retry_count, file_path, path_id, last_error, detected_at, last_updated_at, corruption_type %s%s %s LIMIT ? OFFSET ?", baseQuery, whereClause, orderByClause)
 	args = append(args, p.Limit, p.Offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)

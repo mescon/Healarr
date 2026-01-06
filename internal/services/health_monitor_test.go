@@ -25,23 +25,23 @@ type mockHealthArrClient struct {
 }
 
 // Media operations
-func (m *mockHealthArrClient) FindMediaByPath(path string) (int64, error) {
+func (m *mockHealthArrClient) FindMediaByPath(_ string) (int64, error) {
 	return 0, nil
 }
 
-func (m *mockHealthArrClient) DeleteFile(mediaID int64, path string) (map[string]interface{}, error) {
+func (m *mockHealthArrClient) DeleteFile(_ int64, _ string) (map[string]interface{}, error) {
 	return nil, nil
 }
 
-func (m *mockHealthArrClient) GetFilePath(mediaID int64, metadata map[string]interface{}, referencePath string) (string, error) {
+func (m *mockHealthArrClient) GetFilePath(_ int64, _ map[string]interface{}, _ string) (string, error) {
 	return "", nil
 }
 
-func (m *mockHealthArrClient) GetAllFilePaths(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+func (m *mockHealthArrClient) GetAllFilePaths(_ int64, _ map[string]interface{}, _ string) ([]string, error) {
 	return nil, nil
 }
 
-func (m *mockHealthArrClient) TriggerSearch(mediaID int64, path string, episodeIDs []int64) error {
+func (m *mockHealthArrClient) TriggerSearch(_ int64, _ string, _ []int64) error {
 	return nil
 }
 
@@ -62,7 +62,7 @@ func (m *mockHealthArrClient) GetInstanceByID(id int64) (*integration.ArrInstanc
 	return nil, nil
 }
 
-func (m *mockHealthArrClient) CheckInstanceHealth(instanceID int64) error {
+func (m *mockHealthArrClient) CheckInstanceHealth(_ int64) error {
 	if m.healthCheckErr != nil {
 		return m.healthCheckErr
 	}
@@ -70,36 +70,36 @@ func (m *mockHealthArrClient) CheckInstanceHealth(instanceID int64) error {
 }
 
 // Queue monitoring
-func (m *mockHealthArrClient) GetQueueForPath(arrPath string) ([]integration.QueueItemInfo, error) {
+func (m *mockHealthArrClient) GetQueueForPath(_ string) ([]integration.QueueItemInfo, error) {
 	if m.queueErr != nil {
 		return nil, m.queueErr
 	}
 	return m.queueItems, nil
 }
 
-func (m *mockHealthArrClient) FindQueueItemsByMediaIDForPath(arrPath string, mediaID int64) ([]integration.QueueItemInfo, error) {
+func (m *mockHealthArrClient) FindQueueItemsByMediaIDForPath(_ string, _ int64) ([]integration.QueueItemInfo, error) {
 	return nil, nil
 }
 
-func (m *mockHealthArrClient) GetDownloadStatusForPath(arrPath string, downloadID string) (status string, progress float64, errMsg string, err error) {
+func (m *mockHealthArrClient) GetDownloadStatusForPath(_ string, _ string) (status string, progress float64, errMsg string, err error) {
 	return "", 0, "", nil
 }
 
 // History
-func (m *mockHealthArrClient) GetRecentHistoryForMediaByPath(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+func (m *mockHealthArrClient) GetRecentHistoryForMediaByPath(_ string, _ int64, _ int) ([]integration.HistoryItemInfo, error) {
 	return nil, nil
 }
 
 // Queue management
-func (m *mockHealthArrClient) RemoveFromQueueByPath(arrPath string, queueID int64, removeFromClient, blocklist bool) error {
+func (m *mockHealthArrClient) RemoveFromQueueByPath(_ string, _ int64, _, _ bool) error {
 	return nil
 }
 
-func (m *mockHealthArrClient) RefreshMonitoredDownloadsByPath(arrPath string) error {
+func (m *mockHealthArrClient) RefreshMonitoredDownloadsByPath(_ string) error {
 	return nil
 }
 
-func (m *mockHealthArrClient) GetMediaDetails(mediaID int64, arrPath string) (*integration.MediaDetails, error) {
+func (m *mockHealthArrClient) GetMediaDetails(_ int64, _ string) (*integration.MediaDetails, error) {
 	return nil, nil
 }
 
