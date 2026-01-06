@@ -106,6 +106,169 @@ func (v *VerifierService) clearVerifyMeta(corruptionID string) {
 	v.verifyMetaMu.Unlock()
 }
 
+// queueAction represents the result of processing a queue item.
+type queueAction int
+
+const (
+	queueActionContinue queueAction = iota // Continue monitoring
+	queueActionStop                        // Stop monitoring (terminal state)
+)
+
+// handleQueueItemFailed handles failed/failedPending download states.
+func (v *VerifierService) handleQueueItemFailed(corruptionID string, item integration.QueueItemInfo) queueAction {
+	if item.TrackedDownloadState != "failed" && item.TrackedDownloadState != "failedPending" {
+		return queueActionContinue
+	}
+
+	logger.Infof("[WARN] Download failed for %s: %s", corruptionID, item.ErrorMessage)
+	if err := v.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DownloadFailed,
+		EventData: map[string]interface{}{
+			"error":       item.ErrorMessage,
+			"status":      item.TrackedDownloadStatus,
+			"queue_id":    item.ID,
+			"download_id": item.DownloadID,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish DownloadFailed event: %v", err)
+	}
+	return queueActionStop
+}
+
+// handleQueueItemBlocked handles importBlocked state.
+func (v *VerifierService) handleQueueItemBlocked(corruptionID, filePath string, item integration.QueueItemInfo) {
+	if item.TrackedDownloadState != "importBlocked" {
+		// Clear tracked state if we transitioned FROM importBlocked
+		if v.getLastState(corruptionID) == "importBlocked" {
+			v.clearLastState(corruptionID)
+		}
+		return
+	}
+
+	// Only emit event on state change to prevent spam
+	if v.getLastState(corruptionID) == "importBlocked" {
+		return
+	}
+
+	v.setLastState(corruptionID, "importBlocked")
+
+	errMsg := item.ErrorMessage
+	if len(item.StatusMessages) > 0 {
+		errMsg = strings.Join(item.StatusMessages, "; ")
+	}
+
+	logger.Warnf("Import blocked for %s (%s): %s - requires manual intervention in *arr", item.Title, filePath, errMsg)
+	if err := v.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.ImportBlocked,
+		EventData: map[string]interface{}{
+			"error":           errMsg,
+			"status":          item.TrackedDownloadStatus,
+			"state":           item.TrackedDownloadState,
+			"queue_id":        item.ID,
+			"download_id":     item.DownloadID,
+			"title":           item.Title,
+			"status_messages": item.StatusMessages,
+			"requires_manual": true,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish ImportBlocked event: %v", err)
+	}
+}
+
+// handleQueueItemIgnored handles user-ignored downloads.
+func (v *VerifierService) handleQueueItemIgnored(corruptionID string, item integration.QueueItemInfo) queueAction {
+	if item.TrackedDownloadState != "ignored" {
+		return queueActionContinue
+	}
+
+	logger.Warnf("Download ignored by user in *arr for %s: %s", corruptionID, item.Title)
+	if err := v.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DownloadIgnored,
+		EventData: map[string]interface{}{
+			"reason":          "User ignored download in *arr",
+			"queue_id":        item.ID,
+			"download_id":     item.DownloadID,
+			"title":           item.Title,
+			"requires_manual": true,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish DownloadIgnored event: %v", err)
+	}
+	return queueActionStop
+}
+
+// getQueueItemStatus returns the current status string and any warning message.
+func getQueueItemStatus(item integration.QueueItemInfo) (string, string) {
+	currentStatus := item.TrackedDownloadState
+
+	if item.TrackedDownloadStatus != "warning" && item.TrackedDownloadStatus != "error" {
+		return currentStatus, ""
+	}
+
+	errMsg := item.ErrorMessage
+	if len(item.StatusMessages) > 0 {
+		errMsg = strings.Join(item.StatusMessages, "; ")
+	}
+
+	return item.TrackedDownloadStatus + ":" + item.TrackedDownloadState, errMsg
+}
+
+// buildProgressEventData creates the event data map for a DownloadProgress event.
+func buildProgressEventData(item integration.QueueItemInfo, currentStatus, warningMsg string) map[string]interface{} {
+	eventData := map[string]interface{}{
+		"status":               currentStatus,
+		"progress":             item.Progress,
+		"time_left":            item.TimeLeft,
+		"download_id":          item.DownloadID,
+		"title":                item.Title,
+		"protocol":             item.Protocol,
+		"download_client":      item.DownloadClient,
+		"indexer":              item.Indexer,
+		"size_bytes":           item.Size,
+		"size_remaining_bytes": item.SizeLeft,
+		"estimated_completion": item.EstimatedCompletion,
+		"added_at":             item.AddedAt,
+	}
+
+	if warningMsg != "" {
+		eventData["warning"] = true
+		eventData["warning_message"] = warningMsg
+	}
+
+	return eventData
+}
+
+// enrichVerificationEventData adds metadata fields to the event data map.
+func enrichVerificationEventData(eventData map[string]interface{}, meta *VerificationMeta) {
+	if meta == nil {
+		return
+	}
+	if meta.NewFilePath != "" {
+		eventData["new_file_path"] = meta.NewFilePath
+	}
+	if meta.NewFileSize > 0 {
+		eventData["new_file_size"] = meta.NewFileSize
+	}
+	if meta.Quality != "" {
+		eventData["quality"] = meta.Quality
+	}
+	if meta.ReleaseGroup != "" {
+		eventData["release_group"] = meta.ReleaseGroup
+	}
+	if meta.Indexer != "" {
+		eventData["indexer"] = meta.Indexer
+	}
+	if meta.DownloadClient != "" {
+		eventData["download_client"] = meta.DownloadClient
+	}
+}
+
 // getDurationMetrics calculates how long the remediation took.
 // Returns: (total_duration_seconds, download_duration_seconds)
 // total_duration = CorruptionDetected → now
@@ -270,136 +433,33 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 			// Found in queue - track progress
 			wasInQueue = true
 			item := queueItems[0] // Use first matching item
-			currentStatus := item.TrackedDownloadState
 
-			// Check for failure states
-			if item.TrackedDownloadState == "failed" || item.TrackedDownloadState == "failedPending" {
-				logger.Infof("[WARN] Download failed for %s: %s", corruptionID, item.ErrorMessage)
-				if err := v.eventBus.Publish(domain.Event{
-					AggregateID:   corruptionID,
-					AggregateType: "corruption",
-					EventType:     domain.DownloadFailed,
-					EventData: map[string]interface{}{
-						"error":       item.ErrorMessage,
-						"status":      item.TrackedDownloadStatus,
-						"queue_id":    item.ID,
-						"download_id": item.DownloadID,
-					},
-				}); err != nil {
-					logger.Errorf("Failed to publish DownloadFailed event: %v", err)
-				}
+			// Handle terminal states using helper functions
+			if v.handleQueueItemFailed(corruptionID, item) == queueActionStop {
+				return
+			}
+			if v.handleQueueItemIgnored(corruptionID, item) == queueActionStop {
 				return
 			}
 
-			// Check for importBlocked state - this requires manual intervention in *arr
-			// Common causes: file already exists, disk full, permissions, corrupt download
-			if item.TrackedDownloadState == "importBlocked" {
-				// Only emit event on state change to prevent spam (was 289 events for single corruption)
-				if v.getLastState(corruptionID) != "importBlocked" {
-					v.setLastState(corruptionID, "importBlocked")
+			// Handle importBlocked state (non-terminal, requires manual intervention)
+			v.handleQueueItemBlocked(corruptionID, filePath, item)
 
-					errMsg := item.ErrorMessage
-					if len(item.StatusMessages) > 0 {
-						errMsg = strings.Join(item.StatusMessages, "; ")
-					}
-
-					logger.Warnf("Import blocked for %s (%s): %s - requires manual intervention in *arr", item.Title, filePath, errMsg)
-					if err := v.eventBus.Publish(domain.Event{
-						AggregateID:   corruptionID,
-						AggregateType: "corruption",
-						EventType:     domain.ImportBlocked,
-						EventData: map[string]interface{}{
-							"error":           errMsg,
-							"status":          item.TrackedDownloadStatus,
-							"state":           item.TrackedDownloadState,
-							"queue_id":        item.ID,
-							"download_id":     item.DownloadID,
-							"title":           item.Title,
-							"status_messages": item.StatusMessages,
-							"requires_manual": true,
-						},
-					}); err != nil {
-						logger.Errorf("Failed to publish ImportBlocked event: %v", err)
-					}
-				}
-				// Continue monitoring - user might fix the issue in *arr
-			} else if v.getLastState(corruptionID) == "importBlocked" {
-				// State changed FROM importBlocked to something else - clear tracked state
-				v.clearLastState(corruptionID)
-			}
-
-			// Check for ignored state - user explicitly ignored this download in *arr
-			// This is a terminal state - stop monitoring and notify
-			if item.TrackedDownloadState == "ignored" {
-				logger.Warnf("Download ignored by user in *arr for %s: %s", corruptionID, item.Title)
-				if err := v.eventBus.Publish(domain.Event{
-					AggregateID:   corruptionID,
-					AggregateType: "corruption",
-					EventType:     domain.DownloadIgnored,
-					EventData: map[string]interface{}{
-						"reason":          "User ignored download in *arr",
-						"queue_id":        item.ID,
-						"download_id":     item.DownloadID,
-						"title":           item.Title,
-						"requires_manual": true,
-					},
-				}); err != nil {
-					logger.Errorf("Failed to publish DownloadIgnored event: %v", err)
-				}
-				return // Stop monitoring - user made deliberate choice
-			}
-
-			// Check for warning/error status (stalled downloads, import issues, etc.)
-			// These indicate problems that may not resolve on their own
-			if item.TrackedDownloadStatus == "warning" || item.TrackedDownloadStatus == "error" {
-				// Build error message from status messages
-				errMsg := item.ErrorMessage
-				if len(item.StatusMessages) > 0 {
-					errMsg = strings.Join(item.StatusMessages, "; ")
-				}
-
-				// Log warning but continue monitoring - stalled downloads may recover
+			// Get current status and any warning message
+			currentStatus, warningMsg := getQueueItemStatus(item)
+			if warningMsg != "" {
 				logger.Infof("[WARN] Download has issues for %s: status=%s, state=%s, message=%s",
-					corruptionID, item.TrackedDownloadStatus, item.TrackedDownloadState, errMsg)
-
-				// Include warning info in progress status
-				currentStatus = item.TrackedDownloadStatus + ":" + item.TrackedDownloadState
+					corruptionID, item.TrackedDownloadStatus, item.TrackedDownloadState, warningMsg)
 			}
 
-			// Log progress changes
+			// Log and emit progress changes
 			if currentStatus != lastStatus || int(item.Progress) != int(lastProgress) {
 				logger.Infof("Download progress for %s: %s (%.1f%%) - %s",
 					corruptionID, currentStatus, item.Progress, item.TimeLeft)
 				lastStatus = currentStatus
 				lastProgress = item.Progress
 
-				// Emit progress event for UI updates with enriched data
-				eventData := map[string]interface{}{
-					"status":      currentStatus,
-					"progress":    item.Progress,
-					"time_left":   item.TimeLeft,
-					"download_id": item.DownloadID,
-					"title":       item.Title,
-					// Enriched fields for UI display
-					"protocol":             item.Protocol,       // "usenet" or "torrent"
-					"download_client":      item.DownloadClient, // "SABnzbd", "qBittorrent", etc.
-					"indexer":              item.Indexer,        // "NZBgeek", "1337x", etc.
-					"size_bytes":           item.Size,           // Total size in bytes
-					"size_remaining_bytes": item.SizeLeft,       // Remaining size in bytes
-					"estimated_completion": item.EstimatedCompletion,
-					"added_at":             item.AddedAt,
-				}
-
-				// Add warning info if present
-				if item.TrackedDownloadStatus == "warning" || item.TrackedDownloadStatus == "error" {
-					eventData["warning"] = true
-					if len(item.StatusMessages) > 0 {
-						eventData["warning_message"] = strings.Join(item.StatusMessages, "; ")
-					} else if item.ErrorMessage != "" {
-						eventData["warning_message"] = item.ErrorMessage
-					}
-				}
-
+				eventData := buildProgressEventData(item, currentStatus, warningMsg)
 				if err := v.eventBus.Publish(domain.Event{
 					AggregateID:   corruptionID,
 					AggregateType: "corruption",
@@ -842,27 +902,10 @@ func (v *VerifierService) verifyHealthMultiple(corruptionID string, filePaths []
 			eventData["download_duration_seconds"] = downloadDuration
 		}
 
-		if meta := v.getVerifyMeta(corruptionID); meta != nil {
-			if meta.NewFilePath != "" {
-				eventData["new_file_path"] = meta.NewFilePath
-			}
-			if meta.NewFileSize > 0 {
-				eventData["new_file_size"] = meta.NewFileSize
-			}
-			if meta.Quality != "" {
-				eventData["quality"] = meta.Quality
-			}
-			if meta.ReleaseGroup != "" {
-				eventData["release_group"] = meta.ReleaseGroup
-			}
-			if meta.Indexer != "" {
-				eventData["indexer"] = meta.Indexer
-			}
-			if meta.DownloadClient != "" {
-				eventData["download_client"] = meta.DownloadClient
-			}
-			v.clearVerifyMeta(corruptionID) // Clean up
-		}
+		// Add metadata from verification if available
+		enrichVerificationEventData(eventData, v.getVerifyMeta(corruptionID))
+		v.clearVerifyMeta(corruptionID)
+
 		if err := v.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
