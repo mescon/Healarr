@@ -14,6 +14,9 @@ import (
 // Default "dev" is used for development builds
 var Version = "dev"
 
+// dockerConfigDir is the default config directory path in Docker containers
+const dockerConfigDir = "/config"
+
 // ConfigWarning represents a configuration issue that may cause problems
 type ConfigWarning struct {
 	Type        string `json:"type"`        // Warning type: "relative_path", "template_variable", etc.
@@ -116,8 +119,8 @@ func Load() *Config {
 	dataDir := getEnvOrDefault("HEALARR_DATA_DIR", "")
 	if dataDir == "" {
 		// Check if we're in Docker (has /config directory)
-		if info, err := os.Stat("/config"); err == nil && info.IsDir() {
-			dataDir = "/config"
+		if info, err := os.Stat(dockerConfigDir); err == nil && info.IsDir() {
+			dataDir = dockerConfigDir
 		} else {
 			// Local/bare-metal - use ./config relative to executable or cwd
 			if execPath, err := os.Executable(); err == nil {
@@ -520,8 +523,8 @@ func isDockerEnvironment() bool {
 		return true
 	}
 
-	// Check if /config exists (our Docker default)
-	if info, err := os.Stat("/config"); err == nil && info.IsDir() {
+	// Check if dockerConfigDir exists (our Docker default)
+	if info, err := os.Stat(dockerConfigDir); err == nil && info.IsDir() {
 		return true
 	}
 

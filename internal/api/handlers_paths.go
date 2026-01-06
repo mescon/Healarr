@@ -15,6 +15,8 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
+const errMsgReloadPathMappings = "Failed to reload path mappings: %v"
+
 func (s *RESTServer) getScanPaths(c *gin.Context) {
 	rows, err := s.db.Query("SELECT id, local_path, arr_path, arr_instance_id, enabled, auto_remediate, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours FROM scan_paths")
 	if err != nil {
@@ -187,7 +189,7 @@ func (s *RESTServer) createScanPath(c *gin.Context) {
 		return
 	}
 	if err := s.pathMapper.Reload(); err != nil {
-		logger.Errorf("Failed to reload path mappings: %v", err)
+		logger.Errorf(errMsgReloadPathMappings, err)
 	}
 	c.Status(http.StatusCreated)
 }
@@ -200,7 +202,7 @@ func (s *RESTServer) deleteScanPath(c *gin.Context) {
 		return
 	}
 	if err := s.pathMapper.Reload(); err != nil {
-		logger.Errorf("Failed to reload path mappings: %v", err)
+		logger.Errorf(errMsgReloadPathMappings, err)
 	}
 	c.Status(http.StatusNoContent)
 }
@@ -345,7 +347,7 @@ func (s *RESTServer) updateScanPath(c *gin.Context) {
 		return
 	}
 	if err := s.pathMapper.Reload(); err != nil {
-		logger.Errorf("Failed to reload path mappings: %v", err)
+		logger.Errorf(errMsgReloadPathMappings, err)
 	}
 	c.Status(http.StatusOK)
 }
