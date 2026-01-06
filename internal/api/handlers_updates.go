@@ -163,39 +163,41 @@ func (s *RESTServer) handleCheckUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// isDevVersion returns true if version is "dev" or empty
+func isDevVersion(v string) bool {
+	return v == "dev" || v == ""
+}
+
+// getVersionPart returns the version part at index i, or 0 if out of bounds
+func getVersionPart(parts []int, i int) int {
+	if i < len(parts) {
+		return parts[i]
+	}
+	return 0
+}
+
 // compareVersions compares two semantic versions
 // Returns: -1 if v1 < v2, 0 if equal, 1 if v1 > v2
 func compareVersions(v1, v2 string) int {
+	v1Dev, v2Dev := isDevVersion(v1), isDevVersion(v2)
+
 	// Handle "dev" version - always considered older than any release
-	if v1 == "dev" || v1 == "" {
-		if v2 == "dev" || v2 == "" {
-			return 0
-		}
+	if v1Dev && v2Dev {
+		return 0
+	}
+	if v1Dev {
 		return -1
 	}
-	if v2 == "dev" || v2 == "" {
+	if v2Dev {
 		return 1
 	}
 
-	// Parse version components
-	parts1 := parseVersion(v1)
-	parts2 := parseVersion(v2)
-
-	// Compare each component
-	maxLen := len(parts1)
-	if len(parts2) > maxLen {
-		maxLen = len(parts2)
-	}
+	// Parse and compare version components
+	parts1, parts2 := parseVersion(v1), parseVersion(v2)
+	maxLen := max(len(parts1), len(parts2))
 
 	for i := 0; i < maxLen; i++ {
-		var p1, p2 int
-		if i < len(parts1) {
-			p1 = parts1[i]
-		}
-		if i < len(parts2) {
-			p2 = parts2[i]
-		}
-
+		p1, p2 := getVersionPart(parts1, i), getVersionPart(parts2, i)
 		if p1 < p2 {
 			return -1
 		}
