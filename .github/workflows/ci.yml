@@ -49,6 +49,7 @@ jobs:
         with:
           version: v2.7.2
           args: --timeout=5m
+          only-new-issues: true
 
   test-frontend:
     name: Test Frontend (Node)
