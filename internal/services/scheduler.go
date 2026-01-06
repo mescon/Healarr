@@ -7,8 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mescon/Healarr/internal/logger"
 	"github.com/robfig/cron/v3"
+
+	"github.com/mescon/Healarr/internal/logger"
 )
 
 // dbQueryTimeout is the maximum time to wait for a database query during scheduler operations.

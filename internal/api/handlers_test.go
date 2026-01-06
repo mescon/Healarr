@@ -11,10 +11,11 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	_ "modernc.org/sqlite"
+
 	"github.com/mescon/Healarr/internal/auth"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/eventbus"
-	_ "modernc.org/sqlite"
 )
 
 // setupTestDB creates a temporary database with schema for testing

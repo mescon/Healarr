@@ -12,14 +12,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
+
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/metrics"
 	"github.com/mescon/Healarr/internal/services"
-	"github.com/stretchr/testify/require"
-	_ "modernc.org/sqlite"
 )
 
 // Global metrics service to avoid Prometheus duplicate registration

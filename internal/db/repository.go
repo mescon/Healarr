@@ -11,9 +11,10 @@ import (
 	"strings"
 	"time"
 
+	_ "modernc.org/sqlite"
+
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
-	_ "modernc.org/sqlite"
 )
 
 // MaxRetries is the number of times to retry a database operation on SQLITE_BUSY
