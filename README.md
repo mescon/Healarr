@@ -7,6 +7,7 @@ Healarr monitors your media library for corrupted files and automatically trigge
 ![License](https://img.shields.io/badge/license-GPLv3-blue.svg)
 ![Go Version](https://img.shields.io/badge/go-1.25%2B-00ADD8.svg)
 ![React](https://img.shields.io/badge/react-19-61DAFB.svg)
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/mescon/Healarr?utm_source=oss&utm_medium=github&utm_campaign=mescon%2FHealarr&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
 ## Features
 
