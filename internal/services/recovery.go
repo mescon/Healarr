@@ -152,45 +152,57 @@ func (r *RecoveryService) findStaleItems() ([]staleItem, error) {
 	return items, rows.Err()
 }
 
+// checkArrStatus checks queue and file status in arr for the item.
+// Returns: "skipped" if in queue, "recovered" if file found, "" to continue.
+func (r *RecoveryService) checkArrStatus(item staleItem) string {
+	if item.MediaID <= 0 {
+		return ""
+	}
+
+	// Check if item is still in arr queue
+	if inQueue, err := r.isInArrQueue(item); err != nil {
+		logger.Debugf("Recovery: Failed to check queue for %s: %v", item.FilePath, err)
+	} else if inQueue {
+		logger.Debugf("Recovery: %s is still in arr queue, skipping", item.FilePath)
+		return "skipped"
+	}
+
+	// Check if arr has the file
+	if hasFile, filePath, err := r.checkArrHasFile(item); err != nil {
+		logger.Debugf("Recovery: Failed to check arr file status for %s: %v", item.FilePath, err)
+	} else if hasFile && filePath != "" {
+		logger.Infof("Recovery: %s has file in arr at %s, verifying health", item.FilePath, filePath)
+		return r.verifyAndComplete(item, filePath)
+	}
+
+	return ""
+}
+
+// getLocalPath returns the mapped local path for the item's file path.
+func (r *RecoveryService) getLocalPath(item staleItem) string {
+	if r.pathMapper == nil {
+		return item.FilePath
+	}
+	if mapped, err := r.pathMapper.ToLocalPath(item.FilePath); err == nil && mapped != "" {
+		return mapped
+	}
+	return item.FilePath
+}
+
 // recoverItem attempts to recover a single stale item.
 // Returns "recovered", "exhausted", or "skipped".
 func (r *RecoveryService) recoverItem(item staleItem) string {
 	logger.Debugf("Recovery: Processing %s (state: %s, media_id: %d)", item.FilePath, item.CurrentState, item.MediaID)
 
-	// Step 1: Check if item is still in arr queue
-	if item.MediaID > 0 {
-		inQueue, err := r.isInArrQueue(item)
-		if err != nil {
-			logger.Debugf("Recovery: Failed to check queue for %s: %v", item.FilePath, err)
-		} else if inQueue {
-			logger.Debugf("Recovery: %s is still in arr queue, skipping", item.FilePath)
-			return "skipped"
-		}
-	}
-
-	// Step 2: Check if arr has the file (hasFile: true)
-	if item.MediaID > 0 {
-		hasFile, filePath, err := r.checkArrHasFile(item)
-		if err != nil {
-			logger.Debugf("Recovery: Failed to check arr file status for %s: %v", item.FilePath, err)
-		} else if hasFile && filePath != "" {
-			// File exists in arr - verify it's healthy
-			logger.Infof("Recovery: %s has file in arr at %s, verifying health", item.FilePath, filePath)
-			return r.verifyAndComplete(item, filePath)
-		}
+	// Step 1 & 2: Check arr queue and file status
+	if result := r.checkArrStatus(item); result != "" {
+		return result
 	}
 
 	// Step 3: Check if file exists on disk at original path
-	localPath := item.FilePath
-	if r.pathMapper != nil {
-		if mapped, err := r.pathMapper.ToLocalPath(item.FilePath); err == nil && mapped != "" {
-			localPath = mapped
-		}
-	}
-
+	localPath := r.getLocalPath(item)
 	if r.detector != nil {
-		healthy, _ := r.detector.Check(localPath, "quick")
-		if healthy {
+		if healthy, _ := r.detector.Check(localPath, "quick"); healthy {
 			logger.Infof("Recovery: File exists and is healthy at %s", localPath)
 			return r.emitVerificationSuccess(item, localPath)
 		}
