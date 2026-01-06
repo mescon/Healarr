@@ -435,6 +435,58 @@ func GetWarnings() []ConfigWarning {
 	return configWarnings
 }
 
+// validateDatabasePath checks the database path for common issues.
+func validateDatabasePath(dbPath string, inDocker bool) *ConfigWarning {
+	if dbPath == "" {
+		return nil
+	}
+	if strings.Contains(dbPath, "{") || strings.Contains(dbPath, "}") {
+		return &ConfigWarning{
+			Type:        "template_variable",
+			Field:       "database_path",
+			Message:     "Database path contains unexpanded template variable - data will not persist",
+			Current:     dbPath,
+			Recommended: "/config/healarr.db",
+		}
+	}
+	if inDocker && !filepath.IsAbs(dbPath) {
+		return &ConfigWarning{
+			Type:        "relative_path",
+			Field:       "database_path",
+			Message:     "Database path is relative - in Docker, this resolves inside the container and data will not persist across updates",
+			Current:     dbPath,
+			Recommended: "/config/healarr.db",
+		}
+	}
+	return nil
+}
+
+// validateDataDir checks the data directory for common issues.
+func validateDataDir(dataDir string, inDocker bool) *ConfigWarning {
+	if dataDir == "" || !inDocker {
+		return nil
+	}
+	if strings.Contains(dataDir, "{") || strings.Contains(dataDir, "}") {
+		return &ConfigWarning{
+			Type:        "template_variable",
+			Field:       "data_dir",
+			Message:     "Data directory contains unexpanded template variable - data will not persist",
+			Current:     dataDir,
+			Recommended: dockerConfigDir,
+		}
+	}
+	if !filepath.IsAbs(dataDir) {
+		return &ConfigWarning{
+			Type:        "relative_path",
+			Field:       "data_dir",
+			Message:     "Data directory is relative - in Docker, this resolves inside the container and data will not persist across updates",
+			Current:     dataDir,
+			Recommended: dockerConfigDir,
+		}
+	}
+	return nil
+}
+
 // ValidateAndWarn checks the configuration for potential issues and logs warnings.
 // This should be called after Load() and ApplyFlags(), typically from main.go.
 // Returns the list of warnings for use by the health API.
@@ -445,53 +497,16 @@ func ValidateAndWarn() []ConfigWarning {
 		return nil
 	}
 
-	// Check if we're likely in a Docker environment
 	inDocker := isDockerEnvironment()
 
 	// Check database path for issues
-	dbPath := cfg.DatabasePath
-	if dbPath != "" {
-		// Check for unexpanded template variables (e.g., {data-dir})
-		if strings.Contains(dbPath, "{") || strings.Contains(dbPath, "}") {
-			configWarnings = append(configWarnings, ConfigWarning{
-				Type:        "template_variable",
-				Field:       "database_path",
-				Message:     "Database path contains unexpanded template variable - data will not persist",
-				Current:     dbPath,
-				Recommended: "/config/healarr.db",
-			})
-		} else if inDocker && !filepath.IsAbs(dbPath) {
-			// Relative path in Docker is problematic
-			configWarnings = append(configWarnings, ConfigWarning{
-				Type:        "relative_path",
-				Field:       "database_path",
-				Message:     "Database path is relative - in Docker, this resolves inside the container and data will not persist across updates",
-				Current:     dbPath,
-				Recommended: "/config/healarr.db",
-			})
-		}
+	if warning := validateDatabasePath(cfg.DatabasePath, inDocker); warning != nil {
+		configWarnings = append(configWarnings, *warning)
 	}
 
 	// Check data directory for issues
-	dataDir := cfg.DataDir
-	if dataDir != "" && inDocker {
-		if strings.Contains(dataDir, "{") || strings.Contains(dataDir, "}") {
-			configWarnings = append(configWarnings, ConfigWarning{
-				Type:        "template_variable",
-				Field:       "data_dir",
-				Message:     "Data directory contains unexpanded template variable - data will not persist",
-				Current:     dataDir,
-				Recommended: "/config",
-			})
-		} else if !filepath.IsAbs(dataDir) {
-			configWarnings = append(configWarnings, ConfigWarning{
-				Type:        "relative_path",
-				Field:       "data_dir",
-				Message:     "Data directory is relative - in Docker, this resolves inside the container and data will not persist across updates",
-				Current:     dataDir,
-				Recommended: "/config",
-			})
-		}
+	if warning := validateDataDir(cfg.DataDir, inDocker); warning != nil {
+		configWarnings = append(configWarnings, *warning)
 	}
 
 	// Log warnings prominently
