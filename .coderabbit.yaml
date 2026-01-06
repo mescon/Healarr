@@ -1,0 +1,28 @@
+language: "en"
+reviews:
+  profile: "chill"
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "**/*.go"
+      instructions: |
+        Focus on:
+        - Error handling patterns (rows.Err(), context cancellation)
+        - SQL injection risks in dynamic queries
+        - Proper resource cleanup (defer, context timeouts)
+        - Race conditions in concurrent code
+    - path: "frontend/**/*.tsx"
+      instructions: |
+        Focus on:
+        - React best practices and hooks usage
+        - TypeScript type safety
+        - Accessibility (a11y) issues
+    - path: "**/*_test.go"
+      instructions: |
+        Focus on:
+        - Test coverage for edge cases
+        - Table-driven test patterns
+        - Proper cleanup in tests
+chat:
+  auto_reply: true
