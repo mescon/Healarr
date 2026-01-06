@@ -3,18 +3,25 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	_ "modernc.org/sqlite"
 )
 
+// testDBCounter ensures unique database names across parallel test runs
+var testDBCounter atomic.Int64
+
 // newTestDBForRetry creates an in-memory SQLite database for retry tests.
 // This is a simplified version that doesn't use testutil to avoid import cycles.
+// Each call creates a unique database to avoid test isolation issues in parallel runs.
 func newTestDBForRetry() (*sql.DB, error) {
-	// Use shared cache mode to ensure all connections see the same in-memory database
-	// Without this, each connection gets its own empty database due to connection pooling
-	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
+	// Use a unique database name per test to avoid interference between parallel tests.
+	// The shared cache is still used for connection pooling within each test.
+	dbName := fmt.Sprintf("file:retry_test_%d?mode=memory&cache=shared", testDBCounter.Add(1))
+	db, err := sql.Open("sqlite", dbName)
 	if err != nil {
 		return nil, err
 	}
