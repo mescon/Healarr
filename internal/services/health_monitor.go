@@ -171,6 +171,10 @@ func (h *HealthMonitorService) checkStuckRemediations() {
 		}
 	}
 
+	if err := rows.Err(); err != nil {
+		logger.Errorf("Error iterating stuck remediations: %v", err)
+	}
+
 	if stuckCount > 0 {
 		logger.Warnf("Health monitor: found %d stuck remediations", stuckCount)
 	}
@@ -231,6 +235,10 @@ func (h *HealthMonitorService) checkRepeatedFailures() {
 		}); err != nil {
 			logger.Errorf("Failed to publish SystemHealthDegraded event for repeated failure: %v", err)
 		}
+	}
+
+	if err := rows.Err(); err != nil {
+		logger.Errorf("Error iterating repeated failures: %v", err)
 	}
 }
 
@@ -514,6 +522,10 @@ func (h *HealthMonitorService) syncWithArrState() {
 				}
 			}
 		}
+	}
+
+	if err := rows.Err(); err != nil {
+		logger.Errorf("Error iterating arr sync items: %v", err)
 	}
 
 	if synced > 0 || exhausted > 0 {

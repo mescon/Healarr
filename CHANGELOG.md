@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.17] - 2026-01-06
+
+### Security
+- **SQL injection prevention**: Added strict whitelist validation for `sort_by` parameter in all paginated API endpoints
+  - Handlers now specify explicit `AllowedSortBy` maps to prevent arbitrary SQL in ORDER BY clauses
+  - Affects: `/api/scans`, `/api/corruptions`, `/api/logs`
+
+### Fixed
+- **Database row iteration errors**: Added `rows.Err()` checks after all `for rows.Next()` loops
+  - Previously, errors occurring during iteration could be silently lost
+  - Now properly propagates errors in 15+ locations across handlers and services
+- **Scan progress off-by-one**: Progress counter now increments AFTER file is processed, not before
+  - Previously showed "100/100" while still processing the last file
+  - Extracted `markFileProcessed()` helper for accurate progress tracking
+- **Retry event validation**: Remediator now validates `file_path` before processing retry events
+  - Empty or missing file paths now log a warning and emit `SearchFailed` event
+- **Monitor error handling**: Distinguished between "corruption not found" vs database errors
+  - `sql.ErrNoRows` now logs a warning instead of an error
+  - Actual database errors are properly logged with full details
+- **Critical database pragma failures**: SQLite pragma failures now properly propagate errors
+  - Critical pragmas (WAL mode, foreign keys, busy timeout) must succeed or startup fails
+  - Optional pragmas (synchronous, cache, temp_store) log warnings but continue
+
+### Improved
+- **Error logging**: Added debug logging for JSON unmarshal errors during event data enrichment
+- **Silent skip logging**: Added warning logs when row scans fail in batch operations
+- **Type assertion logging**: Unexpected types in episode ID parsing now logged at debug level
+- **URL normalization**: Extracted `normalizeAPIURL()` helper function in notifier package
+- **Error messages**: Signal provider error now shows generic port format instead of hardcoded 8080
+
 ## [1.1.16] - 2026-01-06
 
 ### Added

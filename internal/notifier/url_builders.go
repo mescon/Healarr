@@ -12,6 +12,14 @@ type URLBuilder interface {
 	BuildURL(config json.RawMessage) (string, error)
 }
 
+// normalizeAPIURL strips protocol prefix and trailing slash from a URL for use in shoutrrr URLs
+func normalizeAPIURL(rawURL string) string {
+	rawURL = strings.TrimSuffix(rawURL, "/")
+	rawURL = strings.TrimPrefix(rawURL, "https://")
+	rawURL = strings.TrimPrefix(rawURL, "http://")
+	return rawURL
+}
+
 // urlBuilders maps provider types to their URL builders
 var urlBuilders = map[string]URLBuilder{
 	ProviderDiscord:    &discordBuilder{},
@@ -180,13 +188,10 @@ func (b *signalBuilder) BuildURL(config json.RawMessage) (string, error) {
 	if err := json.Unmarshal(config, &c); err != nil {
 		return "", err
 	}
-	apiURL := c.APIURL
-	if apiURL == "" {
-		return "", fmt.Errorf("signal API URL is required (e.g., http://localhost:8080)")
+	if c.APIURL == "" {
+		return "", fmt.Errorf("signal API URL is required (format: http://hostname:port)")
 	}
-	apiURL = strings.TrimSuffix(apiURL, "/")
-	apiURL = strings.TrimPrefix(apiURL, "https://")
-	apiURL = strings.TrimPrefix(apiURL, "http://")
+	apiURL := normalizeAPIURL(c.APIURL)
 	return fmt.Sprintf("generic+http://%s/v2/send?number=%s&recipients=%s", apiURL, url.QueryEscape(c.Number), url.QueryEscape(c.Recipient)), nil
 }
 
@@ -202,8 +207,7 @@ func (b *barkBuilder) BuildURL(config json.RawMessage) (string, error) {
 	if serverURL == "" {
 		serverURL = "api.day.app"
 	}
-	serverURL = strings.TrimPrefix(serverURL, "https://")
-	serverURL = strings.TrimPrefix(serverURL, "http://")
+	serverURL = normalizeAPIURL(serverURL)
 	return fmt.Sprintf("bark://%s@%s", c.DeviceKey, serverURL), nil
 }
 

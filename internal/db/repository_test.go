@@ -2717,11 +2717,10 @@ func TestConfigureSQLite_AfterClose(t *testing.T) {
 	// Close the database first
 	db.Close()
 
-	// configureSQLite should handle errors gracefully (logs but doesn't fail)
-	// Since the function only logs errors and returns nil, it won't error
+	// configureSQLite should return an error for critical pragma failures on a closed database
 	err = configureSQLite(db)
-	if err != nil {
-		t.Errorf("configureSQLite returned error: %v", err)
+	if err == nil {
+		t.Error("configureSQLite should return error for closed database")
 	}
 }
 

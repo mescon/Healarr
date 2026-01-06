@@ -24,6 +24,7 @@ func (s *RESTServer) getArrInstances(c *gin.Context) {
 		var name, arrType, url, apiKey string
 		var enabled bool
 		if err := rows.Scan(&id, &name, &arrType, &url, &apiKey, &enabled); err != nil {
+			logger.Warnf("Failed to scan arr_instances row: %v", err)
 			continue
 		}
 		// Decrypt API key for display
@@ -41,6 +42,13 @@ func (s *RESTServer) getArrInstances(c *gin.Context) {
 			"enabled": enabled,
 		})
 	}
+
+	if err := rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading arr instances"})
+		logger.Errorf("Error iterating arr instances: %v", err)
+		return
+	}
+
 	c.JSON(http.StatusOK, instances)
 }
 

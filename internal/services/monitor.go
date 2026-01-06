@@ -2,6 +2,7 @@ package services
 
 import (
 	"database/sql"
+	"errors"
 	"math"
 	"time"
 
@@ -64,7 +65,11 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 	// so the Remediator has the context it needs
 	filePath, pathID, err := m.getCorruptionContext(corruptionID)
 	if err != nil {
-		logger.Errorf("Failed to get context for corruption %s: %v", corruptionID, err)
+		if errors.Is(err, sql.ErrNoRows) {
+			logger.Warnf("Corruption %s not found in database, skipping retry", corruptionID)
+		} else {
+			logger.Errorf("Database error getting context for corruption %s: %v", corruptionID, err)
+		}
 		return
 	}
 

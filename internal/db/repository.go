@@ -86,27 +86,38 @@ func NewRepository(dbPath string) (*Repository, error) {
 
 // configureSQLite sets optimal SQLite pragmas for reliability and performance
 func configureSQLite(db *sql.DB) error {
-	pragmas := []string{
+	// Critical pragmas that must succeed for proper database operation
+	criticalPragmas := []string{
 		// WAL mode for better concurrency and crash recovery
 		"PRAGMA journal_mode=WAL",
+		// Enable foreign key constraints
+		"PRAGMA foreign_keys=ON",
+		// Busy timeout of 30 seconds to handle concurrent access during heavy scans
+		"PRAGMA busy_timeout=30000",
+	}
+
+	for _, pragma := range criticalPragmas {
+		if _, err := db.Exec(pragma); err != nil {
+			return fmt.Errorf("failed to set critical pragma %s: %w", pragma, err)
+		}
+	}
+
+	// Non-critical pragmas - log failures but continue
+	optionalPragmas := []string{
 		// Synchronous NORMAL is safe with WAL and faster than FULL
 		"PRAGMA synchronous=NORMAL",
 		// Auto-vacuum in incremental mode - reclaims space automatically
 		"PRAGMA auto_vacuum=INCREMENTAL",
 		// Store temp tables in memory for performance
 		"PRAGMA temp_store=MEMORY",
-		// Enable foreign key constraints
-		"PRAGMA foreign_keys=ON",
 		// Increase cache size (negative = KB, so -8000 = 8MB)
 		"PRAGMA cache_size=-8000",
-		// Busy timeout of 30 seconds to handle concurrent access during heavy scans
-		"PRAGMA busy_timeout=30000",
 	}
 
-	for _, pragma := range pragmas {
+	for _, pragma := range optionalPragmas {
 		if _, err := db.Exec(pragma); err != nil {
 			// Log but don't fail - some pragmas may not be supported
-			logger.Debugf("Failed to set %s: %v", pragma, err)
+			logger.Debugf("Failed to set optional pragma %s: %v", pragma, err)
 		}
 	}
 

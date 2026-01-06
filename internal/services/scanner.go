@@ -281,6 +281,12 @@ func (s *ScannerService) ResumeInterruptedScans() {
 		scansToResume = append(scansToResume, scan)
 	}
 
+	// Check for iteration errors
+	if err := rows.Err(); err != nil {
+		logger.Errorf("Error iterating interrupted scans: %v", err)
+		return
+	}
+
 	for _, scan := range scansToResume {
 		logger.Infof("Resuming interrupted scan for %s (starting at file %d/%d)", scan.path, scan.currentIndex, scan.totalFiles)
 		go s.resumeScan(scan.scanDBID, scan.pathID, scan.path, scan.totalFiles, scan.currentIndex, scan.fileListJSON, scan.detectionConfig, scan.autoRemediate, scan.dryRun)
@@ -1076,23 +1082,10 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 			return
 		}
 
-		// Update progress
-		progress.FilesDone = i + 1
+		// Update progress - show which file we're currently processing
+		// Note: FilesDone is incremented AFTER processing, not before
 		progress.CurrentFile = filePath
-
-		// Emit progress via WebSocket after every file for real-time UI updates
 		s.emitProgress(progress)
-
-		// Save state to database periodically (every 10 files) to avoid excessive I/O
-		if i%10 == 0 || i == len(files)-1 {
-			if scanDBID > 0 {
-				progressCtx, progressCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-				if _, err := s.db.ExecContext(progressCtx, `UPDATE scans SET current_file_index = ?, files_scanned = ? WHERE id = ?`, i, progress.FilesDone, scanDBID); err != nil {
-					logger.Warnf("Failed to save scan progress for scan %d: %v", scanDBID, err)
-				}
-				progressCancel()
-			}
-		}
 
 		// Get file info for tracking and safety checks
 		var fileSize int64
@@ -1117,11 +1110,13 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 
 		// SAFETY: Skip recently modified files (likely being written)
 		if s.shouldSkipRecentlyModified(sfc) {
+			s.markFileProcessed(progress, i, scanDBID)
 			continue
 		}
 
 		// SAFETY: Skip files with changing size (download in progress)
 		if s.shouldSkipChangingSize(sfc) {
+			s.markFileProcessed(progress, i, scanDBID)
 			continue
 		}
 
@@ -1130,6 +1125,7 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 
 		if healthy {
 			s.recordHealthyFile(sfc)
+			s.markFileProcessed(progress, i, scanDBID)
 			continue
 		}
 
@@ -1139,6 +1135,7 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 				return
 			}
 			// scanSkipToNext - continue to next file
+			s.markFileProcessed(progress, i, scanDBID)
 			continue
 		}
 
@@ -1147,9 +1144,26 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 			return
 		}
 		// scanSkipToNext means duplicate, scanContinue means event was published
+		s.markFileProcessed(progress, i, scanDBID)
 	}
 
 	progress.Status = "completed"
+}
+
+// markFileProcessed increments the file counter and saves progress periodically
+func (s *ScannerService) markFileProcessed(progress *ScanProgress, fileIndex int, scanDBID int64) {
+	progress.FilesDone++
+
+	// Save state to database periodically (every 10 files) to avoid excessive I/O
+	if fileIndex%10 == 0 {
+		if scanDBID > 0 {
+			progressCtx, progressCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+			if _, err := s.db.ExecContext(progressCtx, `UPDATE scans SET current_file_index = ?, files_scanned = ? WHERE id = ?`, fileIndex, progress.FilesDone, scanDBID); err != nil {
+				logger.Warnf("Failed to save scan progress for scan %d: %v", scanDBID, err)
+			}
+			progressCancel()
+		}
+	}
 }
 
 func (s *ScannerService) emitProgress(p *ScanProgress) {
@@ -1288,6 +1302,10 @@ func (s *ScannerService) refreshScanPathCache() error {
 			continue
 		}
 		cache = append(cache, cfg)
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating scan path cache: %w", err)
 	}
 
 	s.scanPathCache = cache
@@ -1461,6 +1479,10 @@ func (s *ScannerService) LoadActiveCorruptionsForPath(rootPath string) map[strin
 		result[filePath] = true
 	}
 
+	if err := rows.Err(); err != nil {
+		logger.Errorf("Error iterating active corruptions for path %s: %v", rootPath, err)
+	}
+
 	logger.Debugf("Preloaded %d active corruptions for path %s", len(result), rootPath)
 	return result
 }
@@ -1556,6 +1578,10 @@ func (s *ScannerService) processPendingRescans() {
 			f.pathID = pathID.Int64
 		}
 		filesToProcess = append(filesToProcess, f)
+	}
+
+	if err := rows.Err(); err != nil {
+		logger.Errorf("Error iterating pending rescans: %v", err)
 	}
 
 	if len(filesToProcess) == 0 {

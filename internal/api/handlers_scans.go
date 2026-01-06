@@ -98,6 +98,12 @@ func (s *RESTServer) getScans(c *gin.Context) {
 		})
 	}
 
+	if err := rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading scan results"})
+		logger.Errorf("Error iterating scans: %v", err)
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"data":       scans,
 		"pagination": NewPaginationResponse(p, total),
@@ -344,6 +350,12 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 		})
 	}
 
+	if err := rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading scan files"})
+		logger.Errorf("Error iterating scan files: %v", err)
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"data":       files,
 		"pagination": NewPaginationResponse(p, total),
@@ -380,6 +392,11 @@ func (s *RESTServer) triggerScanAll(c *gin.Context) {
 			}
 		}(pathID, localPath)
 		started++
+	}
+
+	if err := rows.Err(); err != nil {
+		logger.Errorf("Error iterating scan paths: %v", err)
+		// Continue with partial results since some scans may have started
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
