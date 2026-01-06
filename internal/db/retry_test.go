@@ -12,10 +12,15 @@ import (
 // newTestDBForRetry creates an in-memory SQLite database for retry tests.
 // This is a simplified version that doesn't use testutil to avoid import cycles.
 func newTestDBForRetry() (*sql.DB, error) {
-	db, err := sql.Open("sqlite", ":memory:")
+	// Use shared cache mode to ensure all connections see the same in-memory database
+	// Without this, each connection gets its own empty database due to connection pooling
+	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
 	if err != nil {
 		return nil, err
 	}
+
+	// Ensure single connection to prevent any remaining pooling issues
+	db.SetMaxOpenConns(1)
 
 	// Configure SQLite for testing
 	pragmas := []string{
