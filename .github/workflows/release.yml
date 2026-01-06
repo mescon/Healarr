@@ -78,7 +78,7 @@ jobs:
           zip healarr-${{ matrix.suffix }}.zip healarr.exe
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: healarr-${{ matrix.suffix }}
           path: healarr-${{ matrix.suffix }}.*
