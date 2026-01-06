@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mescon/Healarr/internal/domain"
 	_ "modernc.org/sqlite"
+
+	"github.com/mescon/Healarr/internal/domain"
 )
 
 // newTestDB creates an in-memory SQLite database with the events table.

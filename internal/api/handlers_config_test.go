@@ -13,14 +13,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/mescon/Healarr/internal/auth"
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/notifier"
 	"github.com/mescon/Healarr/internal/testutil"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // setupConfigTestDB creates a test database with full schema for config tests

@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mescon/Healarr/internal/crypto"
 	_ "modernc.org/sqlite"
+
+	"github.com/mescon/Healarr/internal/crypto"
 )
 
 // setupTestDB creates a temporary database for testing

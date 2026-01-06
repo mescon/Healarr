@@ -12,9 +12,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	_ "modernc.org/sqlite"
+
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
-	_ "modernc.org/sqlite"
 )
 
 func setupTestDBForWebSocket(t *testing.T) (*sql.DB, func()) {

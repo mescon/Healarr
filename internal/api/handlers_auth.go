@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/mescon/Healarr/internal/auth"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"

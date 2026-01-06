@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/containrrr/shoutrrr"
+
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"

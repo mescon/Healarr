@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
