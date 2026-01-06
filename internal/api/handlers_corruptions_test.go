@@ -13,10 +13,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	_ "modernc.org/sqlite"
+
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/services"
-	_ "modernc.org/sqlite"
 )
 
 // setupCorruptionsTestDB creates a test database with schema for corruption tests

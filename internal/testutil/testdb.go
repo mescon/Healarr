@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mescon/Healarr/internal/domain"
 	_ "modernc.org/sqlite"
+
+	"github.com/mescon/Healarr/internal/domain"
 )
 
 // NewTestDB creates an in-memory SQLite database with the Healarr schema.

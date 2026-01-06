@@ -11,10 +11,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	_ "modernc.org/sqlite"
+
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/services"
-	_ "modernc.org/sqlite"
 )
 
 // mockHealthChecker and mockPathMapper are defined in handlers_health_test.go

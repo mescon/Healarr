@@ -1,6 +1,6 @@
 package integration
 
-// ArrInstance represents a configured *arr instance
+// ArrInstanceInfo represents a configured *arr instance.
 type ArrInstanceInfo struct {
 	ID     int64
 	Name   string

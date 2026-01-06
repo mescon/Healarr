@@ -4,8 +4,9 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/mescon/Healarr/internal/testutil"
 	_ "modernc.org/sqlite"
+
+	"github.com/mescon/Healarr/internal/testutil"
 )
 
 // =============================================================================

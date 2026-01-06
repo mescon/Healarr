@@ -757,18 +757,18 @@ func (c *HTTPArrClient) checkEpisodeForFile(instance *ArrInstance, epID int64) (
 
 	var episode struct {
 		HasFile       bool  `json:"hasFile"`
-		EpisodeFileId int64 `json:"episodeFileId"`
+		EpisodeFileID int64 `json:"episodeFileId"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&episode); err != nil {
 		return "", false, err
 	}
 
-	if !episode.HasFile || episode.EpisodeFileId == 0 {
+	if !episode.HasFile || episode.EpisodeFileID == 0 {
 		return "", false, nil
 	}
 
 	// Get the file path
-	fileEndpoint := fmt.Sprintf("/api/v3/episodefile/%d", episode.EpisodeFileId)
+	fileEndpoint := fmt.Sprintf("/api/v3/episodefile/%d", episode.EpisodeFileID)
 	fileResp, err := c.doRequest(instance, "GET", fileEndpoint, nil)
 	if err != nil {
 		return "", false, err
