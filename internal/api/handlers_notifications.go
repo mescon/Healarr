@@ -65,7 +65,7 @@ func (s *RESTServer) updateNotification(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrMsgInvalidID})
 		return
 	}
 
@@ -92,7 +92,7 @@ func (s *RESTServer) deleteNotification(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrMsgInvalidID})
 		return
 	}
 
@@ -142,7 +142,7 @@ func (s *RESTServer) getNotificationLog(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrMsgInvalidID})
 		return
 	}
 
@@ -165,7 +165,7 @@ func (s *RESTServer) getNotification(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrMsgInvalidID})
 		return
 	}
 

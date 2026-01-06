@@ -16,6 +16,9 @@ const (
 	ErrMsgNotFound            = "Not found"
 	ErrMsgServiceUnavailable  = "Service unavailable"
 	ErrMsgInternalError       = "Internal server error"
+	ErrMsgScanNotFound        = "Scan not found"
+	ErrMsgNoIDsProvided       = "No IDs provided"
+	ErrMsgInvalidID           = "Invalid ID"
 )
 
 // respondWithError sends a JSON error response and logs the actual error

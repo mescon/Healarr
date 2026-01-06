@@ -61,7 +61,7 @@ func (s *RESTServer) deleteSchedule(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrMsgInvalidID})
 		return
 	}
 
@@ -76,7 +76,7 @@ func (s *RESTServer) deleteSchedule(c *gin.Context) {
 func (s *RESTServer) updateSchedule(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": ErrMsgInvalidID})
 		return
 	}
 

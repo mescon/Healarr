@@ -13,6 +13,13 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
+// FFmpeg/FFprobe command line argument constants
+const (
+	argXError      = "-xerror"       // Exit on first decode error
+	argShowFormat  = "-show_format"  // Show format information
+	argShowStreams = "-show_streams" // Show stream information
+)
+
 // validateMediaPath ensures a file path is safe to pass to subprocess commands.
 // Since we use exec.Command directly (not via shell), the main concerns are:
 // - Null bytes that could truncate the path
@@ -46,6 +53,12 @@ const (
 	DetectionFFprobe   DetectionMethod = "ffprobe"
 	DetectionMediaInfo DetectionMethod = "mediainfo"
 	DetectionHandBrake DetectionMethod = "handbrake"
+)
+
+// Detection mode constants
+const (
+	ModeQuick    = "quick"    // Header-only analysis (fast)
+	ModeThorough = "thorough" // Full stream decoding (slow)
 )
 
 type DetectionConfig struct {
@@ -97,10 +110,10 @@ func (hc *CmdHealthChecker) CheckWithConfig(path string, config DetectionConfig)
 		return false, err
 	}
 
-	// Default to "quick" if mode not specified
+	// Default to ModeQuick if mode not specified
 	mode := config.Mode
 	if mode == "" {
-		mode = "quick"
+		mode = ModeQuick
 	}
 
 	// 3. Run appropriate detector with mode awareness
@@ -330,18 +343,18 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 	var cmdPath string
 	var cmdName string
 
-	if mode == "thorough" {
+	if mode == ModeThorough {
 		// Thorough mode: Use ffmpeg to decode the entire file and check for stream corruption
 		// This catches issues that header-only checks miss (mid-file corruption, bad frames, etc.)
 		// -xerror makes ffmpeg exit on first decode error
 		// -f null - outputs to null device (no output file needed)
 		cmdPath = hc.FFmpegPath
 		cmdName = "ffmpeg"
-		args = []string{"-v", "error", "-xerror", "-i", path, "-f", "null", "-"}
+		args = []string{"-v", "error", argXError, "-i", path, "-f", "null", "-"}
 
 		// Insert custom args before -i (if any)
 		if len(customArgs) > 0 {
-			newArgs := []string{"-v", "error", "-xerror"}
+			newArgs := []string{"-v", "error", argXError}
 			newArgs = append(newArgs, customArgs...)
 			newArgs = append(newArgs, "-i", path, "-f", "null", "-")
 			args = newArgs
@@ -351,11 +364,11 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 		// Fast and reliable for detecting obvious corruption
 		cmdPath = hc.FFprobePath
 		cmdName = "ffprobe"
-		args = []string{"-v", "error", "-show_format", "-show_streams", path}
+		args = []string{"-v", "error", argShowFormat, argShowStreams, path}
 
 		// Insert custom args before path (if any)
 		if len(customArgs) > 0 {
-			newArgs := []string{"-v", "error", "-show_format", "-show_streams"}
+			newArgs := []string{"-v", "error", argShowFormat, argShowStreams}
 			newArgs = append(newArgs, customArgs...)
 			newArgs = append(newArgs, path)
 			args = newArgs
@@ -368,7 +381,7 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 
 	// Thorough mode needs much longer timeout since it decodes entire file
 	timeout := 30 * time.Second
-	if mode == "thorough" {
+	if mode == ModeThorough {
 		timeout = 10 * time.Minute // Large files can take a while to fully decode
 	}
 
@@ -407,7 +420,7 @@ func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []strin
 	var args []string
 	var timeout time.Duration
 
-	if mode == "thorough" {
+	if mode == ModeThorough {
 		// Thorough mode: Full scan with preview analysis
 		// --previews 10:0 generates 10 previews at different points to verify stream integrity
 		args = []string{"--scan", "--previews", "10:0", "-i", path}
@@ -420,7 +433,7 @@ func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []strin
 
 	// Insert custom args before -i
 	if len(customArgs) > 0 {
-		if mode == "thorough" {
+		if mode == ModeThorough {
 			newArgs := []string{"--scan", "--previews", "10:0"}
 			newArgs = append(newArgs, customArgs...)
 			newArgs = append(newArgs, "-i", path)
@@ -480,7 +493,7 @@ func (hc *CmdHealthChecker) runMediaInfo(path string, customArgs []string, mode 
 	var args []string
 	var timeout time.Duration
 
-	if mode == "thorough" {
+	if mode == ModeThorough {
 		// Thorough mode: Full details including all track info
 		args = []string{"--Output=JSON", "--Full", path}
 		timeout = 2 * time.Minute
@@ -492,7 +505,7 @@ func (hc *CmdHealthChecker) runMediaInfo(path string, customArgs []string, mode 
 
 	// Insert custom args before path
 	if len(customArgs) > 0 {
-		if mode == "thorough" {
+		if mode == ModeThorough {
 			newArgs := []string{"--Output=JSON", "--Full"}
 			newArgs = append(newArgs, customArgs...)
 			newArgs = append(newArgs, path)
@@ -574,7 +587,7 @@ func (hc *CmdHealthChecker) runMediaInfo(path string, customArgs []string, mode 
 // This is useful for displaying to users so they know exactly what will run.
 func (hc *CmdHealthChecker) GetCommandPreview(method DetectionMethod, mode string, customArgs []string) string {
 	if mode == "" {
-		mode = "quick"
+		mode = ModeQuick
 	}
 
 	// Placeholder for file path in preview
@@ -586,16 +599,16 @@ func (hc *CmdHealthChecker) GetCommandPreview(method DetectionMethod, mode strin
 
 	case DetectionFFprobe:
 		var args []string
-		if mode == "thorough" {
+		if mode == ModeThorough {
 			// Thorough mode uses ffmpeg (not ffprobe) to decode entire file
-			args = []string{hc.FFmpegPath, "-v", "error", "-xerror"}
+			args = []string{hc.FFmpegPath, "-v", "error", argXError}
 			if len(customArgs) > 0 {
 				args = append(args, customArgs...)
 			}
 			args = append(args, "-i", filePath, "-f", "null", "-")
 		} else {
 			// Quick mode uses ffprobe for header analysis
-			args = []string{hc.FFprobePath, "-v", "error", "-show_format", "-show_streams"}
+			args = []string{hc.FFprobePath, "-v", "error", argShowFormat, argShowStreams}
 			if len(customArgs) > 0 {
 				args = append(args, customArgs...)
 			}
@@ -605,7 +618,7 @@ func (hc *CmdHealthChecker) GetCommandPreview(method DetectionMethod, mode strin
 
 	case DetectionMediaInfo:
 		var args []string
-		if mode == "thorough" {
+		if mode == ModeThorough {
 			args = []string{"mediainfo", "--Output=JSON", "--Full"}
 			if len(customArgs) > 0 {
 				args = append(args, customArgs...)
@@ -622,7 +635,7 @@ func (hc *CmdHealthChecker) GetCommandPreview(method DetectionMethod, mode strin
 
 	case DetectionHandBrake:
 		var args []string
-		if mode == "thorough" {
+		if mode == ModeThorough {
 			args = []string{hc.HandBrakePath, "--scan", "--previews", "10:0"}
 			if len(customArgs) > 0 {
 				args = append(args, customArgs...)
@@ -645,24 +658,24 @@ func (hc *CmdHealthChecker) GetCommandPreview(method DetectionMethod, mode strin
 // GetTimeoutDescription returns a human-readable description of the timeout for a given configuration.
 func (hc *CmdHealthChecker) GetTimeoutDescription(method DetectionMethod, mode string) string {
 	if mode == "" {
-		mode = "quick"
+		mode = ModeQuick
 	}
 
 	switch method {
 	case DetectionZeroByte:
 		return "instant"
 	case DetectionFFprobe:
-		if mode == "thorough" {
+		if mode == ModeThorough {
 			return "10 minutes (ffmpeg decodes entire file)"
 		}
 		return "30 seconds (ffprobe header check)"
 	case DetectionMediaInfo:
-		if mode == "thorough" {
+		if mode == ModeThorough {
 			return "2 minutes"
 		}
 		return "30 seconds"
 	case DetectionHandBrake:
-		if mode == "thorough" {
+		if mode == ModeThorough {
 			return "10 minutes (with preview generation)"
 		}
 		return "2 minutes"

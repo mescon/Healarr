@@ -16,7 +16,7 @@ func (s *RESTServer) handleAuthSetup(c *gin.Context) {
 	var exists bool
 	err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM settings WHERE key = 'password_hash')").Scan(&exists)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": ErrMsgDatabaseError})
 		return
 	}
 
@@ -90,7 +90,7 @@ func (s *RESTServer) handleLogin(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": ErrMsgDatabaseError})
 		return
 	}
 
@@ -127,7 +127,7 @@ func (s *RESTServer) handleAuthStatus(c *gin.Context) {
 	var count int
 	err := s.db.QueryRow("SELECT COUNT(*) FROM settings WHERE key = 'password_hash'").Scan(&count)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": ErrMsgDatabaseError})
 		return
 	}
 
@@ -199,7 +199,7 @@ func (s *RESTServer) changePassword(c *gin.Context) {
 	var hash string
 	err := s.db.QueryRow("SELECT value FROM settings WHERE key = 'password_hash'").Scan(&hash)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": ErrMsgDatabaseError})
 		return
 	}
 
