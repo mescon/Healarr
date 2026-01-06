@@ -17,7 +17,7 @@
     "framer-motion": "^12.23.24",
     "lucide-react": "^0.562.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0",
+    "react-dom": "^19.2.3",
     "react-router-dom": "^7.9.6",
     "recharts": "^3.5.0",
     "tailwind-merge": "^3.4.0"
