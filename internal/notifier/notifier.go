@@ -61,11 +61,12 @@ type NotificationConfig struct {
 	UpdatedAt       string          `json:"updated_at"`
 }
 
-// Provider-specific config structures
+// DiscordConfig holds Discord webhook notification settings.
 type DiscordConfig struct {
 	WebhookURL string `json:"webhook_url"`
 }
 
+// PushoverConfig holds Pushover notification settings.
 type PushoverConfig struct {
 	UserKey  string `json:"user_key"`
 	AppToken string `json:"app_token"`

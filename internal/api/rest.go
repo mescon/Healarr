@@ -1,3 +1,6 @@
+// Package api provides the REST API handlers and server for Healarr.
+// It includes endpoints for managing scans, corruptions, configurations,
+// notifications, and real-time updates via WebSocket.
 package api
 
 import (

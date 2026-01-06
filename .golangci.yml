@@ -25,11 +25,14 @@ linters:
       disable:
         - fieldalignment  # Too strict for existing codebase
         - shadow          # Too many false positives
+        - unusedwrite     # False positives in test struct initialization
 
     staticcheck:
       checks:
         - all
         - -SA1019  # Ignore deprecated warnings
+        - -ST1003  # Allow Id suffix in struct fields (JSON compatibility)
+        - -ST1000  # Package comments - add incrementally
 
     misspell:
       locale: US
