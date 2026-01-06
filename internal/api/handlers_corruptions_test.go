@@ -1699,3 +1699,184 @@ func TestGetCorruptions_WithVerificationSuccessEnrichment(t *testing.T) {
 		t.Errorf("Expected 1 resolved corruption, got %v", pagination["total"])
 	}
 }
+
+// TestGetCorruptions_AllEnrichmentFields tests that all enrichment fields are extracted correctly
+func TestGetCorruptions_AllEnrichmentFields(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	now := time.Now()
+
+	// Create corruption with all enrichable event types
+	seedCorruptionEvent(t, db, "full-enrich", domain.CorruptionDetected, map[string]interface{}{
+		"file_path":       "/test/movie.mkv",
+		"corruption_type": "TruncatedFile",
+		"file_size":       float64(5 * 1024 * 1024 * 1024),
+	}, now.Add(-4*time.Hour))
+
+	seedCorruptionEvent(t, db, "full-enrich", domain.SearchCompleted, map[string]interface{}{
+		"file_path":      "/test/movie.mkv",
+		"media_id":       float64(12345),
+		"media_title":    "The Matrix",
+		"media_year":     float64(1999),
+		"media_type":     "movie",
+		"arr_type":       "radarr",
+		"instance_name":  "Radarr-4K",
+		"season_number":  float64(1),
+		"episode_number": float64(5),
+	}, now.Add(-3*time.Hour))
+
+	seedCorruptionEvent(t, db, "full-enrich", domain.DownloadProgress, map[string]interface{}{
+		"file_path":            "/test/movie.mkv",
+		"progress":             75.5,
+		"size_bytes":           float64(5 * 1024 * 1024 * 1024),
+		"size_remaining_bytes": float64(1 * 1024 * 1024 * 1024),
+		"protocol":             "torrent",
+		"download_client":      "qBittorrent",
+		"indexer":              "TorrentLeech",
+		"time_left":            "15:30",
+	}, now.Add(-2*time.Hour))
+
+	seedCorruptionEvent(t, db, "full-enrich", domain.VerificationSuccess, map[string]interface{}{
+		"file_path":                 "/test/movie.mkv",
+		"quality":                   "Bluray-2160p",
+		"release_group":             "SPARKS",
+		"total_duration_seconds":    float64(8100),
+		"download_duration_seconds": float64(3600),
+		"new_file_path":             "/media/movies/The Matrix (1999)/movie.mkv",
+		"new_file_size":             float64(4 * 1024 * 1024 * 1024),
+	}, now)
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/corruptions", server.getCorruptions)
+
+	req, _ := http.NewRequest("GET", "/corruptions", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+
+	data := response["data"].([]interface{})
+	if len(data) != 1 {
+		t.Fatalf("Expected 1 corruption, got %d", len(data))
+	}
+
+	corruption := data[0].(map[string]interface{})
+
+	// Verify enriched data is present
+	if corruption["id"].(string) != "full-enrich" {
+		t.Errorf("Expected id 'full-enrich', got %v", corruption["id"])
+	}
+	if corruption["state"].(string) != string(domain.VerificationSuccess) {
+		t.Errorf("Expected state VerificationSuccess, got %v", corruption["state"])
+	}
+}
+
+// TestGetCorruptions_NoEnrichmentData tests when events have no enrichable data
+func TestGetCorruptions_NoEnrichmentData(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	now := time.Now()
+
+	// Create corruption with minimal data (no enrichment fields)
+	seedCorruptionEvent(t, db, "minimal", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/test/minimal.mkv",
+	}, now)
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/corruptions", server.getCorruptions)
+
+	req, _ := http.NewRequest("GET", "/corruptions", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+
+	data := response["data"].([]interface{})
+	if len(data) != 1 {
+		t.Fatalf("Expected 1 corruption, got %d", len(data))
+	}
+}
+
+// TestStatusFilterClauses_AllFilters tests all status filter values
+func TestStatusFilterClauses_AllFilters(t *testing.T) {
+	db, cleanup := setupCorruptionsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	now := time.Now()
+
+	// Create corruptions for each state we filter by
+	states := []struct {
+		id       string
+		events   []domain.EventType
+		filter   string
+		expected int
+	}{
+		{"pending-1", []domain.EventType{domain.CorruptionDetected}, "pending", 1},
+		{"in-progress-1", []domain.EventType{domain.CorruptionDetected, domain.SearchStarted}, "in_progress", 1},
+		{"failed-1", []domain.EventType{domain.CorruptionDetected, domain.SearchFailed}, "failed", 1},
+	}
+
+	for _, s := range states {
+		for i, event := range s.events {
+			seedCorruptionEvent(t, db, s.id, event, map[string]interface{}{
+				"file_path": "/test/" + s.id + ".mkv",
+			}, now.Add(time.Duration(-len(s.events)+i)*time.Minute))
+		}
+	}
+
+	server := createCorruptionsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/corruptions", server.getCorruptions)
+
+	for _, s := range states {
+		t.Run(s.filter, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", "/corruptions?status="+s.filter, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Errorf("Expected status 200, got %d", w.Code)
+			}
+
+			var response map[string]interface{}
+			json.Unmarshal(w.Body.Bytes(), &response)
+
+			pagination := response["pagination"].(map[string]interface{})
+			if int(pagination["total"].(float64)) != s.expected {
+				t.Errorf("Filter '%s': expected %d, got %v", s.filter, s.expected, pagination["total"])
+			}
+		})
+	}
+}
