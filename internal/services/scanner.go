@@ -560,6 +560,190 @@ func (s *ScannerService) ScanFile(localPath string) error {
 	return nil
 }
 
+// =============================================================================
+// ScanPath helpers - extracted to reduce cognitive complexity
+// =============================================================================
+
+// scanPathSettings holds the configuration for a scan path (detection settings, remediation flags)
+type scanPathSettings struct {
+	AutoRemediate   bool
+	DryRun          bool
+	DetectionConfig integration.DetectionConfig
+}
+
+// loadScanPathSettings loads the scan configuration from the database
+func (s *ScannerService) loadScanPathSettings(pathID int64) scanPathSettings {
+	var autoRemediate, dryRun bool
+	var detectionMethod, detectionMode string
+	var detectionArgsJSON sql.NullString
+
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT auto_remediate, dry_run, detection_method, detection_args, detection_mode
+		FROM scan_paths WHERE id = ?
+	`, pathID).Scan(&autoRemediate, &dryRun, &detectionMethod, &detectionArgsJSON, &detectionMode)
+
+	if err != nil {
+		logger.Errorf("Error querying scan path config: %v", err)
+		detectionMethod = "ffprobe"
+		detectionMode = "quick"
+	}
+
+	var detectionArgs []string
+	if detectionArgsJSON.Valid && detectionArgsJSON.String != "" {
+		if err := json.Unmarshal([]byte(detectionArgsJSON.String), &detectionArgs); err != nil {
+			logger.Errorf("Error parsing detection args: %v", err)
+		}
+	}
+
+	return scanPathSettings{
+		AutoRemediate: autoRemediate,
+		DryRun:        dryRun,
+		DetectionConfig: integration.DetectionConfig{
+			Method: integration.DetectionMethod(detectionMethod),
+			Args:   detectionArgs,
+			Mode:   detectionMode,
+		},
+	}
+}
+
+// enumerateMediaFiles walks the directory and returns a list of media files
+func (s *ScannerService) enumerateMediaFiles(localPath string) ([]string, error) {
+	var files []string
+	var skippedCount, symlinkCount int
+
+	err := filepath.Walk(localPath, func(filePath string, info os.FileInfo, err error) error {
+		if err != nil {
+			if os.IsPermission(err) {
+				logger.Debugf("Permission denied: %s", filePath)
+				return nil
+			}
+			return err
+		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			symlinkCount++
+			return nil
+		}
+
+		if !info.IsDir() {
+			if isHiddenOrTempFile(filePath) {
+				skippedCount++
+				return nil
+			}
+			if isMediaFile(filePath) {
+				files = append(files, filePath)
+			} else {
+				skippedCount++
+			}
+		}
+		return nil
+	})
+
+	if err == nil && (skippedCount > 0 || symlinkCount > 0) {
+		logger.Debugf("Skipped %d non-media/hidden files and %d symlinks in %s", skippedCount, symlinkCount, localPath)
+	}
+
+	return files, err
+}
+
+// recordScanStart inserts the scan record into the database and returns the scan ID
+func (s *ScannerService) recordScanStart(localPath string, pathID int64, files []string, cfg scanPathSettings) int64 {
+	fileListJSON, err := json.Marshal(files)
+	if err != nil {
+		logger.Errorf("Failed to serialize file list: %v", err)
+		fileListJSON = []byte("[]")
+	}
+
+	detectionConfigJSON, err := json.Marshal(cfg.DetectionConfig)
+	if err != nil {
+		logger.Errorf("Failed to serialize detection config: %v", err)
+		detectionConfigJSON = []byte("{}")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO scans (path, path_id, status, files_scanned, corruptions_found, total_files, current_file_index, file_list, detection_config, auto_remediate, dry_run, started_at)
+		VALUES (?, ?, 'running', 0, 0, ?, 0, ?, ?, ?, ?, datetime('now'))
+	`, localPath, pathID, len(files), string(fileListJSON), string(detectionConfigJSON), cfg.AutoRemediate, cfg.DryRun)
+
+	if err != nil {
+		logger.Errorf("Failed to record scan start: %v", err)
+		return 0
+	}
+
+	scanDBID, err := result.LastInsertId()
+	if err != nil {
+		logger.Warnf("Failed to get scan ID after insert: %v", err)
+		return 0
+	}
+	return scanDBID
+}
+
+// handlePathInaccessible reports that a path is not accessible
+func (s *ScannerService) handlePathInaccessible(scanID, localPath string, accessErr error) error {
+	s.mu.Lock()
+	delete(s.activeScans, scanID)
+	s.mu.Unlock()
+
+	if pubErr := s.eventBus.Publish(domain.Event{
+		AggregateType: "system",
+		AggregateID:   scanID,
+		EventType:     domain.SystemHealthDegraded,
+		EventData: map[string]interface{}{
+			"path":    localPath,
+			"reason":  "Scan path is inaccessible",
+			"details": accessErr.Error(),
+		},
+	}); pubErr != nil {
+		logger.Errorf("Failed to publish SystemHealthDegraded event: %v", pubErr)
+	}
+
+	return fmt.Errorf("scan path inaccessible: %w", accessErr)
+}
+
+// finalizeScan handles the cleanup when a scan completes
+func (s *ScannerService) finalizeScan(scanID string, progress *ScanProgress, scanDBID int64) {
+	if progress.Status != "interrupted" {
+		finalStatus := "completed"
+		if progress.Status == "cancelled" {
+			finalStatus = "cancelled"
+		}
+		if scanDBID > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+			_, err := s.db.ExecContext(ctx, `
+				UPDATE scans
+				SET status = ?, files_scanned = ?, completed_at = datetime('now')
+				WHERE id = ?
+			`, finalStatus, progress.FilesDone, scanDBID)
+			cancel()
+			if err != nil {
+				logger.Errorf("Failed to update scan record: %v", err)
+			}
+		}
+	}
+
+	s.mu.Lock()
+	delete(s.activeScans, scanID)
+	s.mu.Unlock()
+
+	if err := s.eventBus.Publish(domain.Event{
+		AggregateType: "scan",
+		AggregateID:   scanID,
+		EventType:     "ScanCompleted",
+		EventData: map[string]interface{}{
+			"scan_id": scanID,
+			"status":  progress.Status,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish ScanCompleted event for path scan %s: %v", scanID, err)
+	}
+}
+
 func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -582,7 +766,6 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 		resumeChan:  make(chan struct{}),
 		isPaused:    false,
 	}
-
 	progress.cancel = cancel
 
 	s.mu.Lock()
@@ -591,102 +774,18 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 
 	s.emitProgress(progress)
 
-	// Get scan path configuration
-	var autoRemediate bool
-	var dryRun bool
-	var detectionMethod, detectionMode string
-	var detectionArgsJSON sql.NullString
-	configCtx, configCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-	err := s.db.QueryRowContext(configCtx, `
-		SELECT auto_remediate, dry_run, detection_method, detection_args, detection_mode
-		FROM scan_paths WHERE id = ?
-	`, pathID).Scan(&autoRemediate, &dryRun, &detectionMethod, &detectionArgsJSON, &detectionMode)
-	configCancel()
-	if err != nil {
-		// Log error but proceed with defaults
-		logger.Errorf("Error querying scan path config: %v", err)
-		detectionMethod = "ffprobe"
-		detectionMode = "quick"
-	}
-
-	// Parse detection args if present
-	var detectionArgs []string
-	if detectionArgsJSON.Valid && detectionArgsJSON.String != "" {
-		if err := json.Unmarshal([]byte(detectionArgsJSON.String), &detectionArgs); err != nil {
-			logger.Errorf("Error parsing detection args: %v", err)
-		}
-	}
-
-	detectionConfig := integration.DetectionConfig{
-		Method: integration.DetectionMethod(detectionMethod),
-		Args:   detectionArgs,
-		Mode:   detectionMode,
-	}
-
+	// Load configuration
+	cfg := s.loadScanPathSettings(pathID)
 	logger.Infof("Starting scan for path ID %d: %s", pathID, localPath)
 
-	// PRE-FLIGHT CHECK: Verify the path is accessible before starting enumeration
-	// This prevents false positives when mounts are offline or NAS is down
+	// Pre-flight check
 	if err := s.verifyPathAccessible(localPath); err != nil {
 		logger.Errorf("Pre-flight check failed for path %s: %v - scan aborted", localPath, err)
-
-		s.mu.Lock()
-		delete(s.activeScans, scanID)
-		s.mu.Unlock()
-
-		// Notify about the inaccessible path
-		if pubErr := s.eventBus.Publish(domain.Event{
-			AggregateType: "system",
-			AggregateID:   scanID,
-			EventType:     domain.SystemHealthDegraded,
-			EventData: map[string]interface{}{
-				"path":    localPath,
-				"reason":  "Scan path is inaccessible",
-				"details": err.Error(),
-			},
-		}); pubErr != nil {
-			logger.Errorf("Failed to publish SystemHealthDegraded event: %v", pubErr)
-		}
-
-		return fmt.Errorf("scan path inaccessible: %w", err)
+		return s.handlePathInaccessible(scanID, localPath, err)
 	}
 
-	// Enumeration phase - only collect media files, skip hidden/temp files
-	var files []string
-	var skippedCount int
-	var symlinkCount int
-	err = filepath.Walk(localPath, func(filePath string, info os.FileInfo, err error) error {
-		if err != nil {
-			// Log permission errors but continue walking
-			if os.IsPermission(err) {
-				logger.Debugf("Permission denied: %s", filePath)
-				return nil
-			}
-			return err
-		}
-
-		// Skip symlinks to avoid potential issues with hardline seeding files
-		// and to prevent scanning the same file multiple times via different paths
-		if info.Mode()&os.ModeSymlink != 0 {
-			symlinkCount++
-			return nil
-		}
-
-		if !info.IsDir() {
-			// Skip hidden and temporary files
-			if isHiddenOrTempFile(filePath) {
-				skippedCount++
-				return nil
-			}
-			// Only include media files
-			if isMediaFile(filePath) {
-				files = append(files, filePath)
-			} else {
-				skippedCount++
-			}
-		}
-		return nil
-	})
+	// Enumerate files
+	files, err := s.enumerateMediaFiles(localPath)
 	if err != nil {
 		s.mu.Lock()
 		delete(s.activeScans, scanID)
@@ -694,91 +793,23 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 		return err
 	}
 
-	if skippedCount > 0 || symlinkCount > 0 {
-		logger.Debugf("Skipped %d non-media/hidden files and %d symlinks in %s", skippedCount, symlinkCount, localPath)
-	}
-
 	progress.TotalFiles = len(files)
 	progress.Status = "scanning"
 
-	// Serialize file list and detection config for resumability
-	fileListJSON, err := json.Marshal(files)
-	if err != nil {
-		logger.Errorf("Failed to serialize file list: %v", err)
-		fileListJSON = []byte("[]")
-	}
-
-	detectionConfigJSON, err := json.Marshal(detectionConfig)
-	if err != nil {
-		logger.Errorf("Failed to serialize detection config: %v", err)
-		detectionConfigJSON = []byte("{}")
-	}
-
-	// Record scan start in database with resumability data
-	var scanDBID int64
-	insertCtx, insertCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-	result, err := s.db.ExecContext(insertCtx, `
-		INSERT INTO scans (path, path_id, status, files_scanned, corruptions_found, total_files, current_file_index, file_list, detection_config, auto_remediate, dry_run, started_at)
-		VALUES (?, ?, 'running', 0, 0, ?, 0, ?, ?, ?, ?, datetime('now'))
-	`, localPath, pathID, len(files), string(fileListJSON), string(detectionConfigJSON), autoRemediate, dryRun)
-	insertCancel()
-	if err != nil {
-		logger.Errorf("Failed to record scan start: %v", err)
-	} else {
-		var lastIDErr error
-		scanDBID, lastIDErr = result.LastInsertId()
-		if lastIDErr != nil {
-			logger.Warnf("Failed to get scan ID after insert: %v", lastIDErr)
-		}
-		progress.ScanDBID = scanDBID
-	}
-
+	// Record scan start
+	scanDBID := s.recordScanStart(localPath, pathID, files, cfg)
+	progress.ScanDBID = scanDBID
 	s.emitProgress(progress)
 
-	defer func() {
-		// Final cleanup - only update if not interrupted (interrupted is handled by Shutdown)
-		if progress.Status != "interrupted" {
-			finalStatus := "completed"
-			if progress.Status == "cancelled" {
-				finalStatus = "cancelled"
-			}
-			if scanDBID > 0 {
-				updateCtx, updateCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-				_, err := s.db.ExecContext(updateCtx, `
-					UPDATE scans
-					SET status = ?, files_scanned = ?, completed_at = datetime('now')
-					WHERE id = ?
-				`, finalStatus, progress.FilesDone, scanDBID)
-				updateCancel()
-				if err != nil {
-					logger.Errorf("Failed to update scan record: %v", err)
-				}
-			}
-		}
-
-		s.mu.Lock()
-		delete(s.activeScans, scanID)
-		s.mu.Unlock()
-		if err := s.eventBus.Publish(domain.Event{
-			AggregateType: "scan",
-			AggregateID:   scanID,
-			EventType:     "ScanCompleted",
-			EventData: map[string]interface{}{
-				"scan_id": scanID,
-				"status":  progress.Status,
-			},
-		}); err != nil {
-			logger.Errorf("Failed to publish ScanCompleted event for path scan %s: %v", scanID, err)
-		}
-	}()
+	defer s.finalizeScan(scanID, progress, scanDBID)
 
 	// Scan files starting from index 0
 	s.scanFiles(ctx, progress, scanFilesConfig{
 		Files:           files,
 		StartIndex:      0,
-		DetectionConfig: detectionConfig,
-		AutoRemediate:   autoRemediate,
-		DryRun:          dryRun,
+		DetectionConfig: cfg.DetectionConfig,
+		AutoRemediate:   cfg.AutoRemediate,
+		DryRun:          cfg.DryRun,
 		ScanDBID:        scanDBID,
 	})
 	return nil
@@ -1580,12 +1611,24 @@ func (s *ScannerService) StartRescanWorker() {
 	logger.Infof("Rescan worker started (checks every 5 minutes)")
 }
 
-// processPendingRescans checks files that previously had infrastructure errors
-func (s *ScannerService) processPendingRescans() {
+// =============================================================================
+// processPendingRescans helpers - extracted to reduce cognitive complexity
+// =============================================================================
+
+// pendingRescanFile represents a file pending rescan
+type pendingRescanFile struct {
+	ID         int64
+	FilePath   string
+	PathID     int64
+	RetryCount int
+	MaxRetries int
+}
+
+// loadPendingRescanFiles loads files that are ready for retry
+func (s *ScannerService) loadPendingRescanFiles() ([]pendingRescanFile, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
-	// Get files ready for retry
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, file_path, path_id, retry_count, max_retries
 		FROM pending_rescans
@@ -1596,49 +1639,110 @@ func (s *ScannerService) processPendingRescans() {
 		LIMIT 50
 	`)
 	if err != nil {
-		logger.Errorf("Failed to query pending rescans: %v", err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
-	var filesToProcess []struct {
-		id         int64
-		filePath   string
-		pathID     int64
-		retryCount int
-		maxRetries int
-	}
-
+	var files []pendingRescanFile
 	for rows.Next() {
-		var f struct {
-			id         int64
-			filePath   string
-			pathID     int64
-			retryCount int
-			maxRetries int
-		}
+		var f pendingRescanFile
 		var pathID sql.NullInt64
-		if err := rows.Scan(&f.id, &f.filePath, &pathID, &f.retryCount, &f.maxRetries); err != nil {
+		if err := rows.Scan(&f.ID, &f.FilePath, &pathID, &f.RetryCount, &f.MaxRetries); err != nil {
 			logger.Errorf("Failed to scan pending rescan row: %v", err)
 			continue
 		}
 		if pathID.Valid {
-			f.pathID = pathID.Int64
+			f.PathID = pathID.Int64
 		}
-		filesToProcess = append(filesToProcess, f)
+		files = append(files, f)
 	}
 
-	if err := rows.Err(); err != nil {
-		logger.Errorf("Error iterating pending rescans: %v", err)
+	return files, rows.Err()
+}
+
+// markRescanResolved marks a pending rescan as resolved with the given resolution
+func (s *ScannerService) markRescanResolved(id int64, resolution string) {
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE pending_rescans
+		SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, resolution = ?
+		WHERE id = ?
+	`, resolution, id); err != nil {
+		logger.Warnf("Failed to mark pending rescan %d as %s: %v", id, resolution, err)
+	}
+}
+
+// updateRescanRetry updates the retry state for a pending rescan
+func (s *ScannerService) updateRescanRetry(f pendingRescanFile, healthErr *integration.HealthCheckError) {
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE pending_rescans
+		SET retry_count = retry_count + 1,
+		    last_attempt_at = CURRENT_TIMESTAMP,
+		    error_type = ?,
+		    error_message = ?,
+		    next_retry_at = datetime('now', '+' || (5 * (1 << MIN(retry_count + 1, 5))) || ' minutes')
+		WHERE id = ?
+	`, healthErr.Type, healthErr.Message, f.ID); err != nil {
+		logger.Warnf("Failed to update pending rescan %d retry state: %v", f.ID, err)
 	}
 
-	if len(filesToProcess) == 0 {
+	// Check if we've exceeded max retries
+	if f.RetryCount+1 >= f.MaxRetries {
+		s.markRescanResolved(f.ID, "abandoned")
+		logger.Infof("Pending rescan abandoned after %d retries: %s", f.MaxRetries, f.FilePath)
+	} else {
+		logger.Debugf("Pending rescan still inaccessible, will retry: %s", f.FilePath)
+	}
+}
+
+// emitRescanCorruption emits a corruption event for a rescan that found actual corruption
+func (s *ScannerService) emitRescanCorruption(f pendingRescanFile, healthErr *integration.HealthCheckError) {
+	autoRemediate, dryRun, _ := s.getScanPathConfig(f.FilePath)
+
+	var fileSize int64
+	if info, err := os.Stat(f.FilePath); err == nil {
+		fileSize = info.Size()
+	}
+
+	if err := s.eventBus.Publish(domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   uuid.New().String(),
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path":       f.FilePath,
+			"file_size":       fileSize,
+			"path_id":         f.PathID,
+			"corruption_type": healthErr.Type,
+			"error_details":   healthErr.Message,
+			"source":          "rescan_worker",
+			"auto_remediate":  autoRemediate,
+			"dry_run":         dryRun,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish corruption event for rescan: %v", err)
+	}
+}
+
+// processPendingRescans checks files that previously had infrastructure errors
+func (s *ScannerService) processPendingRescans() {
+	files, err := s.loadPendingRescanFiles()
+	if err != nil {
+		logger.Errorf("Failed to query pending rescans: %v", err)
 		return
 	}
 
-	logger.Infof("Processing %d pending rescans", len(filesToProcess))
+	if len(files) == 0 {
+		return
+	}
 
-	for _, f := range filesToProcess {
+	logger.Infof("Processing %d pending rescans", len(files))
+
+	for _, f := range files {
 		// Check for shutdown
 		select {
 		case <-s.shutdownCh:
@@ -1646,99 +1750,23 @@ func (s *ScannerService) processPendingRescans() {
 		default:
 		}
 
-		// Try to scan the file
-		healthy, healthErr := s.detector.Check(f.filePath, "quick")
+		healthy, healthErr := s.detector.Check(f.FilePath, "quick")
 
 		if healthy {
-			// File is now accessible and healthy - mark as resolved
-			resolveCtx, resolveCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-			if _, err := s.db.ExecContext(resolveCtx, `
-				UPDATE pending_rescans
-				SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, resolution = 'healthy'
-				WHERE id = ?
-			`, f.id); err != nil {
-				logger.Warnf("Failed to mark pending rescan %d as resolved: %v", f.id, err)
-			}
-			resolveCancel()
-			logger.Infof("Pending rescan resolved as healthy: %s", f.filePath)
+			s.markRescanResolved(f.ID, "healthy")
+			logger.Infof("Pending rescan resolved as healthy: %s", f.FilePath)
 			continue
 		}
 
 		if healthErr.IsRecoverable() {
-			// Still having infrastructure issues - update retry time
-			retryCtx, retryCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-			if _, err := s.db.ExecContext(retryCtx, `
-				UPDATE pending_rescans
-				SET retry_count = retry_count + 1,
-				    last_attempt_at = CURRENT_TIMESTAMP,
-				    error_type = ?,
-				    error_message = ?,
-				    next_retry_at = datetime('now', '+' || (5 * (1 << MIN(retry_count + 1, 5))) || ' minutes')
-				WHERE id = ?
-			`, healthErr.Type, healthErr.Message, f.id); err != nil {
-				logger.Warnf("Failed to update pending rescan %d retry state: %v", f.id, err)
-			}
-			retryCancel()
-
-			// Check if we've exceeded max retries
-			if f.retryCount+1 >= f.maxRetries {
-				abandonCtx, abandonCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-				if _, err := s.db.ExecContext(abandonCtx, `
-					UPDATE pending_rescans
-					SET status = 'abandoned', resolved_at = CURRENT_TIMESTAMP, resolution = 'abandoned'
-					WHERE id = ?
-				`, f.id); err != nil {
-					logger.Warnf("Failed to mark pending rescan %d as abandoned: %v", f.id, err)
-				}
-				abandonCancel()
-				logger.Infof("Pending rescan abandoned after %d retries: %s", f.maxRetries, f.filePath)
-			} else {
-				logger.Debugf("Pending rescan still inaccessible, will retry: %s", f.filePath)
-			}
+			s.updateRescanRetry(f, healthErr)
 			continue
 		}
 
-		// File is accessible but actually corrupt - emit corruption event
-		logger.Infof("Pending rescan revealed corruption: %s (Type: %s)", f.filePath, healthErr.Type)
-
-		// Mark as resolved with corruption
-		corruptCtx, corruptCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-		if _, err := s.db.ExecContext(corruptCtx, `
-			UPDATE pending_rescans
-			SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, resolution = 'corrupt'
-			WHERE id = ?
-		`, f.id); err != nil {
-			logger.Warnf("Failed to mark pending rescan %d as corrupt: %v", f.id, err)
-		}
-		corruptCancel()
-
-		// Get scan path config for this path
-		autoRemediate, dryRun, _ := s.getScanPathConfig(f.filePath)
-
-		// Get file size for enriched data
-		var fileSize int64
-		if info, err := os.Stat(f.filePath); err == nil {
-			fileSize = info.Size()
-		}
-
-		// Emit corruption event
-		if err := s.eventBus.Publish(domain.Event{
-			AggregateType: "corruption",
-			AggregateID:   uuid.New().String(),
-			EventType:     domain.CorruptionDetected,
-			EventData: map[string]interface{}{
-				"file_path":       f.filePath,
-				"file_size":       fileSize,
-				"path_id":         f.pathID,
-				"corruption_type": healthErr.Type,
-				"error_details":   healthErr.Message,
-				"source":          "rescan_worker",
-				"auto_remediate":  autoRemediate,
-				"dry_run":         dryRun,
-			},
-		}); err != nil {
-			logger.Errorf("Failed to publish corruption event for rescan: %v", err)
-		}
+		// File is accessible but actually corrupt
+		logger.Infof("Pending rescan revealed corruption: %s (Type: %s)", f.FilePath, healthErr.Type)
+		s.markRescanResolved(f.ID, "corrupt")
+		s.emitRescanCorruption(f, healthErr)
 	}
 }
 

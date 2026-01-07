@@ -546,54 +546,37 @@ func (n *Notifier) extractAggregateID(data map[string]interface{}) string {
 	return ""
 }
 
+// providerLabels maps provider types to human-readable labels
+var providerLabels = map[string]string{
+	ProviderDiscord:    "Discord",
+	ProviderPushover:   "Pushover",
+	ProviderTelegram:   "Telegram",
+	ProviderSlack:      "Slack",
+	ProviderEmail:      "Email",
+	ProviderGotify:     "Gotify",
+	ProviderNtfy:       "ntfy",
+	ProviderWhatsApp:   "WhatsApp",
+	ProviderSignal:     "Signal",
+	ProviderBark:       "Bark",
+	ProviderGoogleChat: "Google Chat",
+	ProviderIFTTT:      "IFTTT",
+	ProviderJoin:       "Join",
+	ProviderMattermost: "Mattermost",
+	ProviderMatrix:     "Matrix",
+	ProviderPushbullet: "Pushbullet",
+	ProviderRocketchat: "Rocket.Chat",
+	ProviderTeams:      "Microsoft Teams",
+	ProviderZulip:      "Zulip",
+	ProviderGeneric:    "Generic Webhook",
+	ProviderCustom:     "Custom (Shoutrrr URL)",
+}
+
 // getProviderLabel returns a human-readable label for the provider type
 func (n *Notifier) getProviderLabel(providerType string) string {
-	switch providerType {
-	case ProviderDiscord:
-		return "Discord"
-	case ProviderPushover:
-		return "Pushover"
-	case ProviderTelegram:
-		return "Telegram"
-	case ProviderSlack:
-		return "Slack"
-	case ProviderEmail:
-		return "Email"
-	case ProviderGotify:
-		return "Gotify"
-	case ProviderNtfy:
-		return "ntfy"
-	case ProviderWhatsApp:
-		return "WhatsApp"
-	case ProviderSignal:
-		return "Signal"
-	case ProviderBark:
-		return "Bark"
-	case ProviderGoogleChat:
-		return "Google Chat"
-	case ProviderIFTTT:
-		return "IFTTT"
-	case ProviderJoin:
-		return "Join"
-	case ProviderMattermost:
-		return "Mattermost"
-	case ProviderMatrix:
-		return "Matrix"
-	case ProviderPushbullet:
-		return "Pushbullet"
-	case ProviderRocketchat:
-		return "Rocket.Chat"
-	case ProviderTeams:
-		return "Microsoft Teams"
-	case ProviderZulip:
-		return "Zulip"
-	case ProviderGeneric:
-		return "Generic Webhook"
-	case ProviderCustom:
-		return "Custom (Shoutrrr URL)"
-	default:
-		return providerType
+	if label, ok := providerLabels[providerType]; ok {
+		return label
 	}
+	return providerType
 }
 
 func (n *Notifier) buildShoutrrrURL(cfg *NotificationConfig) (string, error) {
@@ -636,88 +619,184 @@ func convertSlackWebhook(webhookURL string) (string, error) {
 	return fmt.Sprintf("slack://hook:%s-%s-%s@webhook", tokens[0], tokens[1], tokens[2]), nil
 }
 
-func (n *Notifier) formatMessage(eventType string, data map[string]interface{}) string {
-	// Extract common fields
+// messageContext holds extracted data for message formatting
+type messageContext struct {
+	FilePath       string
+	FileName       string
+	CorruptionType string
+	ScanPath       string
+	Healthy        int
+	Corrupt        int
+	Total          int
+	RetryCount     int
+	MaxRetries     int
+	ErrorMsg       string
+	Reason         string
+	Attempts       int
+}
+
+// extractMessageContext extracts common fields from event data
+func extractMessageContext(data map[string]interface{}) messageContext {
 	filePath, _ := data["file_path"].(string)
 	fileName := filePath
 	if idx := strings.LastIndex(filePath, "/"); idx >= 0 {
 		fileName = filePath[idx+1:]
 	}
-	corruptionType, _ := data["corruption_type"].(string)
-	scanPath, _ := data["path"].(string)
-	healthy, _ := data["healthy_files"].(int)
-	corrupt, _ := data["corrupt_files"].(int)
-	total, _ := data["total_files"].(int)
-	retryCount, _ := data["retry_count"].(int)
-	maxRetries, _ := data["max_retries"].(int)
-	errorMsg, _ := data["error"].(string)
 
-	switch eventType {
-	case string(domain.ScanStarted):
-		return fmt.Sprintf("🔍 Scan started: %s", scanPath)
-	case string(domain.ScanCompleted):
-		return fmt.Sprintf("✅ Scan complete: %s\n📊 %d/%d healthy, %d corrupt", scanPath, healthy, total, corrupt)
-	case string(domain.ScanFailed):
-		return fmt.Sprintf("❌ Scan failed: %s\n⚠️ %s", scanPath, errorMsg)
-	case string(domain.CorruptionDetected):
-		msg := fmt.Sprintf("🔴 Corruption detected: %s", fileName)
-		if corruptionType != "" {
-			msg += fmt.Sprintf("\n📋 Type: %s", corruptionType)
-		}
-		return msg
-	case string(domain.RemediationQueued):
-		return fmt.Sprintf("🔧 Remediation queued: %s", fileName)
-	case string(domain.DeletionStarted):
-		return fmt.Sprintf("🗑️ Deletion started: %s", fileName)
-	case string(domain.DeletionCompleted):
-		return fmt.Sprintf("✅ File deleted for re-download: %s", fileName)
-	case string(domain.DeletionFailed):
-		return fmt.Sprintf("❌ Deletion failed: %s\n⚠️ %s", fileName, errorMsg)
-	case string(domain.SearchStarted):
-		return fmt.Sprintf("🔎 Search triggered in *arr: %s", fileName)
-	case string(domain.SearchCompleted):
-		return fmt.Sprintf("✅ Search completed: %s", fileName)
-	case string(domain.SearchFailed):
-		return fmt.Sprintf("❌ Search failed: %s\n⚠️ %s", fileName, errorMsg)
-	case string(domain.VerificationStarted):
-		return fmt.Sprintf("🔬 Verification started: %s", fileName)
-	case string(domain.VerificationSuccess):
-		return fmt.Sprintf("✅ File verified healthy: %s", fileName)
-	case string(domain.VerificationFailed):
-		return fmt.Sprintf("❌ Verification failed: %s\n⚠️ %s", fileName, errorMsg)
-	case string(domain.DownloadTimeout):
-		return fmt.Sprintf("⏰ Download timeout: %s", fileName)
-	case string(domain.ImportBlocked):
-		return fmt.Sprintf("🚫 Import blocked in *arr: %s\n⚠️ %s\n👉 Manual intervention required in Sonarr/Radarr", fileName, errorMsg)
-	case string(domain.ManuallyRemoved):
-		return fmt.Sprintf("🗑️ Download manually removed: %s\n👉 Item was removed from *arr queue without being imported", fileName)
-	case string(domain.DownloadIgnored):
-		return fmt.Sprintf("⏸️ Download ignored by user: %s\n👉 User marked download as ignored in *arr - remediation stopped", fileName)
-	case string(domain.RetryScheduled):
-		return fmt.Sprintf("🔄 Retry scheduled (%d/%d): %s", retryCount, maxRetries, fileName)
-	case string(domain.MaxRetriesReached):
-		return fmt.Sprintf("⚠️ Max retries exhausted (%d): %s", maxRetries, fileName)
-	case string(domain.SearchExhausted):
-		reason, _ := data["reason"].(string)
-		attempts, _ := data["attempts"].(int)
-		if attempts == 0 {
-			// Try float64 (JSON numbers)
-			if f, ok := data["attempts"].(float64); ok {
-				attempts = int(f)
-			}
-		}
-		msg := fmt.Sprintf("🔍 No replacement found: %s", fileName)
-		if attempts > 0 {
-			msg += fmt.Sprintf("\n📊 Attempts: %d", attempts)
-		}
-		if reason != "" {
-			msg += fmt.Sprintf("\n📋 Reason: %s", reason)
-		}
-		msg += "\n👉 Check your indexers or manually search in Sonarr/Radarr"
-		return msg
-	default:
-		return fmt.Sprintf("📢 Event: %s", eventType)
+	ctx := messageContext{
+		FilePath: filePath,
+		FileName: fileName,
 	}
+	ctx.CorruptionType, _ = data["corruption_type"].(string)
+	ctx.ScanPath, _ = data["path"].(string)
+	ctx.Healthy, _ = data["healthy_files"].(int)
+	ctx.Corrupt, _ = data["corrupt_files"].(int)
+	ctx.Total, _ = data["total_files"].(int)
+	ctx.RetryCount, _ = data["retry_count"].(int)
+	ctx.MaxRetries, _ = data["max_retries"].(int)
+	ctx.ErrorMsg, _ = data["error"].(string)
+	ctx.Reason, _ = data["reason"].(string)
+
+	// Handle attempts which could be int or float64 from JSON
+	if attempts, ok := data["attempts"].(int); ok {
+		ctx.Attempts = attempts
+	} else if f, ok := data["attempts"].(float64); ok {
+		ctx.Attempts = int(f)
+	}
+
+	return ctx
+}
+
+// messageFormatter is a function type for formatting event messages
+type messageFormatter func(ctx messageContext) string
+
+// messageFormatters maps event types to their message formatters
+var messageFormatters = map[string]messageFormatter{
+	string(domain.ScanStarted):         fmtScanStarted,
+	string(domain.ScanCompleted):       fmtScanCompleted,
+	string(domain.ScanFailed):          fmtScanFailed,
+	string(domain.CorruptionDetected):  fmtCorruptionDetected,
+	string(domain.RemediationQueued):   fmtRemediationQueued,
+	string(domain.DeletionStarted):     fmtDeletionStarted,
+	string(domain.DeletionCompleted):   fmtDeletionCompleted,
+	string(domain.DeletionFailed):      fmtDeletionFailed,
+	string(domain.SearchStarted):       fmtSearchStarted,
+	string(domain.SearchCompleted):     fmtSearchCompleted,
+	string(domain.SearchFailed):        fmtSearchFailed,
+	string(domain.VerificationStarted): fmtVerificationStarted,
+	string(domain.VerificationSuccess): fmtVerificationSuccess,
+	string(domain.VerificationFailed):  fmtVerificationFailed,
+	string(domain.DownloadTimeout):     fmtDownloadTimeout,
+	string(domain.ImportBlocked):       fmtImportBlocked,
+	string(domain.ManuallyRemoved):     fmtManuallyRemoved,
+	string(domain.DownloadIgnored):     fmtDownloadIgnored,
+	string(domain.RetryScheduled):      fmtRetryScheduled,
+	string(domain.MaxRetriesReached):   fmtMaxRetriesReached,
+	string(domain.SearchExhausted):     fmtSearchExhausted,
+}
+
+func fmtScanStarted(ctx messageContext) string {
+	return fmt.Sprintf("🔍 Scan started: %s", ctx.ScanPath)
+}
+
+func fmtScanCompleted(ctx messageContext) string {
+	return fmt.Sprintf("✅ Scan complete: %s\n📊 %d/%d healthy, %d corrupt", ctx.ScanPath, ctx.Healthy, ctx.Total, ctx.Corrupt)
+}
+
+func fmtScanFailed(ctx messageContext) string {
+	return fmt.Sprintf("❌ Scan failed: %s\n⚠️ %s", ctx.ScanPath, ctx.ErrorMsg)
+}
+
+func fmtCorruptionDetected(ctx messageContext) string {
+	msg := fmt.Sprintf("🔴 Corruption detected: %s", ctx.FileName)
+	if ctx.CorruptionType != "" {
+		msg += fmt.Sprintf("\n📋 Type: %s", ctx.CorruptionType)
+	}
+	return msg
+}
+
+func fmtRemediationQueued(ctx messageContext) string {
+	return fmt.Sprintf("🔧 Remediation queued: %s", ctx.FileName)
+}
+
+func fmtDeletionStarted(ctx messageContext) string {
+	return fmt.Sprintf("🗑️ Deletion started: %s", ctx.FileName)
+}
+
+func fmtDeletionCompleted(ctx messageContext) string {
+	return fmt.Sprintf("✅ File deleted for re-download: %s", ctx.FileName)
+}
+
+func fmtDeletionFailed(ctx messageContext) string {
+	return fmt.Sprintf("❌ Deletion failed: %s\n⚠️ %s", ctx.FileName, ctx.ErrorMsg)
+}
+
+func fmtSearchStarted(ctx messageContext) string {
+	return fmt.Sprintf("🔎 Search triggered in *arr: %s", ctx.FileName)
+}
+
+func fmtSearchCompleted(ctx messageContext) string {
+	return fmt.Sprintf("✅ Search completed: %s", ctx.FileName)
+}
+
+func fmtSearchFailed(ctx messageContext) string {
+	return fmt.Sprintf("❌ Search failed: %s\n⚠️ %s", ctx.FileName, ctx.ErrorMsg)
+}
+
+func fmtVerificationStarted(ctx messageContext) string {
+	return fmt.Sprintf("🔬 Verification started: %s", ctx.FileName)
+}
+
+func fmtVerificationSuccess(ctx messageContext) string {
+	return fmt.Sprintf("✅ File verified healthy: %s", ctx.FileName)
+}
+
+func fmtVerificationFailed(ctx messageContext) string {
+	return fmt.Sprintf("❌ Verification failed: %s\n⚠️ %s", ctx.FileName, ctx.ErrorMsg)
+}
+
+func fmtDownloadTimeout(ctx messageContext) string {
+	return fmt.Sprintf("⏰ Download timeout: %s", ctx.FileName)
+}
+
+func fmtImportBlocked(ctx messageContext) string {
+	return fmt.Sprintf("🚫 Import blocked in *arr: %s\n⚠️ %s\n👉 Manual intervention required in Sonarr/Radarr", ctx.FileName, ctx.ErrorMsg)
+}
+
+func fmtManuallyRemoved(ctx messageContext) string {
+	return fmt.Sprintf("🗑️ Download manually removed: %s\n👉 Item was removed from *arr queue without being imported", ctx.FileName)
+}
+
+func fmtDownloadIgnored(ctx messageContext) string {
+	return fmt.Sprintf("⏸️ Download ignored by user: %s\n👉 User marked download as ignored in *arr - remediation stopped", ctx.FileName)
+}
+
+func fmtRetryScheduled(ctx messageContext) string {
+	return fmt.Sprintf("🔄 Retry scheduled (%d/%d): %s", ctx.RetryCount, ctx.MaxRetries, ctx.FileName)
+}
+
+func fmtMaxRetriesReached(ctx messageContext) string {
+	return fmt.Sprintf("⚠️ Max retries exhausted (%d): %s", ctx.MaxRetries, ctx.FileName)
+}
+
+func fmtSearchExhausted(ctx messageContext) string {
+	msg := fmt.Sprintf("🔍 No replacement found: %s", ctx.FileName)
+	if ctx.Attempts > 0 {
+		msg += fmt.Sprintf("\n📊 Attempts: %d", ctx.Attempts)
+	}
+	if ctx.Reason != "" {
+		msg += fmt.Sprintf("\n📋 Reason: %s", ctx.Reason)
+	}
+	msg += "\n👉 Check your indexers or manually search in Sonarr/Radarr"
+	return msg
+}
+
+func (n *Notifier) formatMessage(eventType string, data map[string]interface{}) string {
+	ctx := extractMessageContext(data)
+	if formatter, ok := messageFormatters[eventType]; ok {
+		return formatter(ctx)
+	}
+	return fmt.Sprintf("📢 Event: %s", eventType)
 }
 
 // GenericWebhookPayload is the rich JSON payload sent to generic webhooks
@@ -866,54 +945,42 @@ func (n *Notifier) sendGenericWebhook(cfg *NotificationConfig, eventType string,
 }
 
 // formatTitle creates a short title for the event
+// eventTitles maps event types to short titles
+var eventTitles = map[string]string{
+	string(domain.ScanStarted):         "🔍 Scan Started",
+	string(domain.ScanCompleted):       "✅ Scan Complete",
+	string(domain.ScanFailed):          "❌ Scan Failed",
+	string(domain.RemediationQueued):   "🔧 Remediation Queued",
+	string(domain.DeletionStarted):     "🗑️ Deletion Started",
+	string(domain.DeletionCompleted):   "✅ File Deleted",
+	string(domain.DeletionFailed):      "❌ Deletion Failed",
+	string(domain.SearchStarted):       "🔎 Search Triggered",
+	string(domain.SearchCompleted):     "✅ Search Complete",
+	string(domain.SearchFailed):        "❌ Search Failed",
+	string(domain.VerificationStarted): "🔬 Verification Started",
+	string(domain.VerificationSuccess): "✅ Verification Success",
+	string(domain.VerificationFailed):  "❌ Verification Failed",
+	string(domain.DownloadTimeout):     "⏰ Download Timeout",
+	string(domain.ImportBlocked):       "🚫 Import Blocked - Manual Action Required",
+	string(domain.ManuallyRemoved):     "🗑️ Download Manually Removed",
+	string(domain.DownloadIgnored):     "⏸️ Download Ignored by User",
+	string(domain.RetryScheduled):      "🔄 Retry Scheduled",
+	string(domain.MaxRetriesReached):   "⚠️ Max Retries Reached",
+}
+
 func (n *Notifier) formatTitle(eventType string, fileName string) string {
-	switch eventType {
-	case string(domain.ScanStarted):
-		return "🔍 Scan Started"
-	case string(domain.ScanCompleted):
-		return "✅ Scan Complete"
-	case string(domain.ScanFailed):
-		return "❌ Scan Failed"
-	case string(domain.CorruptionDetected):
+	// Special case: CorruptionDetected includes filename
+	if eventType == string(domain.CorruptionDetected) {
 		if fileName != "" {
 			return fmt.Sprintf("🔴 Corruption detected: %s", fileName)
 		}
 		return "🔴 Corruption Detected"
-	case string(domain.RemediationQueued):
-		return "🔧 Remediation Queued"
-	case string(domain.DeletionStarted):
-		return "🗑️ Deletion Started"
-	case string(domain.DeletionCompleted):
-		return "✅ File Deleted"
-	case string(domain.DeletionFailed):
-		return "❌ Deletion Failed"
-	case string(domain.SearchStarted):
-		return "🔎 Search Triggered"
-	case string(domain.SearchCompleted):
-		return "✅ Search Complete"
-	case string(domain.SearchFailed):
-		return "❌ Search Failed"
-	case string(domain.VerificationStarted):
-		return "🔬 Verification Started"
-	case string(domain.VerificationSuccess):
-		return "✅ Verification Success"
-	case string(domain.VerificationFailed):
-		return "❌ Verification Failed"
-	case string(domain.DownloadTimeout):
-		return "⏰ Download Timeout"
-	case string(domain.ImportBlocked):
-		return "🚫 Import Blocked - Manual Action Required"
-	case string(domain.ManuallyRemoved):
-		return "🗑️ Download Manually Removed"
-	case string(domain.DownloadIgnored):
-		return "⏸️ Download Ignored by User"
-	case string(domain.RetryScheduled):
-		return "🔄 Retry Scheduled"
-	case string(domain.MaxRetriesReached):
-		return "⚠️ Max Retries Reached"
-	default:
-		return fmt.Sprintf("📢 %s", eventType)
 	}
+
+	if title, ok := eventTitles[eventType]; ok {
+		return title
+	}
+	return fmt.Sprintf("📢 %s", eventType)
 }
 
 func (n *Notifier) logNotification(notificationID int64, eventType, message, status, errorMsg string) {

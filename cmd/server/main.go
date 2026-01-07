@@ -25,74 +25,75 @@ import (
 
 const logSeparator = "========================================"
 
-func main() {
-	// Define command line flags (these override environment variables)
-	showVersion := flag.Bool("version", false, "Print version and exit")
-	flag.BoolVar(showVersion, "v", false, "Print version and exit (shorthand)")
+// cliFlags holds all parsed command line flags
+type cliFlags struct {
+	showVersion          *bool
+	port                 *string
+	basePath             *string
+	logLevel             *string
+	dataDir              *string
+	databasePath         *string
+	webDir               *string
+	dryRun               *bool
+	retentionDays        *int
+	maxRetries           *int
+	verificationTimeout  *time.Duration
+	verificationInterval *time.Duration
+	staleThreshold       *time.Duration
+	arrRateLimitRPS      *float64
+	arrRateLimitBurst    *int
+}
 
-	// Configuration flags - all can also be set via environment variables (HEALARR_*)
-	flagPort := flag.String("port", "", "HTTP server port (env: HEALARR_PORT, default: 3090)")
-	flagBasePath := flag.String("base-path", "", "URL base path for reverse proxy (env: HEALARR_BASE_PATH, default: /)")
-	flagLogLevel := flag.String("log-level", "", "Log level: debug, info, error (env: HEALARR_LOG_LEVEL, default: info)")
-	flagDataDir := flag.String("data-dir", "", "Data directory path (env: HEALARR_DATA_DIR)")
-	flagDatabasePath := flag.String("database-path", "", "Database file path (env: HEALARR_DATABASE_PATH)")
-	flagWebDir := flag.String("web-dir", "", "Web assets directory (env: HEALARR_WEB_DIR)")
-	flagDryRun := flag.Bool("dry-run", false, "Dry run mode - no files deleted (env: HEALARR_DRY_RUN)")
-	flagRetentionDays := flag.Int("retention-days", -1, "Days to keep old data, 0 to disable pruning (env: HEALARR_RETENTION_DAYS, default: 90)")
-	flagMaxRetries := flag.Int("max-retries", 0, "Default max remediation retries (env: HEALARR_DEFAULT_MAX_RETRIES, default: 3)")
-	flagVerificationTimeout := flag.Duration("verification-timeout", 0, "Max time to wait for file replacement (env: HEALARR_VERIFICATION_TIMEOUT, default: 72h)")
-	flagVerificationInterval := flag.Duration("verification-interval", 0, "Polling interval for verification (env: HEALARR_VERIFICATION_INTERVAL, default: 30s)")
-	flagStaleThreshold := flag.Duration("stale-threshold", 0, "Auto-fix items Healarr lost track of after this time (env: HEALARR_STALE_THRESHOLD, default: 24h)")
-	flagArrRateLimitRPS := flag.Float64("arr-rate-limit", 0, "Max requests per second to *arr APIs (env: HEALARR_ARR_RATE_LIMIT_RPS, default: 5)")
-	flagArrRateLimitBurst := flag.Int("arr-rate-burst", 0, "Burst size for *arr rate limiting (env: HEALARR_ARR_RATE_LIMIT_BURST, default: 10)")
-
-	flag.Parse()
-
-	if *showVersion {
-		fmt.Printf("Healarr %s\n", config.Version)
-		os.Exit(0)
+// parseFlags defines and parses command line flags
+func parseFlags() cliFlags {
+	flags := cliFlags{
+		showVersion:          flag.Bool("version", false, "Print version and exit"),
+		port:                 flag.String("port", "", "HTTP server port (env: HEALARR_PORT, default: 3090)"),
+		basePath:             flag.String("base-path", "", "URL base path for reverse proxy (env: HEALARR_BASE_PATH, default: /)"),
+		logLevel:             flag.String("log-level", "", "Log level: debug, info, error (env: HEALARR_LOG_LEVEL, default: info)"),
+		dataDir:              flag.String("data-dir", "", "Data directory path (env: HEALARR_DATA_DIR)"),
+		databasePath:         flag.String("database-path", "", "Database file path (env: HEALARR_DATABASE_PATH)"),
+		webDir:               flag.String("web-dir", "", "Web assets directory (env: HEALARR_WEB_DIR)"),
+		dryRun:               flag.Bool("dry-run", false, "Dry run mode - no files deleted (env: HEALARR_DRY_RUN)"),
+		retentionDays:        flag.Int("retention-days", -1, "Days to keep old data, 0 to disable pruning (env: HEALARR_RETENTION_DAYS, default: 90)"),
+		maxRetries:           flag.Int("max-retries", 0, "Default max remediation retries (env: HEALARR_DEFAULT_MAX_RETRIES, default: 3)"),
+		verificationTimeout:  flag.Duration("verification-timeout", 0, "Max time to wait for file replacement (env: HEALARR_VERIFICATION_TIMEOUT, default: 72h)"),
+		verificationInterval: flag.Duration("verification-interval", 0, "Polling interval for verification (env: HEALARR_VERIFICATION_INTERVAL, default: 30s)"),
+		staleThreshold:       flag.Duration("stale-threshold", 0, "Auto-fix items Healarr lost track of after this time (env: HEALARR_STALE_THRESHOLD, default: 24h)"),
+		arrRateLimitRPS:      flag.Float64("arr-rate-limit", 0, "Max requests per second to *arr APIs (env: HEALARR_ARR_RATE_LIMIT_RPS, default: 5)"),
+		arrRateLimitBurst:    flag.Int("arr-rate-burst", 0, "Burst size for *arr rate limiting (env: HEALARR_ARR_RATE_LIMIT_BURST, default: 10)"),
 	}
+	flag.BoolVar(flags.showVersion, "v", false, "Print version and exit (shorthand)")
+	flag.Parse()
+	return flags
+}
 
-	// Load configuration from environment variables (initial load, refreshed after flags)
-	config.Load()
-
-	// Apply command-line flag overrides
+// applyFlagOverrides applies CLI flags to the configuration
+func applyFlagOverrides(flags cliFlags) {
 	flagOverrides := config.FlagOverrides{
-		Port:                 flagPort,
-		BasePath:             flagBasePath,
-		LogLevel:             flagLogLevel,
-		DataDir:              flagDataDir,
-		DatabasePath:         flagDatabasePath,
-		WebDir:               flagWebDir,
-		DryRunMode:           flagDryRun,
-		DefaultMaxRetries:    flagMaxRetries,
-		VerificationTimeout:  flagVerificationTimeout,
-		VerificationInterval: flagVerificationInterval,
-		StaleThreshold:       flagStaleThreshold,
-		ArrRateLimitRPS:      flagArrRateLimitRPS,
-		ArrRateLimitBurst:    flagArrRateLimitBurst,
+		Port:                 flags.port,
+		BasePath:             flags.basePath,
+		LogLevel:             flags.logLevel,
+		DataDir:              flags.dataDir,
+		DatabasePath:         flags.databasePath,
+		WebDir:               flags.webDir,
+		DryRunMode:           flags.dryRun,
+		DefaultMaxRetries:    flags.maxRetries,
+		VerificationTimeout:  flags.verificationTimeout,
+		VerificationInterval: flags.verificationInterval,
+		StaleThreshold:       flags.staleThreshold,
+		ArrRateLimitRPS:      flags.arrRateLimitRPS,
+		ArrRateLimitBurst:    flags.arrRateLimitBurst,
 	}
 	// Special handling for retention days: -1 means not set (use default), 0 means disable
-	if *flagRetentionDays >= 0 {
-		flagOverrides.RetentionDays = flagRetentionDays
+	if *flags.retentionDays >= 0 {
+		flagOverrides.RetentionDays = flags.retentionDays
 	}
 	config.ApplyFlags(flagOverrides)
+}
 
-	// Refresh config after applying flags
-	cfg := config.Get()
-
-	// Initialize logger with configured log directory
-	logger.Init(cfg.LogDir)
-
-	// Set log level from config
-	logger.SetLevel(cfg.LogLevel)
-
-	logger.Infof(logSeparator)
-	logger.Infof("Starting Healarr %s...", config.Version)
-	logger.Infof("Health Evaluation And Library Auto-Recovery for *aRR")
-	logger.Infof(logSeparator)
-
-	// Log initial configuration (base path may be updated from DB)
+// logConfiguration logs the current configuration
+func logConfiguration(cfg *config.Config) {
 	logger.Infof("Configuration:")
 	logger.Infof("  Port: %s", cfg.Port)
 	logger.Infof("  Log Level: %s", cfg.LogLevel)
@@ -115,6 +116,34 @@ func main() {
 	if cfg.DryRunMode {
 		logger.Infof("  ⚠️  DRY-RUN MODE: ENABLED (no files will be deleted)")
 	}
+}
+
+func main() {
+	flags := parseFlags()
+
+	if *flags.showVersion {
+		fmt.Printf("Healarr %s\n", config.Version)
+		os.Exit(0)
+	}
+
+	// Load configuration from environment variables (initial load, refreshed after flags)
+	config.Load()
+	applyFlagOverrides(flags)
+
+	// Refresh config after applying flags
+	cfg := config.Get()
+
+	// Initialize logger with configured log directory
+	logger.Init(cfg.LogDir)
+	logger.SetLevel(cfg.LogLevel)
+
+	logger.Infof(logSeparator)
+	logger.Infof("Starting Healarr %s...", config.Version)
+	logger.Infof("Health Evaluation And Library Auto-Recovery for *aRR")
+	logger.Infof(logSeparator)
+
+	// Log initial configuration (base path may be updated from DB)
+	logConfiguration(cfg)
 
 	// Validate configuration and warn about potential issues
 	// This checks for misconfigured paths that could cause data loss

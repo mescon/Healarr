@@ -206,6 +206,143 @@ func (r *Repository) StartPeriodicCheckpoint(interval time.Duration) func() {
 // recreateViews drops and recreates database views to ensure they match the latest schema.
 // This is necessary because SQLite views are not automatically updated when the schema changes.
 // Note: corruption_status VIEW is now a thin wrapper over corruption_summary TABLE for backwards compatibility.
+// createViewsWithSummaryTable creates optimized views using corruption_summary table
+func (r *Repository) createViewsWithSummaryTable() error {
+	// corruption_status VIEW is a thin wrapper for backwards compatibility
+	_, err := r.DB.Exec(`
+		CREATE VIEW corruption_status AS
+		SELECT
+			corruption_id,
+			current_state,
+			retry_count,
+			file_path,
+			path_id,
+			last_error,
+			corruption_type,
+			detected_at,
+			last_updated_at
+		FROM corruption_summary
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create corruption_status view: %w", err)
+	}
+
+	// dashboard_stats uses corruption_summary directly for maximum performance
+	_, err = r.DB.Exec(`
+		CREATE VIEW dashboard_stats AS
+		SELECT
+			COUNT(CASE
+				WHEN current_state != 'VerificationSuccess'
+				AND current_state != 'MaxRetriesReached'
+				AND current_state != 'CorruptionIgnored'
+				AND current_state != 'ImportBlocked'
+				AND current_state != 'ManuallyRemoved'
+				THEN 1 END) as active_corruptions,
+			COUNT(CASE
+				WHEN current_state = 'VerificationSuccess'
+				THEN 1 END) as resolved_corruptions,
+			COUNT(CASE
+				WHEN current_state = 'MaxRetriesReached'
+				THEN 1 END) as orphaned_corruptions,
+			COUNT(CASE
+				WHEN (current_state LIKE '%Started'
+				OR current_state LIKE '%Queued'
+				OR current_state LIKE '%Progress'
+				OR current_state = 'SearchCompleted'
+				OR current_state = 'DeletionCompleted'
+				OR current_state = 'FileDetected')
+				AND current_state != 'CorruptionIgnored'
+				THEN 1 END) as in_progress,
+			COUNT(CASE
+				WHEN current_state = 'ImportBlocked'
+				OR current_state = 'ManuallyRemoved'
+				THEN 1 END) as manual_intervention_required
+		FROM corruption_summary
+		WHERE current_state != 'CorruptionIgnored'
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create dashboard_stats view: %w", err)
+	}
+
+	return nil
+}
+
+// createViewsLegacy creates slower views using events table (pre-migration 004)
+func (r *Repository) createViewsLegacy() error {
+	_, err := r.DB.Exec(`
+		CREATE VIEW corruption_status AS
+		SELECT
+			aggregate_id as corruption_id,
+			(SELECT event_type FROM events e2
+			 WHERE e2.aggregate_id = e.aggregate_id
+			 ORDER BY id DESC LIMIT 1) as current_state,
+			(SELECT COUNT(*) FROM events e3
+			 WHERE e3.aggregate_id = e.aggregate_id
+			 AND e3.event_type LIKE '%Failed') as retry_count,
+			(SELECT json_extract(event_data, '$.file_path') FROM events e4
+			 WHERE e4.aggregate_id = e.aggregate_id
+			 AND e4.event_type = 'CorruptionDetected'
+			 LIMIT 1) as file_path,
+			(SELECT json_extract(event_data, '$.path_id') FROM events e7
+			 WHERE e7.aggregate_id = e.aggregate_id
+			 AND e7.event_type = 'CorruptionDetected'
+			 LIMIT 1) as path_id,
+			(SELECT json_extract(event_data, '$.error') FROM events e5
+			 WHERE e5.aggregate_id = e.aggregate_id
+			 ORDER BY id DESC LIMIT 1) as last_error,
+			(SELECT json_extract(event_data, '$.corruption_type') FROM events e6
+			 WHERE e6.aggregate_id = e.aggregate_id
+			 AND e6.event_type = 'CorruptionDetected'
+			 LIMIT 1) as corruption_type,
+			MIN(created_at) as detected_at,
+			MAX(created_at) as last_updated_at
+		FROM events e
+		WHERE aggregate_type = 'corruption'
+		GROUP BY aggregate_id
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create corruption_status view: %w", err)
+	}
+
+	_, err = r.DB.Exec(`
+		CREATE VIEW dashboard_stats AS
+		SELECT
+			COUNT(DISTINCT CASE
+				WHEN current_state != 'VerificationSuccess'
+				AND current_state != 'MaxRetriesReached'
+				AND current_state != 'CorruptionIgnored'
+				AND current_state != 'ImportBlocked'
+				AND current_state != 'ManuallyRemoved'
+				THEN corruption_id END) as active_corruptions,
+			COUNT(DISTINCT CASE
+				WHEN current_state = 'VerificationSuccess'
+				THEN corruption_id END) as resolved_corruptions,
+			COUNT(DISTINCT CASE
+				WHEN current_state = 'MaxRetriesReached'
+				THEN corruption_id END) as orphaned_corruptions,
+			COUNT(DISTINCT CASE
+				WHEN (current_state LIKE '%Started'
+				OR current_state LIKE '%Queued'
+				OR current_state LIKE '%Progress'
+				OR current_state = 'SearchCompleted'
+				OR current_state = 'DeletionCompleted'
+				OR current_state = 'FileDetected')
+				AND current_state != 'CorruptionIgnored'
+				THEN corruption_id END) as in_progress,
+			COUNT(DISTINCT CASE
+				WHEN current_state = 'ImportBlocked'
+				OR current_state = 'ManuallyRemoved'
+				THEN corruption_id END) as manual_intervention_required
+		FROM corruption_status
+		WHERE current_state != 'CorruptionIgnored'
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create dashboard_stats view: %w", err)
+	}
+
+	return nil
+}
+
 func (r *Repository) recreateViews() error {
 	// Drop existing views
 	views := []string{"corruption_status", "dashboard_stats"}
@@ -223,134 +360,13 @@ func (r *Repository) recreateViews() error {
 	}
 
 	if tableExists > 0 {
-		// Use new corruption_summary table (fast path)
-		// corruption_status VIEW is a thin wrapper for backwards compatibility
-		_, err = r.DB.Exec(`
-			CREATE VIEW corruption_status AS
-			SELECT
-				corruption_id,
-				current_state,
-				retry_count,
-				file_path,
-				path_id,
-				last_error,
-				corruption_type,
-				detected_at,
-				last_updated_at
-			FROM corruption_summary
-		`)
-		if err != nil {
-			return fmt.Errorf("failed to create corruption_status view: %w", err)
-		}
-
-		// dashboard_stats uses corruption_summary directly for maximum performance
-		_, err = r.DB.Exec(`
-			CREATE VIEW dashboard_stats AS
-			SELECT
-				COUNT(CASE
-					WHEN current_state != 'VerificationSuccess'
-					AND current_state != 'MaxRetriesReached'
-					AND current_state != 'CorruptionIgnored'
-					AND current_state != 'ImportBlocked'
-					AND current_state != 'ManuallyRemoved'
-					THEN 1 END) as active_corruptions,
-				COUNT(CASE
-					WHEN current_state = 'VerificationSuccess'
-					THEN 1 END) as resolved_corruptions,
-				COUNT(CASE
-					WHEN current_state = 'MaxRetriesReached'
-					THEN 1 END) as orphaned_corruptions,
-				COUNT(CASE
-					WHEN (current_state LIKE '%Started'
-					OR current_state LIKE '%Queued'
-					OR current_state LIKE '%Progress'
-					OR current_state = 'SearchCompleted'
-					OR current_state = 'DeletionCompleted'
-					OR current_state = 'FileDetected')
-					AND current_state != 'CorruptionIgnored'
-					THEN 1 END) as in_progress,
-				COUNT(CASE
-					WHEN current_state = 'ImportBlocked'
-					OR current_state = 'ManuallyRemoved'
-					THEN 1 END) as manual_intervention_required
-			FROM corruption_summary
-			WHERE current_state != 'CorruptionIgnored'
-		`)
-		if err != nil {
-			return fmt.Errorf("failed to create dashboard_stats view: %w", err)
-		}
+		err = r.createViewsWithSummaryTable()
 	} else {
-		// Fallback to old slow VIEW (pre-migration 004)
-		_, err = r.DB.Exec(`
-			CREATE VIEW corruption_status AS
-			SELECT
-				aggregate_id as corruption_id,
-				(SELECT event_type FROM events e2
-				 WHERE e2.aggregate_id = e.aggregate_id
-				 ORDER BY id DESC LIMIT 1) as current_state,
-				(SELECT COUNT(*) FROM events e3
-				 WHERE e3.aggregate_id = e.aggregate_id
-				 AND e3.event_type LIKE '%Failed') as retry_count,
-				(SELECT json_extract(event_data, '$.file_path') FROM events e4
-				 WHERE e4.aggregate_id = e.aggregate_id
-				 AND e4.event_type = 'CorruptionDetected'
-				 LIMIT 1) as file_path,
-				(SELECT json_extract(event_data, '$.path_id') FROM events e7
-				 WHERE e7.aggregate_id = e.aggregate_id
-				 AND e7.event_type = 'CorruptionDetected'
-				 LIMIT 1) as path_id,
-				(SELECT json_extract(event_data, '$.error') FROM events e5
-				 WHERE e5.aggregate_id = e.aggregate_id
-				 ORDER BY id DESC LIMIT 1) as last_error,
-				(SELECT json_extract(event_data, '$.corruption_type') FROM events e6
-				 WHERE e6.aggregate_id = e.aggregate_id
-				 AND e6.event_type = 'CorruptionDetected'
-				 LIMIT 1) as corruption_type,
-				MIN(created_at) as detected_at,
-				MAX(created_at) as last_updated_at
-			FROM events e
-			WHERE aggregate_type = 'corruption'
-			GROUP BY aggregate_id
-		`)
-		if err != nil {
-			return fmt.Errorf("failed to create corruption_status view: %w", err)
-		}
+		err = r.createViewsLegacy()
+	}
 
-		_, err = r.DB.Exec(`
-			CREATE VIEW dashboard_stats AS
-			SELECT
-				COUNT(DISTINCT CASE
-					WHEN current_state != 'VerificationSuccess'
-					AND current_state != 'MaxRetriesReached'
-					AND current_state != 'CorruptionIgnored'
-					AND current_state != 'ImportBlocked'
-					AND current_state != 'ManuallyRemoved'
-					THEN corruption_id END) as active_corruptions,
-				COUNT(DISTINCT CASE
-					WHEN current_state = 'VerificationSuccess'
-					THEN corruption_id END) as resolved_corruptions,
-				COUNT(DISTINCT CASE
-					WHEN current_state = 'MaxRetriesReached'
-					THEN corruption_id END) as orphaned_corruptions,
-				COUNT(DISTINCT CASE
-					WHEN (current_state LIKE '%Started'
-					OR current_state LIKE '%Queued'
-					OR current_state LIKE '%Progress'
-					OR current_state = 'SearchCompleted'
-					OR current_state = 'DeletionCompleted'
-					OR current_state = 'FileDetected')
-					AND current_state != 'CorruptionIgnored'
-					THEN corruption_id END) as in_progress,
-				COUNT(DISTINCT CASE
-					WHEN current_state = 'ImportBlocked'
-					OR current_state = 'ManuallyRemoved'
-					THEN corruption_id END) as manual_intervention_required
-			FROM corruption_status
-			WHERE current_state != 'CorruptionIgnored'
-		`)
-		if err != nil {
-			return fmt.Errorf("failed to create dashboard_stats view: %w", err)
-		}
+	if err != nil {
+		return err
 	}
 
 	logger.Debugf("✓ Database views recreated")
