@@ -269,6 +269,86 @@ func enrichVerificationEventData(eventData map[string]interface{}, meta *Verific
 	}
 }
 
+// convertAndVerifyPaths converts arr paths to local paths and returns only those that exist.
+func (v *VerifierService) convertAndVerifyPaths(arrPaths []string) []string {
+	var existingPaths []string
+	for _, p := range arrPaths {
+		localPath, mapErr := v.pathMapper.ToLocalPath(p)
+		if mapErr != nil {
+			localPath = p
+		}
+		if _, statErr := os.Stat(localPath); statErr == nil {
+			existingPaths = append(existingPaths, localPath)
+		}
+	}
+	return existingPaths
+}
+
+// waitWithShutdown performs an interruptible sleep that returns true if shutdown was requested.
+func (v *VerifierService) waitWithShutdown(d time.Duration) bool {
+	select {
+	case <-v.shutdownCh:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+// storeImportMetadata stores quality/release info from a history import item.
+func (v *VerifierService) storeImportMetadata(corruptionID string, existingPaths []string, importItem *integration.HistoryItemInfo) {
+	meta := &VerificationMeta{
+		Quality:        importItem.Quality,
+		ReleaseGroup:   importItem.ReleaseGroup,
+		Indexer:        importItem.Indexer,
+		DownloadClient: importItem.DownloadClient,
+		NewFilePaths:   existingPaths,
+	}
+	if len(existingPaths) == 1 {
+		meta.NewFilePath = existingPaths[0]
+		if fi, err := os.Stat(existingPaths[0]); err == nil {
+			meta.NewFileSize = fi.Size()
+		}
+		logger.Infof("Import detected for %s via history: %s", corruptionID, existingPaths[0])
+	} else {
+		logger.Infof("Multi-episode import detected for %s via history: %d files", corruptionID, len(existingPaths))
+	}
+	v.setVerifyMeta(corruptionID, meta)
+}
+
+// publishDownloadTimeout publishes a timeout event for the given corruption.
+func (v *VerifierService) publishDownloadTimeout(corruptionID string, elapsed time.Duration, attempt int, lastStatus string) {
+	logger.Infof("[WARN] Verification timeout for %s after %s", corruptionID, elapsed)
+	if err := v.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DownloadTimeout,
+		EventData: map[string]interface{}{
+			"elapsed":     elapsed.String(),
+			"attempts":    attempt,
+			"last_status": lastStatus,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish DownloadTimeout event: %v", err)
+	}
+}
+
+// publishManuallyRemoved publishes an event when an item is removed from queue without import.
+func (v *VerifierService) publishManuallyRemoved(corruptionID, lastStatus string) {
+	logger.Warnf("Item for %s was in queue but is now gone without import history - manually removed from *arr", corruptionID)
+	if err := v.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.ManuallyRemoved,
+		EventData: map[string]interface{}{
+			"message":         "Download was manually removed from *arr queue without being imported",
+			"requires_manual": true,
+			"last_status":     lastStatus,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish ManuallyRemoved event: %v", err)
+	}
+}
+
 // getDurationMetrics calculates how long the remediation took.
 // Returns: (total_duration_seconds, download_duration_seconds)
 // total_duration = CorruptionDetected → now
@@ -405,19 +485,7 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 		// Check timeout
 		elapsed := time.Since(startTime)
 		if elapsed > timeout {
-			logger.Infof("[WARN] Verification timeout for %s after %s", corruptionID, elapsed)
-			if err := v.eventBus.Publish(domain.Event{
-				AggregateID:   corruptionID,
-				AggregateType: "corruption",
-				EventType:     domain.DownloadTimeout,
-				EventData: map[string]interface{}{
-					"elapsed":     elapsed.String(),
-					"attempts":    attempt,
-					"last_status": lastStatus,
-				},
-			}); err != nil {
-				logger.Errorf("Failed to publish DownloadTimeout event: %v", err)
-			}
+			v.publishDownloadTimeout(corruptionID, elapsed, attempt, lastStatus)
 			return
 		}
 
@@ -479,12 +547,10 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 				}
 			}
 
-			// Use shorter interval during active download - interruptible sleep
-			select {
-			case <-v.shutdownCh:
+			// Use shorter interval during active download
+			if v.waitWithShutdown(pollInterval) {
 				logger.Infof("Verifier: stopping download monitoring for %s due to shutdown", corruptionID)
 				return
-			case <-time.After(pollInterval):
 			}
 			continue
 		}
@@ -496,77 +562,64 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 
 		// Step 2.5: If item WAS in queue but now gone and not in history, it was manually removed
 		if wasInQueue {
-			logger.Warnf("Item for %s was in queue but is now gone without import history - manually removed from *arr", corruptionID)
-			if err := v.eventBus.Publish(domain.Event{
-				AggregateID:   corruptionID,
-				AggregateType: "corruption",
-				EventType:     domain.ManuallyRemoved,
-				EventData: map[string]interface{}{
-					"message":         "Download was manually removed from *arr queue without being imported",
-					"requires_manual": true,
-					"last_status":     lastStatus,
-				},
-			}); err != nil {
-				logger.Errorf("Failed to publish ManuallyRemoved event: %v", err)
-			}
+			v.publishManuallyRemoved(corruptionID, lastStatus)
 			return // Stop monitoring - user needs to manually handle this
 		}
 
 		// Step 3: Fallback - check if file(s) exist via *arr API
-		// Use GetAllFilePaths to handle multi-episode files that may be replaced with individual files
-		if v.arrClient != nil {
-			allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, filePath)
-			if err == nil && len(allPaths) > 0 {
-				// Verify all files exist on disk
-				var existingPaths []string
-				for _, p := range allPaths {
-					localPath, mapErr := v.pathMapper.ToLocalPath(p)
-					if mapErr != nil {
-						localPath = p
-					}
-					if _, statErr := os.Stat(localPath); statErr == nil {
-						existingPaths = append(existingPaths, localPath)
-					}
-				}
-
-				if len(existingPaths) == len(allPaths) {
-					// All files exist on disk
-					if len(existingPaths) == 1 {
-						logger.Infof("File detected for %s via *arr API: %s", corruptionID, existingPaths[0])
-					} else {
-						logger.Infof("Multi-episode files detected for %s via *arr API: %d files", corruptionID, len(existingPaths))
-					}
-					v.emitFilesDetected(corruptionID, existingPaths)
-					return
-				}
-
-				// Partial replacement detection: some files exist but not all
-				// This can happen when a multi-episode file is replaced with single episodes
-				// and not all episodes were found/grabbed by *arr
-				if len(existingPaths) > 0 && len(existingPaths) < len(allPaths) {
-					// Wait a bit longer before accepting partial replacement
-					// to give *arr more time to download remaining episodes
-					if elapsed > timeout/2 {
-						logger.Warnf("Partial replacement detected for %s: %d of %d files exist after %s",
-							corruptionID, len(existingPaths), len(allPaths), elapsed)
-						v.emitPartialReplacement(corruptionID, existingPaths, len(allPaths))
-						return
-					}
-				}
-			}
+		if v.checkAndEmitFilesFromArrAPI(corruptionID, filePath, mediaID, metadata, elapsed, timeout) {
+			return
 		}
 
-		// Use exponential backoff when not actively downloading - interruptible sleep
+		// Use exponential backoff when not actively downloading
 		backoff := calculateBackoffInterval(attempt, pollInterval, 10*time.Minute)
 		if attempt%10 == 0 {
 			logger.Debugf("Verification poll #%d for %s, no queue activity, next check in %s", attempt, corruptionID, backoff)
 		}
-		select {
-		case <-v.shutdownCh:
+		if v.waitWithShutdown(backoff) {
 			logger.Infof("Verifier: stopping download monitoring for %s due to shutdown", corruptionID)
 			return
-		case <-time.After(backoff):
 		}
+	}
+}
+
+// checkAndEmitFilesFromArrAPI checks if files exist via *arr API and emits appropriate events.
+// Returns true if files were found and handled, false otherwise.
+func (v *VerifierService) checkAndEmitFilesFromArrAPI(corruptionID, filePath string, mediaID int64, metadata map[string]interface{}, elapsed, timeout time.Duration) bool {
+	if v.arrClient == nil {
+		return false
+	}
+
+	allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, filePath)
+	if err != nil || len(allPaths) == 0 {
+		return false
+	}
+
+	existingPaths := v.convertAndVerifyPaths(allPaths)
+	if len(existingPaths) == len(allPaths) {
+		// All files exist on disk
+		v.logFileDetection(corruptionID, existingPaths)
+		v.emitFilesDetected(corruptionID, existingPaths)
+		return true
+	}
+
+	// Partial replacement detection
+	if len(existingPaths) > 0 && elapsed > timeout/2 {
+		logger.Warnf("Partial replacement detected for %s: %d of %d files exist after %s",
+			corruptionID, len(existingPaths), len(allPaths), elapsed)
+		v.emitPartialReplacement(corruptionID, existingPaths, len(allPaths))
+		return true
+	}
+
+	return false
+}
+
+// logFileDetection logs the appropriate message for detected files.
+func (v *VerifierService) logFileDetection(corruptionID string, paths []string) {
+	if len(paths) == 1 {
+		logger.Infof("File detected for %s via *arr API: %s", corruptionID, paths[0])
+	} else {
+		logger.Infof("Multi-episode files detected for %s via *arr API: %d files", corruptionID, len(paths))
 	}
 }
 
@@ -593,54 +646,29 @@ func (v *VerifierService) checkHistoryForImport(corruptionID, arrPath string, me
 
 	// Import event found - use GetAllFilePaths to get all associated files
 	// This handles multi-episode replacements where one file becomes multiple
-	if v.arrClient != nil {
-		allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, referencePath)
-		if err == nil && len(allPaths) > 0 {
-			// Convert all paths to local and verify they exist
-			var existingPaths []string
-			for _, p := range allPaths {
-				localPath, mapErr := v.pathMapper.ToLocalPath(p)
-				if mapErr != nil {
-					localPath = p
-				}
-				if _, statErr := os.Stat(localPath); statErr == nil {
-					existingPaths = append(existingPaths, localPath)
-				}
-			}
+	if v.arrClient == nil {
+		return false
+	}
 
-			if len(existingPaths) == len(allPaths) {
-				// All files exist - store quality/release metadata for VerificationSuccess event
-				meta := &VerificationMeta{
-					Quality:        importItem.Quality,
-					ReleaseGroup:   importItem.ReleaseGroup,
-					Indexer:        importItem.Indexer,
-					DownloadClient: importItem.DownloadClient,
-					NewFilePaths:   existingPaths,
-				}
-				if len(existingPaths) == 1 {
-					meta.NewFilePath = existingPaths[0]
-					// Get file size for single file
-					if fi, err := os.Stat(existingPaths[0]); err == nil {
-						meta.NewFileSize = fi.Size()
-					}
-					logger.Infof("Import detected for %s via history: %s", corruptionID, existingPaths[0])
-				} else {
-					logger.Infof("Multi-episode import detected for %s via history: %d files", corruptionID, len(existingPaths))
-				}
-				v.setVerifyMeta(corruptionID, meta)
-				v.emitFilesDetected(corruptionID, existingPaths)
-				return true
-			}
+	allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, referencePath)
+	if err != nil || len(allPaths) == 0 {
+		return false
+	}
 
-			// Partial replacement: import events exist but not all files are present
-			// This can happen when only some episodes were grabbed
-			if len(existingPaths) > 0 {
-				logger.Warnf("Partial import detected for %s via history: %d of %d files exist",
-					corruptionID, len(existingPaths), len(allPaths))
-				v.emitPartialReplacement(corruptionID, existingPaths, len(allPaths))
-				return true
-			}
-		}
+	existingPaths := v.convertAndVerifyPaths(allPaths)
+	if len(existingPaths) == len(allPaths) {
+		// All files exist - store quality/release metadata for VerificationSuccess event
+		v.storeImportMetadata(corruptionID, existingPaths, importItem)
+		v.emitFilesDetected(corruptionID, existingPaths)
+		return true
+	}
+
+	// Partial replacement: import events exist but not all files are present
+	if len(existingPaths) > 0 {
+		logger.Warnf("Partial import detected for %s via history: %d of %d files exist",
+			corruptionID, len(existingPaths), len(allPaths))
+		v.emitPartialReplacement(corruptionID, existingPaths, len(allPaths))
+		return true
 	}
 
 	return false
@@ -696,19 +724,9 @@ func (v *VerifierService) pollForFileWithBackoff(corruptionID string, referenceP
 			return
 		}
 
-		if time.Since(startTime) > timeout {
-			logger.Infof("Verification timeout for %s after %d attempts", corruptionID, attempt)
-			if err := v.eventBus.Publish(domain.Event{
-				AggregateID:   corruptionID,
-				AggregateType: "corruption",
-				EventType:     domain.DownloadTimeout,
-				EventData: map[string]interface{}{
-					"elapsed":  time.Since(startTime).String(),
-					"attempts": attempt,
-				},
-			}); err != nil {
-				logger.Errorf("Failed to publish DownloadTimeout event: %v", err)
-			}
+		elapsed := time.Since(startTime)
+		if elapsed > timeout {
+			v.publishDownloadTimeout(corruptionID, elapsed, attempt, "")
 			return
 		}
 
@@ -719,39 +737,13 @@ func (v *VerifierService) pollForFileWithBackoff(corruptionID string, referenceP
 		}
 
 		// Interruptible sleep for graceful shutdown
-		select {
-		case <-v.shutdownCh:
+		if v.waitWithShutdown(currentInterval) {
 			logger.Infof("Verifier: stopping file polling for %s due to shutdown", corruptionID)
 			return
-		case <-time.After(currentInterval):
 		}
 		attempt++
 
-		var foundPaths []string
-
-		if useSmartVerification && v.arrClient != nil {
-			// Use GetAllFilePaths to handle multi-episode replacements
-			allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, referencePath)
-			if err == nil && len(allPaths) > 0 {
-				for _, p := range allPaths {
-					localPath, mapErr := v.pathMapper.ToLocalPath(p)
-					if mapErr != nil {
-						localPath = p
-					}
-					if _, statErr := os.Stat(localPath); statErr == nil {
-						foundPaths = append(foundPaths, localPath)
-					}
-				}
-				// Only consider found if ALL files exist
-				if len(foundPaths) != len(allPaths) {
-					foundPaths = nil
-				}
-			}
-		} else {
-			if _, err := os.Stat(referencePath); err == nil {
-				foundPaths = []string{referencePath}
-			}
-		}
+		foundPaths := v.findFilesForVerification(mediaID, metadata, referencePath, useSmartVerification)
 
 		if len(foundPaths) > 0 {
 			if len(foundPaths) == 1 {
@@ -763,6 +755,27 @@ func (v *VerifierService) pollForFileWithBackoff(corruptionID string, referenceP
 			return
 		}
 	}
+}
+
+// findFilesForVerification looks for files via *arr API or direct path check.
+func (v *VerifierService) findFilesForVerification(mediaID int64, metadata map[string]interface{}, referencePath string, useSmartVerification bool) []string {
+	if useSmartVerification && v.arrClient != nil {
+		allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, referencePath)
+		if err == nil && len(allPaths) > 0 {
+			foundPaths := v.convertAndVerifyPaths(allPaths)
+			// Only return if ALL files exist
+			if len(foundPaths) == len(allPaths) {
+				return foundPaths
+			}
+		}
+	}
+
+	// Fallback: check if reference path exists directly
+	if _, err := os.Stat(referencePath); err == nil {
+		return []string{referencePath}
+	}
+
+	return nil
 }
 
 // calculateBackoffInterval returns the next poll interval using exponential backoff

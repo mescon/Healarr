@@ -148,26 +148,8 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 			logger.Errorf("Failed to publish SearchStarted event: %v", err)
 		}
 
-		// Extract episode IDs from metadata if available
-		var episodeIDs []int64
-		if metadata != nil {
-			if episodeIDsRaw, ok := metadata["episode_ids"]; ok {
-				switch v := episodeIDsRaw.(type) {
-				case []int64:
-					episodeIDs = v
-				case []interface{}:
-					for _, item := range v {
-						if f, ok := item.(float64); ok {
-							episodeIDs = append(episodeIDs, int64(f))
-						} else if i, ok := item.(int64); ok {
-							episodeIDs = append(episodeIDs, i)
-						}
-					}
-				default:
-					logger.Debugf("Unexpected type for episode_ids: %T", episodeIDsRaw)
-				}
-			}
-		}
+		// Extract episode IDs from metadata for targeted search
+		episodeIDs := extractEpisodeIDs(metadata)
 
 		err := r.arrClient.TriggerSearch(mediaID, arrPath, episodeIDs)
 		if err != nil {
@@ -178,31 +160,8 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 
 		logger.Infof("Retry search triggered successfully for %s (media ID: %d)", filePath, mediaID)
 
-		// Fetch media details for rich display (gracefully degrades if unavailable)
-		eventData := map[string]interface{}{
-			"file_path": filePath,
-			"media_id":  mediaID,
-			"metadata":  metadata,
-			"path_id":   pathID,
-			"is_retry":  true,
-		}
-		if details, _ := r.arrClient.GetMediaDetails(mediaID, arrPath); details != nil {
-			eventData["media_title"] = details.Title
-			eventData["media_year"] = details.Year
-			eventData["media_type"] = details.MediaType
-			eventData["arr_type"] = details.ArrType
-			eventData["instance_name"] = details.InstanceName
-			if details.SeasonNumber > 0 {
-				eventData["season_number"] = details.SeasonNumber
-			}
-			if details.EpisodeNumber > 0 {
-				eventData["episode_number"] = details.EpisodeNumber
-			}
-			if details.EpisodeTitle != "" {
-				eventData["episode_title"] = details.EpisodeTitle
-			}
-		}
-
+		// Publish search completed with enriched event data
+		eventData := r.buildSearchEventData(filePath, arrPath, mediaID, pathID, metadata, true)
 		if err := r.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
@@ -387,31 +346,8 @@ func (r *RemediatorService) triggerSearch(corruptionID, filePath, arrPath string
 
 	logger.Infof("Remediation completed successfully for %s", filePath)
 
-	// Fetch media details for rich display (gracefully degrades if unavailable)
-	eventData := map[string]interface{}{
-		"file_path": filePath,
-		"media_id":  mediaID,
-		"metadata":  metadata,
-		"path_id":   pathID,
-	}
-	if details, _ := r.arrClient.GetMediaDetails(mediaID, arrPath); details != nil {
-		eventData["media_title"] = details.Title
-		eventData["media_year"] = details.Year
-		eventData["media_type"] = details.MediaType
-		eventData["arr_type"] = details.ArrType
-		eventData["instance_name"] = details.InstanceName
-		if details.SeasonNumber > 0 {
-			eventData["season_number"] = details.SeasonNumber
-		}
-		if details.EpisodeNumber > 0 {
-			eventData["episode_number"] = details.EpisodeNumber
-		}
-		if details.EpisodeTitle != "" {
-			eventData["episode_title"] = details.EpisodeTitle
-		}
-	}
-
-	// Publish search completed
+	// Publish search completed with enriched event data
+	eventData := r.buildSearchEventData(filePath, arrPath, mediaID, pathID, metadata, false)
 	if err := r.eventBus.Publish(domain.Event{
 		AggregateID:   corruptionID,
 		AggregateType: "corruption",
@@ -443,6 +379,41 @@ func extractEpisodeIDs(metadata map[string]interface{}) []int64 {
 		}
 	}
 	return episodeIDs
+}
+
+// buildSearchEventData creates the event data map for search events with media details
+func (r *RemediatorService) buildSearchEventData(filePath, arrPath string, mediaID, pathID int64, metadata map[string]interface{}, isRetry bool) map[string]interface{} {
+	eventData := map[string]interface{}{
+		"file_path": filePath,
+		"media_id":  mediaID,
+		"metadata":  metadata,
+		"path_id":   pathID,
+	}
+	if isRetry {
+		eventData["is_retry"] = true
+	}
+
+	// Fetch media details for rich display (gracefully degrades if unavailable)
+	details, err := r.arrClient.GetMediaDetails(mediaID, arrPath)
+	if err != nil || details == nil {
+		return eventData
+	}
+
+	eventData["media_title"] = details.Title
+	eventData["media_year"] = details.Year
+	eventData["media_type"] = details.MediaType
+	eventData["arr_type"] = details.ArrType
+	eventData["instance_name"] = details.InstanceName
+	if details.SeasonNumber > 0 {
+		eventData["season_number"] = details.SeasonNumber
+	}
+	if details.EpisodeNumber > 0 {
+		eventData["episode_number"] = details.EpisodeNumber
+	}
+	if details.EpisodeTitle != "" {
+		eventData["episode_title"] = details.EpisodeTitle
+	}
+	return eventData
 }
 
 func (r *RemediatorService) publishError(id string, eventType domain.EventType, errMsg string) {

@@ -145,6 +145,132 @@ func mustSub(fsys fs.FS, dir string) fs.FS {
 	return sub
 }
 
+// handleRuntimeConfig returns the runtime configuration for the frontend
+func (s *RESTServer) handleRuntimeConfig(c *gin.Context) {
+	cfg := config.Get()
+	basePath := cfg.BasePath
+
+	var savedBasePath sql.NullString
+	if err := s.db.QueryRow("SELECT value FROM settings WHERE key = 'base_path'").Scan(&savedBasePath); err != nil && err != sql.ErrNoRows {
+		logger.Debugf("Failed to query base_path setting: %v", err)
+	}
+
+	envBasePath := os.Getenv("HEALARR_BASE_PATH")
+	source := "default"
+
+	if envBasePath != "" {
+		source = "environment"
+	} else if savedBasePath.Valid && savedBasePath.String != "" {
+		source = "database"
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"base_path":        basePath,
+		"base_path_source": source,
+	})
+}
+
+// serveIndexWithBasePath serves index.html with the base path injected
+func (s *RESTServer) serveIndexWithBasePath(basePath string, readFile func() ([]byte, error)) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		data, err := readFile()
+		if err != nil {
+			logger.Errorf("Failed to read index.html: %v", err)
+			c.Status(http.StatusNotFound)
+			return
+		}
+		injectedScript := fmt.Sprintf(`<script>window.__HEALARR_BASE_PATH__=%q;</script></head>`, basePath)
+		html := strings.Replace(string(data), "</head>", injectedScript, 1)
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+	}
+}
+
+// setupEmbeddedAssets configures routes for serving embedded web assets
+func (s *RESTServer) setupEmbeddedAssets(base *gin.RouterGroup, basePath string) {
+	logger.Infof("Serving web assets from embedded filesystem")
+
+	webFS := web.GetFS()
+	if files := web.ListEmbeddedFiles(); files != nil {
+		logger.Debugf("Embedded files: %v", files)
+	}
+
+	base.StaticFS("/assets", http.FS(mustSub(webFS, "assets")))
+	base.StaticFS("/icons", http.FS(mustSub(webFS, "icons")))
+
+	// Helper to serve embedded files directly
+	serveEmbeddedFile := func(c *gin.Context, filename string, contentType string) {
+		data, err := fs.ReadFile(webFS, filename)
+		if err != nil {
+			logger.Errorf("Failed to read embedded file %s: %v", filename, err)
+			c.Status(http.StatusNotFound)
+			return
+		}
+		c.Data(http.StatusOK, contentType, data)
+	}
+
+	indexHandler := s.serveIndexWithBasePath(basePath, func() ([]byte, error) {
+		return fs.ReadFile(webFS, "index.html")
+	})
+
+	base.GET("/", indexHandler)
+	base.GET("/index.html", indexHandler)
+	base.GET("/favicon.png", func(c *gin.Context) { serveEmbeddedFile(c, "favicon.png", "image/png") })
+	base.GET("/healarr.svg", func(c *gin.Context) { serveEmbeddedFile(c, "healarr.svg", "image/svg+xml") })
+
+	// SPA fallback
+	s.router.NoRoute(func(c *gin.Context) {
+		if basePath == "/" || strings.HasPrefix(c.Request.URL.Path, basePath) {
+			indexHandler(c)
+		} else {
+			c.Redirect(http.StatusMovedPermanently, basePath)
+		}
+	})
+}
+
+// setupFilesystemAssets configures routes for serving filesystem web assets
+func (s *RESTServer) setupFilesystemAssets(base *gin.RouterGroup, basePath, webDir string) {
+	logger.Infof("Serving web assets from filesystem: %s", webDir)
+
+	base.Static("/assets", filepath.Join(webDir, "assets"))
+	base.Static("/icons", filepath.Join(webDir, "icons"))
+	base.StaticFile("/favicon.png", filepath.Join(webDir, "favicon.png"))
+	base.StaticFile("/healarr.svg", filepath.Join(webDir, "healarr.svg"))
+
+	indexFile := filepath.Join(webDir, "index.html")
+	indexHandler := s.serveIndexWithBasePath(basePath, func() ([]byte, error) {
+		return os.ReadFile(indexFile)
+	})
+
+	base.GET("/", indexHandler)
+	base.GET("/index.html", indexHandler)
+
+	// SPA fallback
+	s.router.NoRoute(func(c *gin.Context) {
+		if basePath == "/" || strings.HasPrefix(c.Request.URL.Path, basePath) {
+			indexHandler(c)
+		} else {
+			c.Redirect(http.StatusMovedPermanently, basePath)
+		}
+	})
+}
+
+// setupAPIOnlyMode configures routes when no web assets are available
+func (s *RESTServer) setupAPIOnlyMode(basePath, webDir string) {
+	logger.Infof("No web assets found (embedded or filesystem at %s) - running in API-only mode", webDir)
+
+	s.router.NoRoute(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "API endpoint not found"})
+		} else {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":   "Web UI not available",
+				"message": "This binary was built without embedded web assets. Please download a release binary or run in development mode with a web/ directory.",
+				"api":     basePath + "api/",
+			})
+		}
+	})
+}
+
 func (s *RESTServer) setupRoutes() {
 	cfg := config.Get()
 	basePath := cfg.BasePath
@@ -168,29 +294,7 @@ func (s *RESTServer) setupRoutes() {
 	api := base.Group("/api")
 	{
 		// Endpoint to get runtime config (base path) for frontend
-		api.GET("/config/runtime", func(c *gin.Context) {
-			// Get saved base path from database (if any)
-			var savedBasePath sql.NullString
-			if err := s.db.QueryRow("SELECT value FROM settings WHERE key = 'base_path'").Scan(&savedBasePath); err != nil && err != sql.ErrNoRows {
-				logger.Debugf("Failed to query base_path setting: %v", err)
-			}
-
-			// Determine source: env var takes precedence, then database, then default
-			envBasePath := os.Getenv("HEALARR_BASE_PATH")
-			source := "default"
-			effectivePath := basePath
-
-			if envBasePath != "" {
-				source = "environment"
-			} else if savedBasePath.Valid && savedBasePath.String != "" {
-				source = "database"
-			}
-
-			c.JSON(http.StatusOK, gin.H{
-				"base_path":        effectivePath,
-				"base_path_source": source,
-			})
-		})
+		api.GET("/config/runtime", s.handleRuntimeConfig)
 
 		// Health check endpoint (no authentication required)
 		api.GET("/health", s.handleHealth)
@@ -305,114 +409,13 @@ func (s *RESTServer) setupRoutes() {
 
 	// Serve static files under the base path
 	// Check for embedded assets first, fall back to filesystem
+	webDir := cfg.WebDir
 	if web.HasEmbeddedAssets() {
-		logger.Infof("Serving web assets from embedded filesystem")
-		// Debug: list embedded files
-		if files := web.ListEmbeddedFiles(); files != nil {
-			logger.Debugf("Embedded files: %v", files)
-		}
-		webFS := web.GetFS()
-		base.StaticFS("/assets", http.FS(mustSub(webFS, "assets")))
-		base.StaticFS("/icons", http.FS(mustSub(webFS, "icons")))
-
-		// Helper to serve embedded files directly (avoids http.FS redirect behavior)
-		serveEmbeddedFile := func(c *gin.Context, filename string, contentType string) {
-			data, err := fs.ReadFile(webFS, filename)
-			if err != nil {
-				logger.Errorf("Failed to read embedded file %s: %v", filename, err)
-				c.Status(http.StatusNotFound)
-				return
-			}
-			c.Data(http.StatusOK, contentType, data)
-		}
-
-		// Helper to serve index.html with injected base path for SPA routing
-		serveIndexWithBasePath := func(c *gin.Context) {
-			data, err := fs.ReadFile(webFS, "index.html")
-			if err != nil {
-				logger.Errorf("Failed to read embedded index.html: %v", err)
-				c.Status(http.StatusNotFound)
-				return
-			}
-			// Inject base path as a script tag before </head>
-			// This allows the frontend to know the base path before any API calls
-			injectedScript := fmt.Sprintf(`<script>window.__HEALARR_BASE_PATH__=%q;</script></head>`, basePath)
-			html := strings.Replace(string(data), "</head>", injectedScript, 1)
-			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
-		}
-
-		// Serve individual files from embedded FS
-		base.GET("/", serveIndexWithBasePath)
-		base.GET("/index.html", serveIndexWithBasePath)
-		base.GET("/favicon.png", func(c *gin.Context) {
-			serveEmbeddedFile(c, "favicon.png", "image/png")
-		})
-		base.GET("/healarr.svg", func(c *gin.Context) {
-			serveEmbeddedFile(c, "healarr.svg", "image/svg+xml")
-		})
-
-		// SPA Routes - serve index.html for client-side routing
-		s.router.NoRoute(func(c *gin.Context) {
-			if basePath == "/" || strings.HasPrefix(c.Request.URL.Path, basePath) {
-				serveIndexWithBasePath(c)
-			} else {
-				c.Redirect(http.StatusMovedPermanently, basePath)
-			}
-		})
+		s.setupEmbeddedAssets(base, basePath)
+	} else if _, err := os.Stat(filepath.Join(webDir, "index.html")); err == nil {
+		s.setupFilesystemAssets(base, basePath, webDir)
 	} else {
-		// Check if web directory exists on filesystem
-		webDir := cfg.WebDir
-		indexFile := filepath.Join(webDir, "index.html")
-		if _, err := os.Stat(indexFile); err == nil {
-			// Filesystem mode - web directory exists
-			logger.Infof("Serving web assets from filesystem: %s", webDir)
-			base.Static("/assets", filepath.Join(webDir, "assets"))
-			base.Static("/icons", filepath.Join(webDir, "icons"))
-			base.StaticFile("/favicon.png", filepath.Join(webDir, "favicon.png"))
-			base.StaticFile("/healarr.svg", filepath.Join(webDir, "healarr.svg"))
-
-			// Helper to serve index.html with injected base path
-			serveIndexWithBasePath := func(c *gin.Context) {
-				data, err := os.ReadFile(indexFile)
-				if err != nil {
-					logger.Errorf("Failed to read index.html: %v", err)
-					c.Status(http.StatusNotFound)
-					return
-				}
-				// Inject base path as a script tag before </head>
-				injectedScript := fmt.Sprintf(`<script>window.__HEALARR_BASE_PATH__=%q;</script></head>`, basePath)
-				html := strings.Replace(string(data), "</head>", injectedScript, 1)
-				c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
-			}
-
-			base.GET("/", serveIndexWithBasePath)
-			base.GET("/index.html", serveIndexWithBasePath)
-
-			// SPA Routes - serve index.html for client-side routing under base path
-			s.router.NoRoute(func(c *gin.Context) {
-				// Check if request is under our base path
-				if basePath == "/" || strings.HasPrefix(c.Request.URL.Path, basePath) {
-					serveIndexWithBasePath(c)
-				} else {
-					c.Redirect(http.StatusMovedPermanently, basePath)
-				}
-			})
-		} else {
-			// No web assets available - API only mode
-			logger.Infof("No web assets found (embedded or filesystem at %s) - running in API-only mode", webDir)
-			s.router.NoRoute(func(c *gin.Context) {
-				// Return a helpful JSON response instead of redirect loop
-				if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-					c.JSON(http.StatusNotFound, gin.H{"error": "API endpoint not found"})
-				} else {
-					c.JSON(http.StatusServiceUnavailable, gin.H{
-						"error":   "Web UI not available",
-						"message": "This binary was built without embedded web assets. Please download a release binary or run in development mode with a web/ directory.",
-						"api":     basePath + "api/",
-					})
-				}
-			})
-		}
+		s.setupAPIOnlyMode(basePath, webDir)
 	}
 }
 
