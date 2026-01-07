@@ -661,6 +661,21 @@ func (v *VerifierService) logFileDetection(corruptionID string, paths []string) 
 	}
 }
 
+// findImportEvent searches history items for import completion events.
+func findImportEvent(historyItems []integration.HistoryItemInfo) *integration.HistoryItemInfo {
+	importTypes := map[string]bool{
+		"downloadFolderImported": true,
+		"episodeFileImported":    true,
+		"movieFileImported":      true,
+	}
+	for i, item := range historyItems {
+		if importTypes[item.EventType] {
+			return &historyItems[i]
+		}
+	}
+	return nil
+}
+
 // checkHistoryForImport checks *arr history for import completion
 func (v *VerifierService) checkHistoryForImport(corruptionID, arrPath string, mediaID int64, referencePath string, metadata map[string]interface{}) bool {
 	historyItems, err := v.getHistoryWithRetry(arrPath, mediaID, 20, 3)
@@ -669,22 +684,8 @@ func (v *VerifierService) checkHistoryForImport(corruptionID, arrPath string, me
 		return false
 	}
 
-	// Look for recent import events and extract quality/release info
-	var importItem *integration.HistoryItemInfo
-	for i, item := range historyItems {
-		if item.EventType == "downloadFolderImported" || item.EventType == "episodeFileImported" || item.EventType == "movieFileImported" {
-			importItem = &historyItems[i]
-			break
-		}
-	}
-
-	if importItem == nil {
-		return false
-	}
-
-	// Import event found - use GetAllFilePaths to get all associated files
-	// This handles multi-episode replacements where one file becomes multiple
-	if v.arrClient == nil {
+	importItem := findImportEvent(historyItems)
+	if importItem == nil || v.arrClient == nil {
 		return false
 	}
 
@@ -694,21 +695,22 @@ func (v *VerifierService) checkHistoryForImport(corruptionID, arrPath string, me
 	}
 
 	existingPaths := v.convertAndVerifyPaths(allPaths)
+	return v.handleImportPaths(corruptionID, existingPaths, allPaths, importItem)
+}
+
+// handleImportPaths processes import paths and emits appropriate events.
+func (v *VerifierService) handleImportPaths(corruptionID string, existingPaths, allPaths []string, importItem *integration.HistoryItemInfo) bool {
 	if len(existingPaths) == len(allPaths) {
-		// All files exist - store quality/release metadata for VerificationSuccess event
 		v.storeImportMetadata(corruptionID, existingPaths, importItem)
 		v.emitFilesDetected(corruptionID, existingPaths)
 		return true
 	}
-
-	// Partial replacement: import events exist but not all files are present
 	if len(existingPaths) > 0 {
 		logger.Warnf("Partial import detected for %s via history: %d of %d files exist",
 			corruptionID, len(existingPaths), len(allPaths))
 		v.emitPartialReplacement(corruptionID, existingPaths, len(allPaths))
 		return true
 	}
-
 	return false
 }
 
@@ -910,6 +912,40 @@ func (v *VerifierService) emitFilesDetected(corruptionID string, filePaths []str
 	v.verifyHealthMultiple(corruptionID, filePaths)
 }
 
+// verifyFilesHealth checks all files and returns failed paths and last error.
+func (v *VerifierService) verifyFilesHealth(filePaths []string) (failedPaths []string, lastError string) {
+	for _, filePath := range filePaths {
+		healthy, err := v.detector.Check(filePath, "thorough")
+		if healthy {
+			continue
+		}
+		failedPaths = append(failedPaths, filePath)
+		if err != nil {
+			lastError = err.Message
+		} else {
+			lastError = "unknown error"
+		}
+		logger.Infof("Verification failed for %s: %s", filePath, lastError)
+	}
+	return failedPaths, lastError
+}
+
+// buildSuccessEventData builds event data for a successful verification.
+func (v *VerifierService) buildSuccessEventData(corruptionID string, fileCount int) map[string]interface{} {
+	eventData := map[string]interface{}{"verified_count": fileCount}
+
+	totalDuration, downloadDuration := v.getDurationMetrics(corruptionID)
+	if totalDuration > 0 {
+		eventData["total_duration_seconds"] = totalDuration
+	}
+	if downloadDuration > 0 {
+		eventData["download_duration_seconds"] = downloadDuration
+	}
+
+	enrichVerificationEventData(eventData, v.getVerifyMeta(corruptionID))
+	return eventData
+}
+
 // verifyHealthMultiple verifies the health of one or more files.
 // All files must be healthy for verification to succeed.
 func (v *VerifierService) verifyHealthMultiple(corruptionID string, filePaths []string) {
@@ -921,42 +957,11 @@ func (v *VerifierService) verifyHealthMultiple(corruptionID string, filePaths []
 		logger.Errorf("Failed to publish VerificationStarted event: %v", err)
 	}
 
-	// Verify all files - all must be healthy for success
-	var failedPaths []string
-	var lastError string
-
-	for _, filePath := range filePaths {
-		healthy, err := v.detector.Check(filePath, "thorough")
-		if !healthy {
-			failedPaths = append(failedPaths, filePath)
-			if err != nil {
-				lastError = err.Message
-			} else {
-				lastError = "unknown error"
-			}
-			logger.Infof("Verification failed for %s: %s", filePath, lastError)
-		}
-	}
+	failedPaths, lastError := v.verifyFilesHealth(filePaths)
+	v.clearVerifyMeta(corruptionID)
 
 	if len(failedPaths) == 0 {
-		// All files healthy - enrich event with quality/release info if available
-		eventData := map[string]interface{}{
-			"verified_count": len(filePaths),
-		}
-
-		// Add duration metrics
-		totalDuration, downloadDuration := v.getDurationMetrics(corruptionID)
-		if totalDuration > 0 {
-			eventData["total_duration_seconds"] = totalDuration
-		}
-		if downloadDuration > 0 {
-			eventData["download_duration_seconds"] = downloadDuration
-		}
-
-		// Add metadata from verification if available
-		enrichVerificationEventData(eventData, v.getVerifyMeta(corruptionID))
-		v.clearVerifyMeta(corruptionID)
-
+		eventData := v.buildSuccessEventData(corruptionID, len(filePaths))
 		if err := v.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
@@ -965,21 +970,20 @@ func (v *VerifierService) verifyHealthMultiple(corruptionID string, filePaths []
 		}); err != nil {
 			logger.Errorf("Failed to publish VerificationSuccess event: %v", err)
 		}
-	} else {
-		// At least one file failed verification
-		v.clearVerifyMeta(corruptionID) // Clean up on failure too
-		if err := v.eventBus.Publish(domain.Event{
-			AggregateID:   corruptionID,
-			AggregateType: "corruption",
-			EventType:     domain.VerificationFailed,
-			EventData: map[string]interface{}{
-				"error":        lastError,
-				"failed_paths": failedPaths,
-				"failed_count": len(failedPaths),
-				"total_count":  len(filePaths),
-			},
-		}); err != nil {
-			logger.Errorf("Failed to publish VerificationFailed event: %v", err)
-		}
+		return
+	}
+
+	if err := v.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.VerificationFailed,
+		EventData: map[string]interface{}{
+			"error":        lastError,
+			"failed_paths": failedPaths,
+			"failed_count": len(failedPaths),
+			"total_count":  len(filePaths),
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish VerificationFailed event: %v", err)
 	}
 }

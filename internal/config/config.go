@@ -416,6 +416,50 @@ type FlagOverrides struct {
 	WebDir               *string
 }
 
+// applyStringFlag applies a string flag override if the value is non-empty.
+func applyStringFlag(target *string, flag *string) {
+	if flag != nil && *flag != "" {
+		*target = *flag
+	}
+}
+
+// applyDurationFlag applies a duration flag override if the value is non-zero.
+func applyDurationFlag(target *time.Duration, flag *time.Duration) {
+	if flag != nil && *flag != 0 {
+		*target = *flag
+	}
+}
+
+// applyIntFlag applies an int flag override if the value is non-zero.
+func applyIntFlag(target *int, flag *int) {
+	if flag != nil && *flag != 0 {
+		*target = *flag
+	}
+}
+
+// applyFloatFlag applies a float64 flag override if the value is non-zero.
+func applyFloatFlag(target *float64, flag *float64) {
+	if flag != nil && *flag != 0 {
+		*target = *flag
+	}
+}
+
+// applyBasePathFlag applies a base path flag with normalization.
+func applyBasePathFlag(flags FlagOverrides) {
+	if flags.BasePath == nil || *flags.BasePath == "" {
+		return
+	}
+	basePath := *flags.BasePath
+	if basePath != "/" {
+		if !strings.HasPrefix(basePath, "/") {
+			basePath = "/" + basePath
+		}
+		basePath = strings.TrimSuffix(basePath, "/")
+	}
+	cfg.BasePath = basePath
+	cfg.BasePathSource = "flag"
+}
+
 // ApplyFlags applies command-line flag overrides to the configuration.
 // Should be called after Load() and after flag parsing.
 // Only non-nil values with non-default flag values will override.
@@ -424,57 +468,26 @@ func ApplyFlags(flags FlagOverrides) {
 		return
 	}
 
-	if flags.Port != nil && *flags.Port != "" {
-		cfg.Port = *flags.Port
-	}
-	if flags.BasePath != nil && *flags.BasePath != "" {
-		basePath := *flags.BasePath
-		// Normalize base path
-		if basePath != "/" {
-			if !strings.HasPrefix(basePath, "/") {
-				basePath = "/" + basePath
-			}
-			basePath = strings.TrimSuffix(basePath, "/")
-		}
-		cfg.BasePath = basePath
-		cfg.BasePathSource = "flag"
-	}
+	applyStringFlag(&cfg.Port, flags.Port)
+	applyBasePathFlag(flags)
 	if flags.LogLevel != nil && *flags.LogLevel != "" {
 		cfg.LogLevel = strings.ToLower(*flags.LogLevel)
 	}
-	if flags.VerificationTimeout != nil && *flags.VerificationTimeout != 0 {
-		cfg.VerificationTimeout = *flags.VerificationTimeout
-	}
-	if flags.VerificationInterval != nil && *flags.VerificationInterval != 0 {
-		cfg.VerificationInterval = *flags.VerificationInterval
-	}
-	if flags.StaleThreshold != nil && *flags.StaleThreshold != 0 {
-		cfg.StaleThreshold = *flags.StaleThreshold
-	}
-	if flags.DefaultMaxRetries != nil && *flags.DefaultMaxRetries != 0 {
-		cfg.DefaultMaxRetries = *flags.DefaultMaxRetries
-	}
+	applyDurationFlag(&cfg.VerificationTimeout, flags.VerificationTimeout)
+	applyDurationFlag(&cfg.VerificationInterval, flags.VerificationInterval)
+	applyDurationFlag(&cfg.StaleThreshold, flags.StaleThreshold)
+	applyIntFlag(&cfg.DefaultMaxRetries, flags.DefaultMaxRetries)
 	if flags.DryRunMode != nil {
 		cfg.DryRunMode = *flags.DryRunMode
 	}
-	if flags.ArrRateLimitRPS != nil && *flags.ArrRateLimitRPS != 0 {
-		cfg.ArrRateLimitRPS = *flags.ArrRateLimitRPS
-	}
-	if flags.ArrRateLimitBurst != nil && *flags.ArrRateLimitBurst != 0 {
-		cfg.ArrRateLimitBurst = *flags.ArrRateLimitBurst
-	}
+	applyFloatFlag(&cfg.ArrRateLimitRPS, flags.ArrRateLimitRPS)
+	applyIntFlag(&cfg.ArrRateLimitBurst, flags.ArrRateLimitBurst)
 	if flags.RetentionDays != nil {
 		cfg.RetentionDays = *flags.RetentionDays
 	}
-	if flags.DataDir != nil && *flags.DataDir != "" {
-		cfg.DataDir = *flags.DataDir
-	}
-	if flags.DatabasePath != nil && *flags.DatabasePath != "" {
-		cfg.DatabasePath = *flags.DatabasePath
-	}
-	if flags.WebDir != nil && *flags.WebDir != "" {
-		cfg.WebDir = *flags.WebDir
-	}
+	applyStringFlag(&cfg.DataDir, flags.DataDir)
+	applyStringFlag(&cfg.DatabasePath, flags.DatabasePath)
+	applyStringFlag(&cfg.WebDir, flags.WebDir)
 }
 
 // GetWarnings returns any configuration warnings detected during Load().

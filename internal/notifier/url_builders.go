@@ -367,17 +367,8 @@ func (b *zulipBuilder) BuildURL(config json.RawMessage) (string, error) {
 // genericBuilder builds Generic webhook shoutrrr URLs
 type genericBuilder struct{}
 
-func (b *genericBuilder) BuildURL(config json.RawMessage) (string, error) {
-	var c GenericConfig
-	if err := json.Unmarshal(config, &c); err != nil {
-		return "", err
-	}
-	targetURL := c.WebhookURL
-	if !strings.HasPrefix(targetURL, "http") {
-		targetURL = httpsPrefix + targetURL
-	}
-
-	params := url.Values{}
+// addGenericParams adds standard shoutrrr parameters from config.
+func addGenericParams(params url.Values, c GenericConfig) {
 	if c.Template != "" {
 		params.Set("template", c.Template)
 	}
@@ -393,43 +384,46 @@ func (b *genericBuilder) BuildURL(config json.RawMessage) (string, error) {
 	if c.Method != "" && c.Method != "POST" {
 		params.Set("requestmethod", c.Method)
 	}
+}
 
-	// Parse custom headers (@key=value format)
-	if c.CustomHeaders != "" {
-		for _, line := range strings.Split(c.CustomHeaders, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, "=", 2)
-			if len(parts) == 2 {
-				params.Set("@"+parts[0], parts[1])
-			}
+// parseKeyValueLines parses lines of "key=value" format and adds them to params with prefix.
+func parseKeyValueLines(params url.Values, data, prefix string) {
+	if data == "" {
+		return
+	}
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			params.Set(prefix+parts[0], parts[1])
 		}
 	}
+}
 
-	// Parse extra data ($key=value format)
-	if c.ExtraData != "" {
-		for _, line := range strings.Split(c.ExtraData, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, "=", 2)
-			if len(parts) == 2 {
-				params.Set("$"+parts[0], parts[1])
-			}
-		}
+func (b *genericBuilder) BuildURL(config json.RawMessage) (string, error) {
+	var c GenericConfig
+	if err := json.Unmarshal(config, &c); err != nil {
+		return "", err
+	}
+	targetURL := c.WebhookURL
+	if !strings.HasPrefix(targetURL, "http") {
+		targetURL = httpsPrefix + targetURL
 	}
 
-	result := "generic+" + targetURL
-	if len(params) > 0 {
-		// Need to use generic:// format for params
-		u, _ := url.Parse(targetURL)
-		host := u.Host + u.Path
-		result = "generic://" + host + "?" + params.Encode()
+	params := url.Values{}
+	addGenericParams(params, c)
+	parseKeyValueLines(params, c.CustomHeaders, "@") // Custom headers
+	parseKeyValueLines(params, c.ExtraData, "$")     // Extra data
+
+	if len(params) == 0 {
+		return "generic+" + targetURL, nil
 	}
-	return result, nil
+	// Need to use generic:// format for params
+	u, _ := url.Parse(targetURL)
+	return "generic://" + u.Host + u.Path + "?" + params.Encode(), nil
 }
 
 // customBuilder handles Custom shoutrrr URLs (user provides raw URL)

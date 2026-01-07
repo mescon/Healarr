@@ -950,6 +950,34 @@ func (c *HTTPArrClient) GetAllFilePaths(mediaID int64, metadata map[string]inter
 	return nil, fmt.Errorf("unsupported instance type: %s", instance.Type)
 }
 
+// buildMovieSearchPayload creates a MoviesSearch command payload.
+func buildMovieSearchPayload(mediaID int64) map[string]interface{} {
+	return map[string]interface{}{
+		"name":     "MoviesSearch",
+		"movieIds": []int{int(mediaID)},
+	}
+}
+
+// buildSeriesSearchPayload creates an EpisodeSearch or MissingEpisodeSearch payload.
+func buildSeriesSearchPayload(mediaID int64, episodeIDs []int64) map[string]interface{} {
+	if len(episodeIDs) > 0 {
+		intEpisodeIDs := make([]int, len(episodeIDs))
+		for i, id := range episodeIDs {
+			intEpisodeIDs[i] = int(id)
+		}
+		logger.Infof("Using EpisodeSearch for specific episode IDs: %v", intEpisodeIDs)
+		return map[string]interface{}{
+			"name":       "EpisodeSearch",
+			"episodeIds": intEpisodeIDs,
+		}
+	}
+	logger.Errorf("WARNING: No episode IDs provided, falling back to MissingEpisodeSearch for series %d - this may trigger more downloads than expected", mediaID)
+	return map[string]interface{}{
+		"name":     "MissingEpisodeSearch",
+		"seriesId": int(mediaID),
+	}
+}
+
 func (c *HTTPArrClient) TriggerSearch(mediaID int64, path string, episodeIDs []int64) error {
 	instance, err := c.getInstanceForPath(path)
 	if err != nil {
@@ -958,34 +986,10 @@ func (c *HTTPArrClient) TriggerSearch(mediaID int64, path string, episodeIDs []i
 
 	logger.Infof("Triggering search for media ID %d on %s", mediaID, instance.Type)
 	var payload map[string]interface{}
-	if instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3 {
-		// For movies, search for the specific movie only
-		payload = map[string]interface{}{
-			"name":     "MoviesSearch",
-			"movieIds": []int{int(mediaID)},
-		}
+	if isMovieType(instance) {
+		payload = buildMovieSearchPayload(mediaID)
 	} else {
-		// For Sonarr/Whisparr v2, use EpisodeSearch with specific episode IDs
-		// This ensures we only search for the specific corrupted episode(s), not the entire series
-		if len(episodeIDs) > 0 {
-			// Convert int64 to int for the API
-			intEpisodeIDs := make([]int, len(episodeIDs))
-			for i, id := range episodeIDs {
-				intEpisodeIDs[i] = int(id)
-			}
-			logger.Infof("Using EpisodeSearch for specific episode IDs: %v", intEpisodeIDs)
-			payload = map[string]interface{}{
-				"name":       "EpisodeSearch",
-				"episodeIds": intEpisodeIDs,
-			}
-		} else {
-			// Fallback to MissingEpisodeSearch only if we don't have episode IDs
-			logger.Errorf("WARNING: No episode IDs provided, falling back to MissingEpisodeSearch for series %d - this may trigger more downloads than expected", mediaID)
-			payload = map[string]interface{}{
-				"name":     "MissingEpisodeSearch",
-				"seriesId": int(mediaID),
-			}
-		}
+		payload = buildSeriesSearchPayload(mediaID, episodeIDs)
 	}
 
 	resp, err := c.doRequest(instance, "POST", "/api/v3/command", payload)
