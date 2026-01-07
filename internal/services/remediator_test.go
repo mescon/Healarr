@@ -1109,6 +1109,217 @@ func TestRemediatorService_PublishError(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// buildSearchEventData tests
+// =============================================================================
+
+func TestRemediatorService_BuildSearchEventData(t *testing.T) {
+	t.Run("basic event data without media details", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		mockArrClient := &testutil.MockArrClient{
+			// GetMediaDetails returns nil - simulating unavailable details
+			GetMediaDetailsFunc: func(mediaID int64, arrPath string) (*integration.MediaDetails, error) {
+				return nil, nil
+			},
+		}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, nil, db)
+
+		filePath := "/media/movies/test.mkv"
+		arrPath := "/movies/test.mkv"
+		mediaID := int64(123)
+		pathID := int64(1)
+		metadata := map[string]interface{}{"key": "value"}
+
+		eventData := remediator.buildSearchEventData(filePath, arrPath, mediaID, pathID, metadata, false)
+
+		// Verify basic fields
+		if eventData["file_path"] != filePath {
+			t.Errorf("Expected file_path %q, got %q", filePath, eventData["file_path"])
+		}
+		if eventData["media_id"] != mediaID {
+			t.Errorf("Expected media_id %d, got %v", mediaID, eventData["media_id"])
+		}
+		if eventData["path_id"] != pathID {
+			t.Errorf("Expected path_id %d, got %v", pathID, eventData["path_id"])
+		}
+		if eventData["metadata"] == nil {
+			t.Error("Expected metadata to be set")
+		}
+		// is_retry should not be set when isRetry=false
+		if _, ok := eventData["is_retry"]; ok {
+			t.Error("is_retry should not be set when isRetry is false")
+		}
+	})
+
+	t.Run("includes is_retry flag when isRetry is true", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		mockArrClient := &testutil.MockArrClient{}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, nil, db)
+
+		eventData := remediator.buildSearchEventData("/path", "/arr", 1, 1, nil, true)
+
+		isRetry, ok := eventData["is_retry"].(bool)
+		if !ok || !isRetry {
+			t.Error("Expected is_retry to be true")
+		}
+	})
+
+	t.Run("includes media details when available", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		mockArrClient := &testutil.MockArrClient{
+			GetMediaDetailsFunc: func(mediaID int64, arrPath string) (*integration.MediaDetails, error) {
+				return &integration.MediaDetails{
+					Title:        "Test Movie",
+					Year:         2024,
+					MediaType:    "movie",
+					ArrType:      "radarr",
+					InstanceName: "Radarr 4K",
+				}, nil
+			},
+		}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, nil, db)
+
+		eventData := remediator.buildSearchEventData("/path", "/arr", 123, 1, nil, false)
+
+		if eventData["media_title"] != "Test Movie" {
+			t.Errorf("Expected media_title 'Test Movie', got %v", eventData["media_title"])
+		}
+		if eventData["media_year"] != 2024 {
+			t.Errorf("Expected media_year 2024, got %v", eventData["media_year"])
+		}
+		if eventData["media_type"] != "movie" {
+			t.Errorf("Expected media_type 'movie', got %v", eventData["media_type"])
+		}
+		if eventData["arr_type"] != "radarr" {
+			t.Errorf("Expected arr_type 'radarr', got %v", eventData["arr_type"])
+		}
+		if eventData["instance_name"] != "Radarr 4K" {
+			t.Errorf("Expected instance_name 'Radarr 4K', got %v", eventData["instance_name"])
+		}
+	})
+
+	t.Run("includes episode details for TV shows", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		mockArrClient := &testutil.MockArrClient{
+			GetMediaDetailsFunc: func(mediaID int64, arrPath string) (*integration.MediaDetails, error) {
+				return &integration.MediaDetails{
+					Title:         "Breaking Bad",
+					Year:          2008,
+					MediaType:     "episode",
+					ArrType:       "sonarr",
+					InstanceName:  "Sonarr",
+					SeasonNumber:  5,
+					EpisodeNumber: 16,
+					EpisodeTitle:  "Felina",
+				}, nil
+			},
+		}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, nil, db)
+
+		eventData := remediator.buildSearchEventData("/path", "/arr", 456, 1, nil, false)
+
+		if eventData["season_number"] != 5 {
+			t.Errorf("Expected season_number 5, got %v", eventData["season_number"])
+		}
+		if eventData["episode_number"] != 16 {
+			t.Errorf("Expected episode_number 16, got %v", eventData["episode_number"])
+		}
+		if eventData["episode_title"] != "Felina" {
+			t.Errorf("Expected episode_title 'Felina', got %v", eventData["episode_title"])
+		}
+	})
+
+	t.Run("omits zero season/episode numbers", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		mockArrClient := &testutil.MockArrClient{
+			GetMediaDetailsFunc: func(mediaID int64, arrPath string) (*integration.MediaDetails, error) {
+				return &integration.MediaDetails{
+					Title:         "Movie",
+					SeasonNumber:  0, // Should not be included
+					EpisodeNumber: 0, // Should not be included
+					EpisodeTitle:  "", // Should not be included
+				}, nil
+			},
+		}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, nil, db)
+
+		eventData := remediator.buildSearchEventData("/path", "/arr", 789, 1, nil, false)
+
+		if _, ok := eventData["season_number"]; ok {
+			t.Error("season_number should not be set when 0")
+		}
+		if _, ok := eventData["episode_number"]; ok {
+			t.Error("episode_number should not be set when 0")
+		}
+		if _, ok := eventData["episode_title"]; ok {
+			t.Error("episode_title should not be set when empty")
+		}
+	})
+
+	t.Run("handles GetMediaDetails error gracefully", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		mockArrClient := &testutil.MockArrClient{
+			GetMediaDetailsFunc: func(mediaID int64, arrPath string) (*integration.MediaDetails, error) {
+				return nil, errors.New("API error")
+			},
+		}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, nil, db)
+
+		eventData := remediator.buildSearchEventData("/path", "/arr", 123, 1, nil, false)
+
+		// Should still have basic fields
+		if eventData["file_path"] != "/path" {
+			t.Errorf("Expected file_path '/path', got %v", eventData["file_path"])
+		}
+		// Should not have media details
+		if _, ok := eventData["media_title"]; ok {
+			t.Error("media_title should not be set when GetMediaDetails fails")
+		}
+	})
+}
+
 func TestRemediatorService_CheckDeletionCompleted(t *testing.T) {
 	t.Run("returns false with nil db", func(t *testing.T) {
 		mockEventBus := testutil.NewMockEventBus()

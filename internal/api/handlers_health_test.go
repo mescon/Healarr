@@ -688,3 +688,65 @@ func TestHandleHealth_ArrQueryError(t *testing.T) {
 		t.Errorf("Expected 0 total arr instances (query error), got %v", arrInstances["total"])
 	}
 }
+
+// =============================================================================
+// Unit tests for helper functions
+// =============================================================================
+
+func TestFormatUptime(t *testing.T) {
+	tests := []struct {
+		name     string
+		uptime   time.Duration
+		expected string
+	}{
+		{
+			name:     "zero minutes",
+			uptime:   0,
+			expected: "0m",
+		},
+		{
+			name:     "only minutes",
+			uptime:   45 * time.Minute,
+			expected: "45m",
+		},
+		{
+			name:     "hours and minutes",
+			uptime:   3*time.Hour + 25*time.Minute,
+			expected: "3h 25m",
+		},
+		{
+			name:     "days hours minutes",
+			uptime:   2*24*time.Hour + 5*time.Hour + 30*time.Minute,
+			expected: "2d 5h 30m",
+		},
+		{
+			name:     "exactly one day",
+			uptime:   24 * time.Hour,
+			expected: "1d 0h 0m",
+		},
+		{
+			name:     "exactly one hour",
+			uptime:   1 * time.Hour,
+			expected: "1h 0m",
+		},
+		{
+			name:     "large uptime",
+			uptime:   100*24*time.Hour + 23*time.Hour + 59*time.Minute,
+			expected: "100d 23h 59m",
+		},
+		{
+			name:     "seconds ignored",
+			uptime:   45*time.Minute + 30*time.Second,
+			expected: "45m",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatUptime(tt.uptime)
+			if result != tt.expected {
+				t.Errorf("formatUptime(%v) = %q, want %q", tt.uptime, result, tt.expected)
+			}
+		})
+	}
+}

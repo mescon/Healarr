@@ -1271,3 +1271,534 @@ func TestVerifierService_MonitorDownloadProgress_HistoryImportDetected(t *testin
 		t.Error("Monitor did not detect import as expected")
 	}
 }
+
+// =============================================================================
+// Helper function tests - convertAndVerifyPaths
+// =============================================================================
+
+func TestVerifierService_ConvertAndVerifyPaths(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	t.Run("returns empty slice for empty input", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		mockPM := &testutil.MockPathMapper{}
+		verifier := NewVerifierService(eb, nil, mockPM, nil, db)
+
+		result := verifier.convertAndVerifyPaths([]string{})
+		if len(result) != 0 {
+			t.Errorf("Expected empty slice, got %v", result)
+		}
+	})
+
+	t.Run("returns only existing files", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		tmpDir := t.TempDir()
+		existingFile := filepath.Join(tmpDir, "exists.mkv")
+		os.WriteFile(existingFile, []byte("test"), 0644)
+
+		mockPM := &testutil.MockPathMapper{
+			ToLocalPathFunc: func(arrPath string) (string, error) {
+				return arrPath, nil // Pass through
+			},
+		}
+		verifier := NewVerifierService(eb, nil, mockPM, nil, db)
+
+		input := []string{
+			existingFile,
+			"/nonexistent/path.mkv",
+		}
+		result := verifier.convertAndVerifyPaths(input)
+
+		if len(result) != 1 {
+			t.Errorf("Expected 1 file, got %d", len(result))
+		}
+		if len(result) > 0 && result[0] != existingFile {
+			t.Errorf("Expected %s, got %s", existingFile, result[0])
+		}
+	})
+
+	t.Run("falls back to original path on mapping error", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		tmpDir := t.TempDir()
+		existingFile := filepath.Join(tmpDir, "test.mkv")
+		os.WriteFile(existingFile, []byte("test"), 0644)
+
+		mockPM := &testutil.MockPathMapper{
+			ToLocalPathFunc: func(arrPath string) (string, error) {
+				return "", errPathNotConfigured
+			},
+		}
+		verifier := NewVerifierService(eb, nil, mockPM, nil, db)
+
+		// If mapping fails, should use original path
+		result := verifier.convertAndVerifyPaths([]string{existingFile})
+
+		if len(result) != 1 {
+			t.Errorf("Expected 1 file (using original path), got %d", len(result))
+		}
+	})
+}
+
+// =============================================================================
+// Helper function tests - waitWithShutdown
+// =============================================================================
+
+func TestVerifierService_WaitWithShutdown(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	t.Run("returns true immediately when already shutdown", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		verifier := NewVerifierService(eb, nil, nil, nil, db)
+		close(verifier.shutdownCh) // Pre-close shutdown channel
+
+		result := verifier.waitWithShutdown(1 * time.Second)
+		if !result {
+			t.Error("Expected true when shutdown channel is closed")
+		}
+	})
+
+	t.Run("returns false after timeout without shutdown", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		verifier := NewVerifierService(eb, nil, nil, nil, db)
+
+		start := time.Now()
+		result := verifier.waitWithShutdown(50 * time.Millisecond)
+		elapsed := time.Since(start)
+
+		if result {
+			t.Error("Expected false when wait completes normally")
+		}
+		if elapsed < 50*time.Millisecond {
+			t.Errorf("Expected wait to take at least 50ms, took %v", elapsed)
+		}
+	})
+
+	t.Run("returns true when shutdown during wait", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		verifier := NewVerifierService(eb, nil, nil, nil, db)
+
+		// Close shutdown channel after a short delay
+		go func() {
+			time.Sleep(25 * time.Millisecond)
+			close(verifier.shutdownCh)
+		}()
+
+		start := time.Now()
+		result := verifier.waitWithShutdown(1 * time.Second)
+		elapsed := time.Since(start)
+
+		if !result {
+			t.Error("Expected true when shutdown signal received")
+		}
+		if elapsed > 100*time.Millisecond {
+			t.Errorf("Expected early return on shutdown, took %v", elapsed)
+		}
+	})
+}
+
+// =============================================================================
+// Helper function tests - publishDownloadTimeout
+// =============================================================================
+
+func TestVerifierService_PublishDownloadTimeout(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	verifier := NewVerifierService(eb, nil, nil, nil, db)
+
+	corruptionID := "timeout-test-123"
+	elapsed := 6 * time.Hour
+	attempt := 120
+	lastStatus := "downloading"
+
+	verifier.publishDownloadTimeout(corruptionID, elapsed, attempt, lastStatus)
+
+	// Wait for async delivery
+	time.Sleep(100 * time.Millisecond)
+
+	// Check that event was stored in database
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM events WHERE aggregate_id = ? AND event_type = ?",
+		corruptionID, domain.DownloadTimeout).Scan(&count)
+	if err != nil {
+		t.Fatalf("Failed to query events: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("Expected 1 DownloadTimeout event, got %d", count)
+	}
+}
+
+// =============================================================================
+// Helper function tests - publishManuallyRemoved
+// =============================================================================
+
+func TestVerifierService_PublishManuallyRemoved(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	verifier := NewVerifierService(eb, nil, nil, nil, db)
+
+	corruptionID := "manual-remove-test-456"
+	lastStatus := "was_in_queue"
+
+	verifier.publishManuallyRemoved(corruptionID, lastStatus)
+
+	// Wait for async delivery
+	time.Sleep(100 * time.Millisecond)
+
+	// Check that event was stored in database
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM events WHERE aggregate_id = ? AND event_type = ?",
+		corruptionID, domain.ManuallyRemoved).Scan(&count)
+	if err != nil {
+		t.Fatalf("Failed to query events: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("Expected 1 ManuallyRemoved event, got %d", count)
+	}
+}
+
+// =============================================================================
+// Helper function tests - storeImportMetadata
+// =============================================================================
+
+func TestVerifierService_StoreImportMetadata(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	t.Run("stores single file metadata with size", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		verifier := NewVerifierService(eb, nil, nil, nil, db)
+
+		tmpDir := t.TempDir()
+		tmpFile := filepath.Join(tmpDir, "test.mkv")
+		os.WriteFile(tmpFile, []byte("test content"), 0644)
+
+		importItem := &integration.HistoryItemInfo{
+			Quality:        "Bluray-1080p",
+			ReleaseGroup:   "SPARKS",
+			Indexer:        "NZBgeek",
+			DownloadClient: "SABnzbd",
+		}
+
+		verifier.storeImportMetadata("test-123", []string{tmpFile}, importItem)
+
+		meta := verifier.getVerifyMeta("test-123")
+		if meta == nil {
+			t.Fatal("Expected metadata to be stored")
+		}
+		if meta.Quality != "Bluray-1080p" {
+			t.Errorf("Expected Quality 'Bluray-1080p', got %q", meta.Quality)
+		}
+		if meta.ReleaseGroup != "SPARKS" {
+			t.Errorf("Expected ReleaseGroup 'SPARKS', got %q", meta.ReleaseGroup)
+		}
+		if meta.NewFilePath != tmpFile {
+			t.Errorf("Expected NewFilePath %q, got %q", tmpFile, meta.NewFilePath)
+		}
+		if meta.NewFileSize != 12 { // "test content" is 12 bytes
+			t.Errorf("Expected NewFileSize 12, got %d", meta.NewFileSize)
+		}
+	})
+
+	t.Run("stores multi-file metadata without size", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		verifier := NewVerifierService(eb, nil, nil, nil, db)
+
+		paths := []string{"/path1.mkv", "/path2.mkv", "/path3.mkv"}
+		importItem := &integration.HistoryItemInfo{
+			Quality: "WEBDL-1080p",
+		}
+
+		verifier.storeImportMetadata("multi-123", paths, importItem)
+
+		meta := verifier.getVerifyMeta("multi-123")
+		if meta == nil {
+			t.Fatal("Expected metadata to be stored")
+		}
+		if len(meta.NewFilePaths) != 3 {
+			t.Errorf("Expected 3 NewFilePaths, got %d", len(meta.NewFilePaths))
+		}
+		// For multi-file, NewFilePath should be empty
+		if meta.NewFilePath != "" {
+			t.Errorf("Expected empty NewFilePath for multi-file, got %q", meta.NewFilePath)
+		}
+	})
+}
+
+// =============================================================================
+// Helper function tests - checkAndEmitFilesFromArrAPI
+// =============================================================================
+
+func TestVerifierService_CheckAndEmitFilesFromArrAPI(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	t.Run("returns false with nil arrClient", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		verifier := NewVerifierService(eb, nil, nil, nil, db)
+
+		result := verifier.checkAndEmitFilesFromArrAPI("test-1", "/path.mkv", 123, nil, time.Hour, 6*time.Hour)
+		if result {
+			t.Error("Expected false with nil arrClient")
+		}
+	})
+
+	t.Run("returns false when GetAllFilePaths fails", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		mockArr := &testutil.MockArrClient{
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				return nil, errPathNotConfigured
+			},
+		}
+		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
+
+		result := verifier.checkAndEmitFilesFromArrAPI("test-2", "/path.mkv", 123, nil, time.Hour, 6*time.Hour)
+		if result {
+			t.Error("Expected false when GetAllFilePaths fails")
+		}
+	})
+
+	t.Run("returns true and emits event when all files exist", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		tmpDir := t.TempDir()
+		existingFile := filepath.Join(tmpDir, "test.mkv")
+		os.WriteFile(existingFile, []byte("test"), 0644)
+
+		mockArr := &testutil.MockArrClient{
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				return []string{existingFile}, nil
+			},
+		}
+		mockPM := &testutil.MockPathMapper{}
+		mockHC := &testutil.MockHealthChecker{
+			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+				return true, nil
+			},
+		}
+
+		verifier := NewVerifierService(eb, mockHC, mockPM, mockArr, db)
+
+		var fileDetectedCount int
+		eb.Subscribe(domain.FileDetected, func(e domain.Event) {
+			fileDetectedCount++
+		})
+
+		result := verifier.checkAndEmitFilesFromArrAPI("test-3", "/path.mkv", 123, nil, time.Hour, 6*time.Hour)
+
+		time.Sleep(100 * time.Millisecond)
+
+		if !result {
+			t.Error("Expected true when all files exist")
+		}
+		if fileDetectedCount != 1 {
+			t.Errorf("Expected 1 FileDetected event, got %d", fileDetectedCount)
+		}
+	})
+
+	t.Run("emits partial replacement after half timeout", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		tmpDir := t.TempDir()
+		existingFile := filepath.Join(tmpDir, "ep1.mkv")
+		os.WriteFile(existingFile, []byte("test"), 0644)
+
+		mockArr := &testutil.MockArrClient{
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				return []string{existingFile, "/nonexistent/ep2.mkv"}, nil
+			},
+		}
+		mockPM := &testutil.MockPathMapper{}
+		mockHC := &testutil.MockHealthChecker{
+			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+				return true, nil
+			},
+		}
+
+		verifier := NewVerifierService(eb, mockHC, mockPM, mockArr, db)
+
+		var fileDetectedCount int
+		eb.Subscribe(domain.FileDetected, func(e domain.Event) {
+			fileDetectedCount++
+		})
+
+		timeout := 6 * time.Hour
+		elapsed := 4 * time.Hour // > half of timeout
+		result := verifier.checkAndEmitFilesFromArrAPI("test-4", "/path.mkv", 123, nil, elapsed, timeout)
+
+		time.Sleep(100 * time.Millisecond)
+
+		if !result {
+			t.Error("Expected true when partial replacement detected after half timeout")
+		}
+	})
+}
+
+// =============================================================================
+// Helper function tests - findFilesForVerification
+// =============================================================================
+
+func TestVerifierService_FindFilesForVerification(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	t.Run("uses arr API when smart verification enabled", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		tmpDir := t.TempDir()
+		existingFile := filepath.Join(tmpDir, "test.mkv")
+		os.WriteFile(existingFile, []byte("test"), 0644)
+
+		mockArr := &testutil.MockArrClient{
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				return []string{existingFile}, nil
+			},
+		}
+		mockPM := &testutil.MockPathMapper{}
+
+		verifier := NewVerifierService(eb, nil, mockPM, mockArr, db)
+
+		result := verifier.findFilesForVerification(123, nil, existingFile, true)
+
+		if len(result) != 1 {
+			t.Errorf("Expected 1 file, got %d", len(result))
+		}
+		if len(result) > 0 && result[0] != existingFile {
+			t.Errorf("Expected %s, got %s", existingFile, result[0])
+		}
+	})
+
+	t.Run("falls back to reference path when smart verification disabled", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		tmpDir := t.TempDir()
+		existingFile := filepath.Join(tmpDir, "test.mkv")
+		os.WriteFile(existingFile, []byte("test"), 0644)
+
+		mockArr := &testutil.MockArrClient{}
+
+		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
+
+		result := verifier.findFilesForVerification(123, nil, existingFile, false)
+
+		if len(result) != 1 {
+			t.Errorf("Expected 1 file, got %d", len(result))
+		}
+		if len(result) > 0 && result[0] != existingFile {
+			t.Errorf("Expected %s, got %s", existingFile, result[0])
+		}
+	})
+
+	t.Run("returns nil when no files found", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		mockArr := &testutil.MockArrClient{
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				return nil, nil
+			},
+		}
+
+		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
+
+		result := verifier.findFilesForVerification(123, nil, "/nonexistent/path.mkv", true)
+
+		if result != nil {
+			t.Errorf("Expected nil, got %v", result)
+		}
+	})
+
+	t.Run("returns nil when arr returns partial files", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		tmpDir := t.TempDir()
+		existingFile := filepath.Join(tmpDir, "ep1.mkv")
+		os.WriteFile(existingFile, []byte("test"), 0644)
+
+		mockArr := &testutil.MockArrClient{
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				// Returns 2 paths but only 1 exists
+				return []string{existingFile, "/nonexistent/ep2.mkv"}, nil
+			},
+		}
+		mockPM := &testutil.MockPathMapper{}
+
+		verifier := NewVerifierService(eb, nil, mockPM, mockArr, db)
+
+		// Should return nil because not ALL files exist (2 returned, only 1 exists)
+		result := verifier.findFilesForVerification(123, nil, "/ref.mkv", true)
+
+		if result != nil {
+			t.Errorf("Expected nil when not all files exist, got %v", result)
+		}
+	})
+}
