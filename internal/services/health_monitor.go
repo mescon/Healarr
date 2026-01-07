@@ -415,6 +415,75 @@ func (h *HealthMonitorService) runArrStateSync() {
 // - Download completed but Healarr's monitoring goroutine died (e.g., after restart)
 // - User manually fixed the issue in arr UI
 // - arr imported the file but Healarr wasn't notified
+// arrSyncItem holds data for an item being synced with arr
+type arrSyncItem struct {
+	corruptionID string
+	filePath     string
+	pathID       int64
+	mediaID      int64
+}
+
+// publishVerificationSuccess publishes a verification success event for arr sync
+func (h *HealthMonitorService) publishVerificationSuccess(item arrSyncItem) error {
+	return h.eventBus.Publish(domain.Event{
+		AggregateID:   item.corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.VerificationSuccess,
+		EventData: map[string]interface{}{
+			"file_path":       item.filePath,
+			"path_id":         item.pathID,
+			"recovery_action": "arr_sync",
+			"note":            "Resolved via periodic arr state sync - arr reports hasFile=true",
+		},
+	})
+}
+
+// publishSearchExhausted publishes a search exhausted event for arr sync
+func (h *HealthMonitorService) publishSearchExhausted(item arrSyncItem) error {
+	return h.eventBus.Publish(domain.Event{
+		AggregateID:   item.corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.SearchExhausted,
+		EventData: map[string]interface{}{
+			"file_path":       item.filePath,
+			"path_id":         item.pathID,
+			"reason":          "item_vanished",
+			"recovery_action": "arr_sync",
+		},
+	})
+}
+
+// processSyncItem processes a single item during arr state sync
+func (h *HealthMonitorService) processSyncItem(item arrSyncItem) (synced, exhausted bool) {
+	hasFile, err := h.checkArrHasFile(item.filePath, item.mediaID)
+	if err != nil {
+		logger.Debugf("Health monitor: failed to check arr for %s: %v", item.filePath, err)
+		return false, false
+	}
+
+	if hasFile {
+		logger.Infof("Health monitor: arr reports file exists for %s, marking as resolved", item.filePath)
+		if err := h.publishVerificationSuccess(item); err != nil {
+			logger.Errorf("Health monitor: failed to publish VerificationSuccess for %s: %v", item.corruptionID, err)
+			return false, false
+		}
+		return true, false
+	}
+
+	// Check if item is in arr queue
+	inQueue, _ := h.isInArrQueue(item.filePath)
+	if !inQueue {
+		logger.Infof("Health monitor: item %s not in arr queue and no file, marking as exhausted", item.filePath)
+		if err := h.publishSearchExhausted(item); err != nil {
+			logger.Errorf("Health monitor: failed to publish SearchExhausted for %s: %v", item.corruptionID, err)
+			return false, false
+		}
+		return false, true
+	}
+
+	return false, false
+}
+
 func (h *HealthMonitorService) syncWithArrState() {
 	if h.db == nil || h.arrClient == nil {
 		return
@@ -422,8 +491,6 @@ func (h *HealthMonitorService) syncWithArrState() {
 
 	logger.Debugf("Health monitor: syncing in-progress items with arr state")
 
-	// Find items in active states that haven't been updated in the last hour
-	// (to avoid interfering with active monitoring)
 	query := `
 		SELECT
 			cs.corruption_id,
@@ -469,58 +536,22 @@ func (h *HealthMonitorService) syncWithArrState() {
 		}
 
 		if mediaID == 0 {
-			continue // Can't check arr without media ID
-		}
-
-		// Check if arr has the file
-		hasFile, err := h.checkArrHasFile(filePath, mediaID)
-		if err != nil {
-			logger.Debugf("Health monitor: failed to check arr for %s: %v", filePath, err)
 			continue
 		}
 
-		if hasFile {
-			// File exists in arr - emit VerificationSuccess
-			// Note: We can't do full health verification here (no healthChecker),
-			// but if arr says hasFile=true, the import was successful
-			logger.Infof("Health monitor: arr reports file exists for %s, marking as resolved", filePath)
-			if err := h.eventBus.Publish(domain.Event{
-				AggregateID:   corruptionID,
-				AggregateType: "corruption",
-				EventType:     domain.VerificationSuccess,
-				EventData: map[string]interface{}{
-					"file_path":       filePath,
-					"path_id":         pathID,
-					"recovery_action": "arr_sync",
-					"note":            "Resolved via periodic arr state sync - arr reports hasFile=true",
-				},
-			}); err != nil {
-				logger.Errorf("Health monitor: failed to publish VerificationSuccess for %s: %v", corruptionID, err)
-			} else {
-				synced++
-			}
-		} else {
-			// Check if item is in arr queue
-			inQueue, _ := h.isInArrQueue(filePath)
-			if !inQueue {
-				// Not in queue and no file - item is gone
-				logger.Infof("Health monitor: item %s not in arr queue and no file, marking as exhausted", filePath)
-				if err := h.eventBus.Publish(domain.Event{
-					AggregateID:   corruptionID,
-					AggregateType: "corruption",
-					EventType:     domain.SearchExhausted,
-					EventData: map[string]interface{}{
-						"file_path":       filePath,
-						"path_id":         pathID,
-						"reason":          "item_vanished",
-						"recovery_action": "arr_sync",
-					},
-				}); err != nil {
-					logger.Errorf("Health monitor: failed to publish SearchExhausted for %s: %v", corruptionID, err)
-				} else {
-					exhausted++
-				}
-			}
+		item := arrSyncItem{
+			corruptionID: corruptionID,
+			filePath:     filePath,
+			pathID:       pathID,
+			mediaID:      mediaID,
+		}
+
+		s, e := h.processSyncItem(item)
+		if s {
+			synced++
+		}
+		if e {
+			exhausted++
 		}
 	}
 

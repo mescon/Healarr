@@ -611,71 +611,63 @@ func (hc *CmdHealthChecker) runMediaInfo(path string, customArgs []string, mode 
 
 // GetCommandPreview returns the exact command that would be executed for a given configuration.
 // This is useful for displaying to users so they know exactly what will run.
+// buildFFprobePreview builds the command preview for ffprobe/ffmpeg detection
+func (hc *CmdHealthChecker) buildFFprobePreview(mode string, customArgs []string, filePath string) string {
+	var args []string
+	if mode == ModeThorough {
+		args = []string{hc.FFmpegPath, "-v", "error", argXError}
+		args = append(args, customArgs...)
+		args = append(args, "-i", filePath, "-f", "null", "-")
+	} else {
+		args = []string{hc.FFprobePath, "-v", "error", argShowFormat, argShowStreams}
+		args = append(args, customArgs...)
+		args = append(args, filePath)
+	}
+	return strings.Join(args, " ")
+}
+
+// buildMediaInfoPreview builds the command preview for mediainfo detection
+func (hc *CmdHealthChecker) buildMediaInfoPreview(mode string, customArgs []string, filePath string) string {
+	var args []string
+	if mode == ModeThorough {
+		args = []string{hc.MediaInfoPath, argOutputJSON, argFull}
+	} else {
+		args = []string{hc.MediaInfoPath, argOutputJSON}
+	}
+	args = append(args, customArgs...)
+	args = append(args, filePath)
+	return strings.Join(args, " ")
+}
+
+// buildHandBrakePreview builds the command preview for HandBrake detection
+func (hc *CmdHealthChecker) buildHandBrakePreview(mode string, customArgs []string, filePath string) string {
+	var args []string
+	if mode == ModeThorough {
+		args = []string{hc.HandBrakePath, argScan, argPreviews, "10:0"}
+	} else {
+		args = []string{hc.HandBrakePath, argScan}
+	}
+	args = append(args, customArgs...)
+	args = append(args, "-i", filePath)
+	return strings.Join(args, " ")
+}
+
 func (hc *CmdHealthChecker) GetCommandPreview(method DetectionMethod, mode string, customArgs []string) string {
 	if mode == "" {
 		mode = ModeQuick
 	}
 
-	// Placeholder for file path in preview
 	filePath := "<file>"
 
 	switch method {
 	case DetectionZeroByte:
 		return "stat <file> (checks if file size == 0)"
-
 	case DetectionFFprobe:
-		var args []string
-		if mode == ModeThorough {
-			// Thorough mode uses ffmpeg (not ffprobe) to decode entire file
-			args = []string{hc.FFmpegPath, "-v", "error", argXError}
-			if len(customArgs) > 0 {
-				args = append(args, customArgs...)
-			}
-			args = append(args, "-i", filePath, "-f", "null", "-")
-		} else {
-			// Quick mode uses ffprobe for header analysis
-			args = []string{hc.FFprobePath, "-v", "error", argShowFormat, argShowStreams}
-			if len(customArgs) > 0 {
-				args = append(args, customArgs...)
-			}
-			args = append(args, filePath)
-		}
-		return strings.Join(args, " ")
-
+		return hc.buildFFprobePreview(mode, customArgs, filePath)
 	case DetectionMediaInfo:
-		var args []string
-		if mode == ModeThorough {
-			args = []string{hc.MediaInfoPath, argOutputJSON, argFull}
-			if len(customArgs) > 0 {
-				args = append(args, customArgs...)
-			}
-			args = append(args, filePath)
-		} else {
-			args = []string{hc.MediaInfoPath, argOutputJSON}
-			if len(customArgs) > 0 {
-				args = append(args, customArgs...)
-			}
-			args = append(args, filePath)
-		}
-		return strings.Join(args, " ")
-
+		return hc.buildMediaInfoPreview(mode, customArgs, filePath)
 	case DetectionHandBrake:
-		var args []string
-		if mode == ModeThorough {
-			args = []string{hc.HandBrakePath, argScan, argPreviews, "10:0"}
-			if len(customArgs) > 0 {
-				args = append(args, customArgs...)
-			}
-			args = append(args, "-i", filePath)
-		} else {
-			args = []string{hc.HandBrakePath, argScan}
-			if len(customArgs) > 0 {
-				args = append(args, customArgs...)
-			}
-			args = append(args, "-i", filePath)
-		}
-		return strings.Join(args, " ")
-
+		return hc.buildHandBrakePreview(mode, customArgs, filePath)
 	default:
 		return "unknown detection method"
 	}
