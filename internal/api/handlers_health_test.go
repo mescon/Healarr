@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -749,4 +750,105 @@ func TestFormatUptime(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCheckDatabaseHealth(t *testing.T) {
+	t.Run("healthy database returns connected status", func(t *testing.T) {
+		db, dbPath, cleanup := setupTestDBForHealth(t)
+		defer cleanup()
+
+		gin.SetMode(gin.TestMode)
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		s := &RESTServer{
+			db: db,
+		}
+
+		config.SetForTesting(&config.Config{
+			DatabasePath: dbPath,
+		})
+
+		ctx := context.Background()
+		dbHealth, healthy := s.checkDatabaseHealth(ctx)
+
+		if !healthy {
+			t.Error("Expected healthy=true for working database")
+		}
+
+		if dbHealth["status"] != "connected" {
+			t.Errorf("Expected status 'connected', got %v", dbHealth["status"])
+		}
+
+		// Should have size_bytes since database file exists
+		if dbHealth["size_bytes"] == nil {
+			t.Error("Expected size_bytes to be present")
+		}
+	})
+
+	t.Run("closed database returns error status", func(t *testing.T) {
+		db, dbPath, cleanup := setupTestDBForHealth(t)
+
+		gin.SetMode(gin.TestMode)
+
+		s := &RESTServer{
+			db: db,
+		}
+
+		config.SetForTesting(&config.Config{
+			DatabasePath: dbPath,
+		})
+
+		// Close the database to simulate connection error
+		db.Close()
+		cleanup()
+
+		ctx := context.Background()
+		dbHealth, healthy := s.checkDatabaseHealth(ctx)
+
+		if healthy {
+			t.Error("Expected healthy=false for closed database")
+		}
+
+		if dbHealth["status"] != "error" {
+			t.Errorf("Expected status 'error', got %v", dbHealth["status"])
+		}
+
+		if dbHealth["error"] == nil {
+			t.Error("Expected error message to be present")
+		}
+	})
+
+	t.Run("missing database file omits size_bytes", func(t *testing.T) {
+		db, _, cleanup := setupTestDBForHealth(t)
+		defer cleanup()
+
+		gin.SetMode(gin.TestMode)
+
+		s := &RESTServer{
+			db: db,
+		}
+
+		// Set database path to non-existent file
+		config.SetForTesting(&config.Config{
+			DatabasePath: "/nonexistent/path/test.db",
+		})
+
+		ctx := context.Background()
+		dbHealth, healthy := s.checkDatabaseHealth(ctx)
+
+		// Should still be healthy (ping works)
+		if !healthy {
+			t.Error("Expected healthy=true (ping still works)")
+		}
+
+		if dbHealth["status"] != "connected" {
+			t.Errorf("Expected status 'connected', got %v", dbHealth["status"])
+		}
+
+		// size_bytes should be omitted since file doesn't exist at that path
+		if dbHealth["size_bytes"] != nil {
+			t.Error("Expected size_bytes to be omitted for non-existent path")
+		}
+	})
 }
