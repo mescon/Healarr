@@ -415,7 +415,7 @@ func (s *RESTServer) setupRoutes() {
 	webDir := cfg.WebDir
 	if web.HasEmbeddedAssets() {
 		s.setupEmbeddedAssets(base, basePath)
-	} else if _, err := os.Stat(filepath.Join(webDir, "index.html")); err == nil {
+	} else if _, err := os.Stat(filepath.Join(webDir, indexHTMLFile)); err == nil {
 		s.setupFilesystemAssets(base, basePath, webDir)
 	} else {
 		s.setupAPIOnlyMode(basePath, webDir)
