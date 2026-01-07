@@ -1665,11 +1665,17 @@ func (s *ScannerService) markRescanResolved(id int64, resolution string) {
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
+	// For 'abandoned' resolution, set status to 'abandoned'; otherwise 'resolved'
+	status := "resolved"
+	if resolution == "abandoned" {
+		status = "abandoned"
+	}
+
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE pending_rescans
-		SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, resolution = ?
+		SET status = ?, resolved_at = CURRENT_TIMESTAMP, resolution = ?
 		WHERE id = ?
-	`, resolution, id); err != nil {
+	`, status, resolution, id); err != nil {
 		logger.Warnf("Failed to mark pending rescan %d as %s: %v", id, resolution, err)
 	}
 }
