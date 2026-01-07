@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +15,26 @@ import (
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/logger"
 )
+
+// SQL queries and error messages for setup handlers
+const (
+	sqlCountPasswordHash = "SELECT COUNT(*) FROM settings WHERE key = 'password_hash'"
+	sqlCountAPIKey       = "SELECT COUNT(*) FROM settings WHERE key = 'api_key'"
+	errMsgDatabaseError  = "Database error"
+)
+
+// validatePathWithinDir validates that targetPath is within baseDir (defense in depth)
+// Returns the cleaned target path if valid, or an error if path escapes the base directory
+func validatePathWithinDir(targetPath, baseDir string) (string, error) {
+	cleanPath := filepath.Clean(targetPath)
+	cleanDir := filepath.Clean(baseDir)
+
+	// Ensure path starts with directory + separator to prevent directory traversal
+	if !strings.HasPrefix(cleanPath, cleanDir+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %s is not within %s", cleanPath, cleanDir)
+	}
+	return cleanPath, nil
+}
 
 // SetupStatus represents the current setup state of the application
 type SetupStatus struct {
@@ -32,20 +53,20 @@ func (s *RESTServer) handleSetupStatus(c *gin.Context) {
 
 	// Check for password
 	var passwordExists int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM settings WHERE key = 'password_hash'").Scan(&passwordExists)
+	err := s.db.QueryRow(sqlCountPasswordHash).Scan(&passwordExists)
 	if err != nil && err != sql.ErrNoRows {
 		logger.Errorf("Failed to check password status: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
 	status.HasPassword = passwordExists > 0
 
 	// Check for API key
 	var apiKeyExists int
-	err = s.db.QueryRow("SELECT COUNT(*) FROM settings WHERE key = 'api_key'").Scan(&apiKeyExists)
+	err = s.db.QueryRow(sqlCountAPIKey).Scan(&apiKeyExists)
 	if err != nil && err != sql.ErrNoRows {
 		logger.Errorf("Failed to check API key status: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
 	status.HasAPIKey = apiKeyExists > 0
@@ -55,7 +76,7 @@ func (s *RESTServer) handleSetupStatus(c *gin.Context) {
 	err = s.db.QueryRow("SELECT COUNT(*) FROM arr_instances").Scan(&instanceCount)
 	if err != nil && err != sql.ErrNoRows {
 		logger.Errorf("Failed to check instances: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
 	status.HasInstances = instanceCount > 0
@@ -65,7 +86,7 @@ func (s *RESTServer) handleSetupStatus(c *gin.Context) {
 	err = s.db.QueryRow("SELECT COUNT(*) FROM scan_paths").Scan(&pathCount)
 	if err != nil && err != sql.ErrNoRows {
 		logger.Errorf("Failed to check scan paths: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
 	status.HasScanPaths = pathCount > 0
@@ -75,7 +96,7 @@ func (s *RESTServer) handleSetupStatus(c *gin.Context) {
 	err = s.db.QueryRow("SELECT value FROM settings WHERE key = 'onboarding_dismissed'").Scan(&dismissed)
 	if err != nil && err != sql.ErrNoRows {
 		logger.Errorf("Failed to check onboarding dismissed status: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
 	status.OnboardingDismissed = dismissed.Valid && dismissed.String == "true"
@@ -171,13 +192,23 @@ func (s *RESTServer) handleDatabaseRestore(c *gin.Context) {
 	timestamp := time.Now().Format("20060102_150405")
 	preRestoreBackup := filepath.Join(backupDir, fmt.Sprintf("pre_restore_%s.db", timestamp))
 
+	// Security: Validate backup path is within expected directory (defense in depth)
+	// Note: backupDir is derived from config, not user input, but we validate anyway
+	cleanBackupPath, pathErr := validatePathWithinDir(preRestoreBackup, backupDir)
+	if pathErr != nil {
+		logger.Errorf("Backup path validation failed: %v", pathErr)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid backup path configuration"})
+		return
+	}
+
 	// Use VACUUM INTO for safe backup of current database
-	_, backupErr := s.db.Exec(fmt.Sprintf("VACUUM INTO '%s'", preRestoreBackup))
+	// SQLite VACUUM INTO doesn't support parameterized paths, so we use validated path
+	_, backupErr := s.db.Exec(fmt.Sprintf("VACUUM INTO '%s'", cleanBackupPath))
 	if backupErr != nil {
 		logger.Errorf("Failed to create pre-restore backup: %v", backupErr)
 		// Continue anyway - the user explicitly confirmed the restore
 	} else {
-		logger.Infof("Pre-restore backup created: %s", preRestoreBackup)
+		logger.Infof("Pre-restore backup created: %s", cleanBackupPath)
 	}
 
 	// Mark the pending restore file
@@ -194,7 +225,7 @@ func (s *RESTServer) handleDatabaseRestore(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message":          "Database restore staged successfully",
 		"restart_required": true,
-		"backup_created":   preRestoreBackup,
+		"backup_created":   cleanBackupPath,
 		"note":             "Restart the server to apply the restored database",
 	})
 }
@@ -239,9 +270,9 @@ func (s *RESTServer) validateUploadedDatabase(dbPath string) error {
 func (s *RESTServer) handleConfigImportPublic(c *gin.Context) {
 	// Check if we're in setup mode (no password set)
 	var passwordExists int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM settings WHERE key = 'password_hash'").Scan(&passwordExists)
+	err := s.db.QueryRow(sqlCountPasswordHash).Scan(&passwordExists)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
 
@@ -259,9 +290,9 @@ func (s *RESTServer) handleConfigImportPublic(c *gin.Context) {
 func (s *RESTServer) handleDatabaseRestorePublic(c *gin.Context) {
 	// Check if we're in setup mode (no password set)
 	var passwordExists int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM settings WHERE key = 'password_hash'").Scan(&passwordExists)
+	err := s.db.QueryRow(sqlCountPasswordHash).Scan(&passwordExists)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
 

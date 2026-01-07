@@ -740,5 +740,82 @@ func TestValidateUploadedDatabase_Corrupted(t *testing.T) {
 	// The error could be about integrity or invalid database depending on SQLite version
 }
 
+// =============================================================================
+// validatePathWithinDir Tests
+// =============================================================================
+
+func TestValidatePathWithinDir_ValidPath(t *testing.T) {
+	baseDir := "/home/user/backups"
+
+	tests := []struct {
+		name       string
+		targetPath string
+		wantPath   string
+	}{
+		{
+			name:       "simple file",
+			targetPath: "/home/user/backups/file.db",
+			wantPath:   "/home/user/backups/file.db",
+		},
+		{
+			name:       "nested path",
+			targetPath: "/home/user/backups/sub/dir/file.db",
+			wantPath:   "/home/user/backups/sub/dir/file.db",
+		},
+		{
+			name:       "with redundant slashes",
+			targetPath: "/home/user/backups//file.db",
+			wantPath:   "/home/user/backups/file.db",
+		},
+		{
+			name:       "with dot segments",
+			targetPath: "/home/user/backups/./file.db",
+			wantPath:   "/home/user/backups/file.db",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotPath, err := validatePathWithinDir(tt.targetPath, baseDir)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantPath, gotPath)
+		})
+	}
+}
+
+func TestValidatePathWithinDir_InvalidPath(t *testing.T) {
+	baseDir := "/home/user/backups"
+
+	tests := []struct {
+		name       string
+		targetPath string
+	}{
+		{
+			name:       "parent directory escape",
+			targetPath: "/home/user/backups/../secrets/file.db",
+		},
+		{
+			name:       "completely different path",
+			targetPath: "/etc/passwd",
+		},
+		{
+			name:       "sibling directory",
+			targetPath: "/home/user/documents/file.db",
+		},
+		{
+			name:       "prefix attack (backups2)",
+			targetPath: "/home/user/backups2/file.db",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := validatePathWithinDir(tt.targetPath, baseDir)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "is not within")
+		})
+	}
+}
+
 // Ensure unused imports don't cause issues
 var _ = fmt.Sprintf

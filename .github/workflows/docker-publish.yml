@@ -2,10 +2,10 @@ name: Build and Publish Docker Image
 
 on:
   push:
+    # Only build Docker images for releases and main branch
+    # PRs are tested by the ci.yml workflow - no need to build Docker images
     branches: [main]
     tags: ['v*']
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 env:
@@ -28,7 +28,6 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -64,7 +63,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
