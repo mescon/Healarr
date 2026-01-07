@@ -148,6 +148,15 @@ type EpisodeFile struct {
 	Path string `json:"path"`
 }
 
+// Episode represents a TV series episode in Sonarr/Whisparr
+type Episode struct {
+	ID            int64 `json:"id"`
+	SeasonNumber  int   `json:"seasonNumber"`
+	EpisodeNumber int   `json:"episodeNumber"`
+	HasFile       bool  `json:"hasFile"`
+	Monitored     bool  `json:"monitored"`
+}
+
 // QueueItem represents an item in the *arr download queue
 type QueueItem struct {
 	ID                    int64           `json:"id"`
@@ -299,10 +308,64 @@ func (c *HTTPArrClient) doRequest(instance *ArrInstance, method, endpoint string
 	return c.doRequestWithRetry(instance, method, endpoint, bodyData, 3)
 }
 
+// retryAction represents the action to take after a retry attempt
+type retryAction int
+
+const (
+	retryActionContinue retryAction = iota // Continue to next attempt
+	retryActionReturn                      // Return immediately (success or non-retryable error)
+)
+
+// buildRequest creates an HTTP request with the given parameters
+func (c *HTTPArrClient) buildRequest(instance *ArrInstance, method, endpoint string, bodyData interface{}) (*http.Request, error) {
+	apiURL := fmt.Sprintf("%s%s", strings.TrimRight(instance.URL, "/"), endpoint)
+
+	var body io.Reader
+	if bodyData != nil {
+		jsonBytes, err := json.Marshal(bodyData)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewBuffer(jsonBytes)
+	}
+
+	req, err := http.NewRequest(method, apiURL, body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("X-Api-Key", instance.APIKey)
+	if bodyData != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req, nil
+}
+
+// handleServerError handles 5xx responses and determines if we should retry
+func handleServerError(resp *http.Response, cb *CircuitBreaker, instance *ArrInstance, attempt, maxRetries int) (retryAction, error) {
+	isLastAttempt := attempt >= maxRetries-1
+
+	if isLastAttempt {
+		cb.RecordFailure()
+		logger.Warnf("*arr API %s returned %d after %d attempts - recording circuit breaker failure", instance.Name, resp.StatusCode, maxRetries)
+	}
+
+	// Drain and close body to allow connection reuse
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	if !isLastAttempt {
+		logger.Infof("*arr API returned %d, retrying (%d/%d)...", resp.StatusCode, attempt+1, maxRetries)
+		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+		return retryActionContinue, nil
+	}
+
+	return retryActionReturn, fmt.Errorf("*arr API returned %d after %d attempts", resp.StatusCode, maxRetries)
+}
+
 // doRequestWithRetry performs an HTTP request with automatic retry for transient errors.
 // Integrates with circuit breaker to prevent hammering unhealthy instances.
 func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoint string, bodyData interface{}, maxRetries int) (*http.Response, error) {
-	// Check circuit breaker before making any requests
 	cb := c.circuitBreakers.Get(instance.ID)
 	if !cb.Allow() {
 		logger.Warnf("Circuit breaker OPEN for %s (%s) - rejecting request to %s", instance.Name, instance.Type, endpoint)
@@ -312,9 +375,7 @@ func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoi
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		// Apply rate limiting before making the request
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-
 		if err := c.rateLimiter.Wait(ctx); err != nil {
 			cancel()
 			cb.RecordFailure()
@@ -322,58 +383,26 @@ func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoi
 		}
 		cancel()
 
-		apiURL := fmt.Sprintf("%s%s", strings.TrimRight(instance.URL, "/"), endpoint)
-
-		var body io.Reader
-		if bodyData != nil {
-			jsonBytes, err := json.Marshal(bodyData)
-			if err != nil {
-				return nil, err
-			}
-			body = bytes.NewBuffer(jsonBytes)
-		}
-
-		req, err := http.NewRequest(method, apiURL, body)
+		req, err := c.buildRequest(instance, method, endpoint, bodyData)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Api-Key", instance.APIKey)
-		if bodyData != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
-
 		resp, err := c.httpClient.Do(req)
 		if err == nil {
-			// Check for server errors (5xx) that might be retryable
+			// Handle 5xx server errors
 			if resp.StatusCode >= 500 && resp.StatusCode < 600 {
-				// 5xx errors count as failures for circuit breaker
-				if attempt >= maxRetries-1 {
-					cb.RecordFailure()
-					logger.Warnf("*arr API %s returned %d after %d attempts - recording circuit breaker failure", instance.Name, resp.StatusCode, maxRetries)
-				}
-				// Drain and close body to allow connection reuse
-				if _, discardErr := io.Copy(io.Discard, resp.Body); discardErr != nil {
-					logger.Debugf("Failed to drain response body during retry: %v", discardErr)
-				}
-				if closeErr := resp.Body.Close(); closeErr != nil {
-					logger.Debugf("Failed to close response body during retry: %v", closeErr)
-				}
-				if attempt < maxRetries-1 {
-					logger.Infof("*arr API returned %d, retrying (%d/%d)...", resp.StatusCode, attempt+1, maxRetries)
-					time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+				action, retryErr := handleServerError(resp, cb, instance, attempt, maxRetries)
+				if action == retryActionContinue {
 					continue
 				}
-				return nil, fmt.Errorf("*arr API returned %d after %d attempts", resp.StatusCode, maxRetries)
+				return nil, retryErr
 			}
-			// Success - record it
 			cb.RecordSuccess()
 			return resp, nil
 		}
 
 		lastErr = err
-
-		// Check if error is retryable
 		if !isRetryableError(err) {
 			cb.RecordFailure()
 			return nil, err
@@ -385,56 +414,72 @@ func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoi
 		}
 	}
 
-	// All retries exhausted - record failure
 	cb.RecordFailure()
 	return nil, fmt.Errorf("*arr API unavailable after %d attempts: %w", maxRetries, lastErr)
 }
 
-func (c *HTTPArrClient) FindMediaByPath(path string) (int64, error) {
-	instance, err := c.getInstanceForPath(path)
-	if err != nil {
-		return 0, err
-	}
-
-	// 1. Try /api/v3/parse
+// tryParseMedia attempts to find media ID using the parse API endpoint
+func (c *HTTPArrClient) tryParseMedia(instance *ArrInstance, path string) (int64, bool) {
 	logger.Debugf("Parsing path with %s: %s", instance.Type, path)
 	encodedPath := url.QueryEscape(path)
 	endpoint := fmt.Sprintf("/api/v3/parse?path=%s", encodedPath)
 
 	resp, err := c.doRequest(instance, "GET", endpoint, nil)
-	if err == nil && resp.StatusCode == http.StatusOK {
-		defer resp.Body.Close()
-		var result ParseResult
-		if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
-			if (instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3) && result.Movie != nil {
-				logger.Infof("Found movie via parse: %s (ID: %d)", result.Movie.Title, result.Movie.ID)
-				return result.Movie.ID, nil
-			} else if (instance.Type == ArrTypeSonarr || instance.Type == ArrTypeWhisparrV2) && result.Series != nil {
-				logger.Infof("Found series via parse: %s (ID: %d)", result.Series.Title, result.Series.ID)
-				return result.Series.ID, nil
-			}
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 		}
-	} else if resp != nil {
-		// Drain and close body even on non-OK responses to allow connection reuse
-		if _, discardErr := io.Copy(io.Discard, resp.Body); discardErr != nil {
-			logger.Debugf("Failed to drain response body: %v", discardErr)
-		}
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			logger.Debugf("Failed to close response body: %v", closeErr)
-		}
+		return 0, false
+	}
+	defer resp.Body.Close()
+
+	var result ParseResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, false
 	}
 
-	// 2. Fallback: List all and match by folder
+	if isMovieType(instance) && result.Movie != nil {
+		logger.Infof("Found movie via parse: %s (ID: %d)", result.Movie.Title, result.Movie.ID)
+		return result.Movie.ID, true
+	}
+	if isSeriesType(instance) && result.Series != nil {
+		logger.Infof("Found series via parse: %s (ID: %d)", result.Series.Title, result.Series.ID)
+		return result.Series.ID, true
+	}
+	return 0, false
+}
+
+// matchMediaItem checks if a media item matches the given file path
+func matchMediaItem(item MediaItem, path, fileDirBase, showDirBase string) bool {
+	mediaFolder := filepath.Base(item.Path)
+
+	// Exact folder match (case-insensitive)
+	if strings.EqualFold(mediaFolder, fileDirBase) {
+		return true
+	}
+	// For TV shows, also check the parent folder (show name)
+	if strings.EqualFold(mediaFolder, showDirBase) {
+		return true
+	}
+	// Check if the media path is a prefix of the file path
+	normalizedMediaPath := strings.ToLower(strings.TrimSuffix(item.Path, "/"))
+	normalizedFilePath := strings.ToLower(path)
+	return strings.HasPrefix(normalizedFilePath, normalizedMediaPath+"/")
+}
+
+// findMediaByListing lists all media and finds a match by path
+func (c *HTTPArrClient) findMediaByListing(instance *ArrInstance, path string) (int64, error) {
 	logger.Infof("Parse failed, falling back to listing all media for %s", instance.Type)
-	// This is expensive but necessary if parse fails
+
 	var listEndpoint string
-	if instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3 {
+	if isMovieType(instance) {
 		listEndpoint = "/api/v3/movie"
 	} else {
 		listEndpoint = "/api/v3/series"
 	}
 
-	resp, err = c.doRequest(instance, "GET", listEndpoint, nil)
+	resp, err := c.doRequest(instance, "GET", listEndpoint, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -449,34 +494,15 @@ func (c *HTTPArrClient) FindMediaByPath(path string) (int64, error) {
 		return 0, err
 	}
 
-	// Match logic: check if file is inside media path
-	// We match by folder name to be safe against mapping differences
+	// Precompute path components for matching
 	fileDir := filepath.Dir(path)
 	fileDirBase := filepath.Base(fileDir)
-
-	// For TV shows, the parent directory is Season XX, so we need the grandparent (show folder)
-	// Example: /data/media/TV/Colony/Season 01/file.mkv -> Colony
-	showDir := filepath.Dir(fileDir) // This would be "Colony" for a season folder
+	showDir := filepath.Dir(fileDir)
 	showDirBase := filepath.Base(showDir)
 
 	for _, item := range items {
-		mediaFolder := filepath.Base(item.Path)
-		// Exact folder match (case-insensitive)
-		if strings.EqualFold(mediaFolder, fileDirBase) {
-			logger.Infof("Matched media by folder name: %s (ID: %d)", item.Title, item.ID)
-			return item.ID, nil
-		}
-		// For TV shows, also check the parent folder (show name)
-		if strings.EqualFold(mediaFolder, showDirBase) {
-			logger.Infof("Matched media by show folder: %s (ID: %d)", item.Title, item.ID)
-			return item.ID, nil
-		}
-		// Check if the media path is a prefix of the file path (exact path containment)
-		// Normalize paths for comparison
-		normalizedMediaPath := strings.ToLower(strings.TrimSuffix(item.Path, "/"))
-		normalizedFilePath := strings.ToLower(path)
-		if strings.HasPrefix(normalizedFilePath, normalizedMediaPath+"/") {
-			logger.Infof("Matched media by path prefix: %s (ID: %d)", item.Title, item.ID)
+		if matchMediaItem(item, path, fileDirBase, showDirBase) {
+			logger.Infof("Matched media: %s (ID: %d)", item.Title, item.ID)
 			return item.ID, nil
 		}
 	}
@@ -484,15 +510,41 @@ func (c *HTTPArrClient) FindMediaByPath(path string) (int64, error) {
 	return 0, fmt.Errorf("media not found for path: %s", path)
 }
 
-func (c *HTTPArrClient) DeleteFile(mediaID int64, path string) (map[string]interface{}, error) {
+func (c *HTTPArrClient) FindMediaByPath(path string) (int64, error) {
 	instance, err := c.getInstanceForPath(path)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 
-	// 1. Get files for media
+	// Try parse API first
+	if mediaID, found := c.tryParseMedia(instance, path); found {
+		return mediaID, nil
+	}
+
+	// Fallback to listing all media
+	return c.findMediaByListing(instance, path)
+}
+
+// isMovieType returns true if the instance handles movies (Radarr, Whisparr v3)
+func isMovieType(instance *ArrInstance) bool {
+	return instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3
+}
+
+// isSeriesType returns true if the instance handles series/episodes (Sonarr, Whisparr v2)
+func isSeriesType(instance *ArrInstance) bool {
+	return instance.Type == ArrTypeSonarr || instance.Type == ArrTypeWhisparrV2
+}
+
+// genericFile represents a file from the arr API with minimal fields
+type genericFile struct {
+	ID   int64  `json:"id"`
+	Path string `json:"path"`
+}
+
+// getFilesForMedia fetches all files associated with a media item
+func (c *HTTPArrClient) getFilesForMedia(instance *ArrInstance, mediaID int64) ([]genericFile, error) {
 	var endpoint string
-	if instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3 {
+	if isMovieType(instance) {
 		endpoint = fmt.Sprintf("/api/v3/moviefile?movieId=%d", mediaID)
 	} else {
 		endpoint = fmt.Sprintf("/api/v3/episodefile?seriesId=%d", mediaID)
@@ -508,115 +560,244 @@ func (c *HTTPArrClient) DeleteFile(mediaID int64, path string) (map[string]inter
 		return nil, fmt.Errorf("failed to get files: %s", resp.Status)
 	}
 
-	// Decode into a generic struct that has ID and Path
-	// For Sonarr, EpisodeFile has "episodes" list, but we might just need the ID for now?
-	// Actually, we need to know which episodes this file belongs to, so we can check them later.
-	// Sonarr v3: EpisodeFile has 'id', 'path'. Episodes are linked via 'episodeFileId' on the Episode object.
-	// But the /episodefile endpoint might not return the linked episodes directly?
-	// Let's check if we can get it.
-	// Actually, for Sonarr, we might need to query episodes first?
-	// Let's stick to finding the file ID first.
-	type GenericFile struct {
-		ID   int64  `json:"id"`
-		Path string `json:"path"`
-	}
-	var files []GenericFile
+	var files []genericFile
 	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
 		return nil, err
 	}
+	return files, nil
+}
 
-	// 2. Match file by basename
+// findFileIDByBasename finds a file ID by matching the basename of the path
+func findFileIDByBasename(files []genericFile, path string) int64 {
 	targetBase := filepath.Base(path)
-	var fileID int64
-
 	for _, f := range files {
 		if filepath.Base(f.Path) == targetBase {
-			fileID = f.ID
-			break
+			return f.ID
 		}
 	}
+	return 0
+}
 
-	// Capture metadata before deletion (or if file already gone)
-	metadata := make(map[string]interface{})
-	metadata["deleted_path"] = path
+// collectEpisodeMetadata fetches episode IDs for a given file ID in Sonarr/Whisparr
+func (c *HTTPArrClient) collectEpisodeMetadata(instance *ArrInstance, mediaID, fileID int64) []int64 {
+	epEndpoint := fmt.Sprintf("/api/v3/episode?seriesId=%d", mediaID)
+	epResp, err := c.doRequest(instance, "GET", epEndpoint, nil)
+	if err != nil || epResp.StatusCode != http.StatusOK {
+		return nil
+	}
+	defer epResp.Body.Close()
 
-	if fileID == 0 {
-		// File not found in *arr - it may have been deleted externally or by *arr itself.
-		// Check if the file still exists on disk to determine if this is expected.
-		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
-			// File is gone from both *arr and disk - treat as already deleted
-			logger.Infof("File already deleted (not in %s and not on disk): %s", instance.Type, path)
+	type Episode struct {
+		ID            int64 `json:"id"`
+		EpisodeFileID int64 `json:"episodeFileId"`
+	}
+	var episodes []Episode
+	if err := json.NewDecoder(epResp.Body).Decode(&episodes); err != nil {
+		return nil
+	}
 
-			// Still need to gather metadata for the search phase
-			if instance.Type == ArrTypeSonarr || instance.Type == ArrTypeWhisparrV2 {
-				// For Sonarr, find episodes that are now missing files
-				episodeIDs, err := c.findMissingEpisodesForPath(instance, mediaID, path)
-				if err == nil && len(episodeIDs) > 0 {
-					metadata["episode_ids"] = episodeIDs
-				} else {
-					// Fallback: search all missing episodes for this series
-					logger.Infof("Could not determine specific episodes, will search all missing for series %d", mediaID)
-					metadata["search_all_missing"] = true
-				}
-			} else {
-				metadata["movie_id"] = mediaID
-			}
-
-			metadata["already_deleted"] = true
-			return metadata, nil
+	var episodeIDs []int64
+	for _, ep := range episodes {
+		if ep.EpisodeFileID == fileID {
+			episodeIDs = append(episodeIDs, ep.ID)
 		}
-		// File exists on disk but not in *arr - this is unexpected
+	}
+	return episodeIDs
+}
+
+// deleteFileByID deletes a file by its ID from the arr instance
+func (c *HTTPArrClient) deleteFileByID(instance *ArrInstance, fileID int64) error {
+	var endpoint string
+	if isMovieType(instance) {
+		endpoint = fmt.Sprintf("/api/v3/moviefile/%d", fileID)
+	} else {
+		endpoint = fmt.Sprintf("/api/v3/episodefile/%d", fileID)
+	}
+
+	resp, err := c.doRequest(instance, "DELETE", endpoint, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("failed to delete file: %s", resp.Status)
+	}
+	return nil
+}
+
+// handleFileNotInArr handles the case where a file is not found in the arr instance
+func (c *HTTPArrClient) handleFileNotInArr(instance *ArrInstance, mediaID int64, path string) (map[string]interface{}, error) {
+	// Check if file exists on disk
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		return nil, fmt.Errorf("file not found in %s but exists on disk: %s", instance.Type, path)
 	}
 
-	if instance.Type == ArrTypeSonarr || instance.Type == ArrTypeWhisparrV2 {
-		// We need to find which episodes use this file.
-		// Since we can't easily get it from /episodefile response (it varies),
-		// let's query episodes for the series and match episodeFileId.
-		epEndpoint := fmt.Sprintf("/api/v3/episode?seriesId=%d", mediaID)
-		epResp, err := c.doRequest(instance, "GET", epEndpoint, nil)
-		if err == nil && epResp.StatusCode == http.StatusOK {
-			defer epResp.Body.Close()
-			type Episode struct {
-				ID            int64 `json:"id"`
-				EpisodeFileID int64 `json:"episodeFileId"`
-			}
-			var episodes []Episode
-			if err := json.NewDecoder(epResp.Body).Decode(&episodes); err == nil {
-				var episodeIDs []int64
-				for _, ep := range episodes {
-					if ep.EpisodeFileID == fileID {
-						episodeIDs = append(episodeIDs, ep.ID)
-					}
-				}
-				metadata["episode_ids"] = episodeIDs
-			}
+	// File is gone from both arr and disk - treat as already deleted
+	logger.Infof("File already deleted (not in %s and not on disk): %s", instance.Type, path)
+
+	metadata := map[string]interface{}{
+		"deleted_path":    path,
+		"already_deleted": true,
+	}
+
+	if isSeriesType(instance) {
+		episodeIDs, err := c.findMissingEpisodesForPath(instance, mediaID, path)
+		if err == nil && len(episodeIDs) > 0 {
+			metadata["episode_ids"] = episodeIDs
+		} else {
+			logger.Infof("Could not determine specific episodes, will search all missing for series %d", mediaID)
+			metadata["search_all_missing"] = true
 		}
 	} else {
 		metadata["movie_id"] = mediaID
 	}
 
-	// 3. Delete
-	logger.Infof("Deleting file ID %d from %s", fileID, instance.Type)
-	var deleteEndpoint string
-	if instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3 {
-		deleteEndpoint = fmt.Sprintf("/api/v3/moviefile/%d", fileID)
-	} else {
-		deleteEndpoint = fmt.Sprintf("/api/v3/episodefile/%d", fileID)
+	return metadata, nil
+}
+
+// buildDeleteMetadata builds metadata for a file deletion operation
+func (c *HTTPArrClient) buildDeleteMetadata(instance *ArrInstance, mediaID, fileID int64, path string) map[string]interface{} {
+	metadata := map[string]interface{}{
+		"deleted_path": path,
 	}
 
-	resp, err = c.doRequest(instance, "DELETE", deleteEndpoint, nil)
+	if isSeriesType(instance) {
+		if episodeIDs := c.collectEpisodeMetadata(instance, mediaID, fileID); len(episodeIDs) > 0 {
+			metadata["episode_ids"] = episodeIDs
+		}
+	} else {
+		metadata["movie_id"] = mediaID
+	}
+
+	return metadata
+}
+
+func (c *HTTPArrClient) DeleteFile(mediaID int64, path string) (map[string]interface{}, error) {
+	instance, err := c.getInstanceForPath(path)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return nil, fmt.Errorf("failed to delete file: %s", resp.Status)
+	// Get files for media
+	files, err := c.getFilesForMedia(instance, mediaID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Find file ID by basename
+	fileID := findFileIDByBasename(files, path)
+	if fileID == 0 {
+		return c.handleFileNotInArr(instance, mediaID, path)
+	}
+
+	// Build metadata before deletion
+	metadata := c.buildDeleteMetadata(instance, mediaID, fileID, path)
+
+	// Delete the file
+	logger.Infof("Deleting file ID %d from %s", fileID, instance.Type)
+	if err := c.deleteFileByID(instance, fileID); err != nil {
+		return nil, err
 	}
 
 	logger.Infof("Successfully deleted file %s from %s", path, instance.Type)
 	return metadata, nil
+}
+
+// extractSeasonFromPath tries to determine the season number from a path.
+// Returns -1 if no season could be determined.
+func extractSeasonFromPath(path string) int {
+	pathLower := strings.ToLower(path)
+
+	// Look for "season XX" pattern
+	if idx := strings.Index(pathLower, "season "); idx != -1 {
+		remaining := pathLower[idx+7:]
+		if len(remaining) >= 2 {
+			if n, err := strconv.Atoi(remaining[:2]); err == nil {
+				return n
+			}
+		}
+	}
+
+	return -1
+}
+
+// extractEpisodeIDs extracts episode IDs from metadata, handling JSON unmarshaling quirks.
+func extractEpisodeIDs(metadata map[string]interface{}) ([]int64, error) {
+	episodeIDsRaw, ok := metadata["episode_ids"]
+	if !ok {
+		return nil, fmt.Errorf("missing episode_ids in metadata")
+	}
+
+	var episodeIDs []int64
+	switch v := episodeIDsRaw.(type) {
+	case []int64:
+		episodeIDs = v
+	case []interface{}:
+		for _, item := range v {
+			if f, ok := item.(float64); ok {
+				episodeIDs = append(episodeIDs, int64(f))
+			}
+		}
+	}
+
+	if len(episodeIDs) == 0 {
+		return nil, fmt.Errorf("no episode IDs found in metadata")
+	}
+
+	return episodeIDs, nil
+}
+
+// getMovieFilePath retrieves the file path for a movie from Radarr/Whisparr.
+func (c *HTTPArrClient) getMovieFilePath(instance *ArrInstance, movieID int64) (string, error) {
+	endpoint := fmt.Sprintf("/api/v3/movie/%d", movieID)
+	resp, err := c.doRequest(instance, "GET", endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to get movie: %s", resp.Status)
+	}
+
+	var movie struct {
+		HasFile   bool `json:"hasFile"`
+		MovieFile *struct {
+			Path string `json:"path"`
+		} `json:"movieFile"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&movie); err != nil {
+		return "", err
+	}
+
+	if !movie.HasFile || movie.MovieFile == nil {
+		return "", fmt.Errorf("movie has no file yet")
+	}
+	return movie.MovieFile.Path, nil
+}
+
+// collectSeriesFilePaths collects all unique file paths for the given episode IDs.
+func (c *HTTPArrClient) collectSeriesFilePaths(instance *ArrInstance, episodeIDs []int64) ([]string, error) {
+	uniquePaths := make(map[string]bool)
+	var paths []string
+
+	for _, epID := range episodeIDs {
+		filePath, found, err := c.checkEpisodeForFile(instance, epID)
+		if err != nil {
+			continue
+		}
+		if found && !uniquePaths[filePath] {
+			uniquePaths[filePath] = true
+			paths = append(paths, filePath)
+		}
+	}
+
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no files found for episodes")
+	}
+
+	return paths, nil
 }
 
 // findMissingEpisodesForPath finds episodes that should have files in the given path but don't.
@@ -634,43 +815,28 @@ func (c *HTTPArrClient) findMissingEpisodesForPath(instance *ArrInstance, series
 		return nil, fmt.Errorf("failed to get episodes: %s", resp.Status)
 	}
 
-	type Episode struct {
-		ID            int64 `json:"id"`
-		SeasonNumber  int   `json:"seasonNumber"`
-		EpisodeNumber int   `json:"episodeNumber"`
-		HasFile       bool  `json:"hasFile"`
-		Monitored     bool  `json:"monitored"`
-	}
 	var episodes []Episode
 	if err := json.NewDecoder(resp.Body).Decode(&episodes); err != nil {
 		return nil, err
 	}
 
-	// Try to determine which season from the path (e.g., "Season 01" or "S01")
-	pathLower := strings.ToLower(path)
-	seasonNum := -1
+	seasonNum := extractSeasonFromPath(path)
+	return filterMissingEpisodes(episodes, seasonNum), nil
+}
 
-	// Look for "season XX" pattern
-	if idx := strings.Index(pathLower, "season "); idx != -1 {
-		remaining := pathLower[idx+7:]
-		if len(remaining) >= 2 {
-			if n, err := strconv.Atoi(remaining[:2]); err == nil {
-				seasonNum = n
-			}
-		}
-	}
-
-	// Find missing episodes (optionally filtered by season)
+// filterMissingEpisodes returns IDs of monitored episodes without files.
+// If seasonNum >= 0, only episodes from that season are returned.
+func filterMissingEpisodes(episodes []Episode, seasonNum int) []int64 {
 	var missingEpisodeIDs []int64
 	for _, ep := range episodes {
-		if !ep.HasFile && ep.Monitored {
-			if seasonNum == -1 || ep.SeasonNumber == seasonNum {
-				missingEpisodeIDs = append(missingEpisodeIDs, ep.ID)
-			}
+		if ep.HasFile || !ep.Monitored {
+			continue
+		}
+		if seasonNum == -1 || ep.SeasonNumber == seasonNum {
+			missingEpisodeIDs = append(missingEpisodeIDs, ep.ID)
 		}
 	}
-
-	return missingEpisodeIDs, nil
+	return missingEpisodeIDs
 }
 
 func (c *HTTPArrClient) GetFilePath(mediaID int64, metadata map[string]interface{}, referencePath string) (string, error) {
@@ -679,74 +845,34 @@ func (c *HTTPArrClient) GetFilePath(mediaID int64, metadata map[string]interface
 		return "", err
 	}
 
-	switch instance.Type {
-	case ArrTypeRadarr, ArrTypeWhisparrV3:
-		// For Radarr/Whisparr v3, just get the movie and check if it has a file
-		endpoint := fmt.Sprintf("/api/v3/movie/%d", mediaID)
-		resp, err := c.doRequest(instance, "GET", endpoint, nil)
-		if err != nil {
-			return "", err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("failed to get movie: %s", resp.Status)
-		}
-
-		var movie struct {
-			HasFile   bool `json:"hasFile"`
-			MovieFile *struct {
-				Path string `json:"path"`
-			} `json:"movieFile"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&movie); err != nil {
-			return "", err
-		}
-
-		if !movie.HasFile || movie.MovieFile == nil {
-			return "", fmt.Errorf("movie has no file yet")
-		}
-		return movie.MovieFile.Path, nil
-
-	case ArrTypeSonarr, ArrTypeWhisparrV2:
-		// For Sonarr/Whisparr v2, we need to check the episodes we tracked
-		episodeIDsRaw, ok := metadata["episode_ids"]
-		if !ok {
-			return "", fmt.Errorf("missing episode_ids in metadata")
-		}
-
-		// Handle JSON unmarshaling where numbers might be float64
-		var episodeIDs []int64
-		switch v := episodeIDsRaw.(type) {
-		case []int64:
-			episodeIDs = v
-		case []interface{}:
-			for _, item := range v {
-				if f, ok := item.(float64); ok {
-					episodeIDs = append(episodeIDs, int64(f))
-				}
-			}
-		}
-
-		if len(episodeIDs) == 0 {
-			return "", fmt.Errorf("no episode IDs found in metadata")
-		}
-
-		// Check each episode to see if it has a file now
-		// Use helper function to ensure response bodies are closed after each iteration
-		for _, epID := range episodeIDs {
-			filePath, found, err := c.checkEpisodeForFile(instance, epID)
-			if err != nil {
-				continue
-			}
-			if found {
-				return filePath, nil
-			}
-		}
-		return "", fmt.Errorf("no new file found for episodes")
-
-	default:
-		return "", fmt.Errorf("unsupported instance type: %s", instance.Type)
+	if isMovieType(instance) {
+		return c.getMovieFilePath(instance, mediaID)
 	}
+
+	if isSeriesType(instance) {
+		return c.getFirstSeriesFilePath(instance, metadata)
+	}
+
+	return "", fmt.Errorf("unsupported instance type: %s", instance.Type)
+}
+
+// getFirstSeriesFilePath returns the first available file path for tracked episodes.
+func (c *HTTPArrClient) getFirstSeriesFilePath(instance *ArrInstance, metadata map[string]interface{}) (string, error) {
+	episodeIDs, err := extractEpisodeIDs(metadata)
+	if err != nil {
+		return "", err
+	}
+
+	for _, epID := range episodeIDs {
+		filePath, found, err := c.checkEpisodeForFile(instance, epID)
+		if err != nil {
+			continue
+		}
+		if found {
+			return filePath, nil
+		}
+	}
+	return "", fmt.Errorf("no new file found for episodes")
 }
 
 // checkEpisodeForFile checks if an episode has a file and returns its path.
@@ -805,62 +931,23 @@ func (c *HTTPArrClient) GetAllFilePaths(mediaID int64, metadata map[string]inter
 		return nil, err
 	}
 
-	switch instance.Type {
-	case ArrTypeRadarr, ArrTypeWhisparrV3:
-		// For movies, there's only one file
-		path, err := c.GetFilePath(mediaID, metadata, referencePath)
+	if isMovieType(instance) {
+		path, err := c.getMovieFilePath(instance, mediaID)
 		if err != nil {
 			return nil, err
 		}
 		return []string{path}, nil
-
-	case ArrTypeSonarr, ArrTypeWhisparrV2:
-		// For Sonarr, check all tracked episodes and collect unique file paths
-		episodeIDsRaw, ok := metadata["episode_ids"]
-		if !ok {
-			return nil, fmt.Errorf("missing episode_ids in metadata")
-		}
-
-		var episodeIDs []int64
-		switch v := episodeIDsRaw.(type) {
-		case []int64:
-			episodeIDs = v
-		case []interface{}:
-			for _, item := range v {
-				if f, ok := item.(float64); ok {
-					episodeIDs = append(episodeIDs, int64(f))
-				}
-			}
-		}
-
-		if len(episodeIDs) == 0 {
-			return nil, fmt.Errorf("no episode IDs found in metadata")
-		}
-
-		// Collect all unique file paths
-		uniquePaths := make(map[string]bool)
-		var paths []string
-
-		for _, epID := range episodeIDs {
-			filePath, found, err := c.checkEpisodeForFile(instance, epID)
-			if err != nil {
-				continue
-			}
-			if found && !uniquePaths[filePath] {
-				uniquePaths[filePath] = true
-				paths = append(paths, filePath)
-			}
-		}
-
-		if len(paths) == 0 {
-			return nil, fmt.Errorf("no files found for episodes")
-		}
-
-		return paths, nil
-
-	default:
-		return nil, fmt.Errorf("unsupported instance type: %s", instance.Type)
 	}
+
+	if isSeriesType(instance) {
+		episodeIDs, err := extractEpisodeIDs(metadata)
+		if err != nil {
+			return nil, err
+		}
+		return c.collectSeriesFilePaths(instance, episodeIDs)
+	}
+
+	return nil, fmt.Errorf("unsupported instance type: %s", instance.Type)
 }
 
 func (c *HTTPArrClient) TriggerSearch(mediaID int64, path string, episodeIDs []int64) error {

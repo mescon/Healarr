@@ -459,125 +459,160 @@ func (v *VerifierService) handleSearchCompleted(event domain.Event) {
 	}()
 }
 
+// monitorState tracks the state during download monitoring
+type monitorState struct {
+	corruptionID string
+	filePath     string
+	arrPath      string
+	mediaID      int64
+	metadata     map[string]interface{}
+	pollInterval time.Duration
+	timeout      time.Duration
+	startTime    time.Time
+	attempt      int
+	lastStatus   string
+	lastProgress float64
+	wasInQueue   bool
+}
+
+// monitorAction represents actions from monitoring steps
+type monitorAction int
+
+const (
+	monitorContinue monitorAction = iota // Continue monitoring loop
+	monitorStop                          // Stop monitoring
+)
+
+// handleQueueItem processes a single queue item and returns the appropriate action
+func (v *VerifierService) handleQueueItem(state *monitorState, item integration.QueueItemInfo) monitorAction {
+	state.wasInQueue = true
+
+	// Handle terminal states
+	if v.handleQueueItemFailed(state.corruptionID, item) == queueActionStop {
+		return monitorStop
+	}
+	if v.handleQueueItemIgnored(state.corruptionID, item) == queueActionStop {
+		return monitorStop
+	}
+
+	// Handle importBlocked state
+	v.handleQueueItemBlocked(state.corruptionID, state.filePath, item)
+
+	// Log and emit progress changes
+	currentStatus, warningMsg := getQueueItemStatus(item)
+	if warningMsg != "" {
+		logger.Infof("[WARN] Download has issues for %s: status=%s, state=%s, message=%s",
+			state.corruptionID, item.TrackedDownloadStatus, item.TrackedDownloadState, warningMsg)
+	}
+
+	if currentStatus != state.lastStatus || int(item.Progress) != int(state.lastProgress) {
+		logger.Infof("Download progress for %s: %s (%.1f%%) - %s",
+			state.corruptionID, currentStatus, item.Progress, item.TimeLeft)
+		state.lastStatus = currentStatus
+		state.lastProgress = item.Progress
+
+		eventData := buildProgressEventData(item, currentStatus, warningMsg)
+		_ = v.eventBus.Publish(domain.Event{
+			AggregateID:   state.corruptionID,
+			AggregateType: "corruption",
+			EventType:     domain.DownloadProgress,
+			EventData:     eventData,
+		})
+	}
+
+	// Check history if import is in progress/completed
+	if isImportState(item.TrackedDownloadState) {
+		if v.checkHistoryForImport(state.corruptionID, state.arrPath, state.mediaID, state.filePath, state.metadata) {
+			return monitorStop
+		}
+	}
+
+	return monitorContinue
+}
+
+// isImportState checks if the download state indicates import activity
+func isImportState(state string) bool {
+	return state == "importPending" || state == "importing" || state == "imported"
+}
+
+// handleNoQueueItems handles the case when no items are in the download queue
+func (v *VerifierService) handleNoQueueItems(state *monitorState, elapsed time.Duration) monitorAction {
+	// Check history for completed import
+	if v.checkHistoryForImport(state.corruptionID, state.arrPath, state.mediaID, state.filePath, state.metadata) {
+		return monitorStop
+	}
+
+	// If item was in queue but now gone, it was manually removed
+	if state.wasInQueue {
+		v.publishManuallyRemoved(state.corruptionID, state.lastStatus)
+		return monitorStop
+	}
+
+	// Fallback - check if files exist via *arr API
+	if v.checkAndEmitFilesFromArrAPI(state.corruptionID, state.filePath, state.mediaID, state.metadata, elapsed, state.timeout) {
+		return monitorStop
+	}
+
+	return monitorContinue
+}
+
 // monitorDownloadProgress uses the *arr queue and history APIs to track download progress
 func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPath string, mediaID int64, metadata map[string]interface{}, pathID int64) {
-	// Clean up state tracking when monitoring ends
 	defer v.clearLastState(corruptionID)
 
 	cfg := config.Get()
-
-	// Configuration
-	pollInterval := cfg.VerificationInterval // Default 30s for queue checks
-	timeout := v.getVerificationTimeout(pathID)
-
-	startTime := time.Now()
-	attempt := 0
-	lastStatus := ""
-	lastProgress := float64(0)
-	wasInQueue := false // Track if we've seen item in queue before
+	state := &monitorState{
+		corruptionID: corruptionID,
+		filePath:     filePath,
+		arrPath:      arrPath,
+		mediaID:      mediaID,
+		metadata:     metadata,
+		pollInterval: cfg.VerificationInterval,
+		timeout:      v.getVerificationTimeout(pathID),
+		startTime:    time.Now(),
+	}
 
 	logger.Infof("Starting download monitoring for corruption %s (media ID: %d)", corruptionID, mediaID)
 
 	for {
-		// Check for shutdown
 		if v.isShuttingDown() {
 			logger.Infof(logMsgDownloadMonitorShutdown, corruptionID)
 			return
 		}
 
-		// Check timeout
-		elapsed := time.Since(startTime)
-		if elapsed > timeout {
-			v.publishDownloadTimeout(corruptionID, elapsed, attempt, lastStatus)
+		elapsed := time.Since(state.startTime)
+		if elapsed > state.timeout {
+			v.publishDownloadTimeout(corruptionID, elapsed, state.attempt, state.lastStatus)
 			return
 		}
 
-		attempt++
+		state.attempt++
 
-		// Step 1: Check queue for active download
+		// Check queue for active download
 		queueItems, err := v.arrClient.FindQueueItemsByMediaIDForPath(arrPath, mediaID)
 		if err != nil {
 			logger.Debugf("Queue check error for %s: %v", corruptionID, err)
 		}
 
 		if len(queueItems) > 0 {
-			// Found in queue - track progress
-			wasInQueue = true
-			item := queueItems[0] // Use first matching item
-
-			// Handle terminal states using helper functions
-			if v.handleQueueItemFailed(corruptionID, item) == queueActionStop {
+			if v.handleQueueItem(state, queueItems[0]) == monitorStop {
 				return
 			}
-			if v.handleQueueItemIgnored(corruptionID, item) == queueActionStop {
-				return
-			}
-
-			// Handle importBlocked state (non-terminal, requires manual intervention)
-			v.handleQueueItemBlocked(corruptionID, filePath, item)
-
-			// Get current status and any warning message
-			currentStatus, warningMsg := getQueueItemStatus(item)
-			if warningMsg != "" {
-				logger.Infof("[WARN] Download has issues for %s: status=%s, state=%s, message=%s",
-					corruptionID, item.TrackedDownloadStatus, item.TrackedDownloadState, warningMsg)
-			}
-
-			// Log and emit progress changes
-			if currentStatus != lastStatus || int(item.Progress) != int(lastProgress) {
-				logger.Infof("Download progress for %s: %s (%.1f%%) - %s",
-					corruptionID, currentStatus, item.Progress, item.TimeLeft)
-				lastStatus = currentStatus
-				lastProgress = item.Progress
-
-				eventData := buildProgressEventData(item, currentStatus, warningMsg)
-				if err := v.eventBus.Publish(domain.Event{
-					AggregateID:   corruptionID,
-					AggregateType: "corruption",
-					EventType:     domain.DownloadProgress,
-					EventData:     eventData,
-				}); err != nil {
-					logger.Debugf("Failed to publish DownloadProgress event: %v", err)
-				}
-			}
-
-			// If import is pending, in progress, or completed in queue, check history
-			// Note: "importing" is a transient state during active import - include it to catch fast imports
-			if item.TrackedDownloadState == "importPending" || item.TrackedDownloadState == "importing" || item.TrackedDownloadState == "imported" {
-				// Check history to see if import completed
-				if v.checkHistoryForImport(corruptionID, arrPath, mediaID, filePath, metadata) {
-					return // Import found and handled
-				}
-			}
-
-			// Use shorter interval during active download
-			if v.waitWithShutdown(pollInterval) {
+			if v.waitWithShutdown(state.pollInterval) {
 				logger.Infof(logMsgDownloadMonitorShutdown, corruptionID)
 				return
 			}
 			continue
 		}
 
-		// Step 2: Not in queue - check history for completed import
-		if v.checkHistoryForImport(corruptionID, arrPath, mediaID, filePath, metadata) {
-			return // Import found and handled
-		}
-
-		// Step 2.5: If item WAS in queue but now gone and not in history, it was manually removed
-		if wasInQueue {
-			v.publishManuallyRemoved(corruptionID, lastStatus)
-			return // Stop monitoring - user needs to manually handle this
-		}
-
-		// Step 3: Fallback - check if file(s) exist via *arr API
-		if v.checkAndEmitFilesFromArrAPI(corruptionID, filePath, mediaID, metadata, elapsed, timeout) {
+		if v.handleNoQueueItems(state, elapsed) == monitorStop {
 			return
 		}
 
-		// Use exponential backoff when not actively downloading
-		backoff := calculateBackoffInterval(attempt, pollInterval, 10*time.Minute)
-		if attempt%10 == 0 {
-			logger.Debugf("Verification poll #%d for %s, no queue activity, next check in %s", attempt, corruptionID, backoff)
+		// Exponential backoff when not actively downloading
+		backoff := calculateBackoffInterval(state.attempt, state.pollInterval, 10*time.Minute)
+		if state.attempt%10 == 0 {
+			logger.Debugf("Verification poll #%d for %s, no queue activity, next check in %s", state.attempt, corruptionID, backoff)
 		}
 		if v.waitWithShutdown(backoff) {
 			logger.Infof(logMsgDownloadMonitorShutdown, corruptionID)
