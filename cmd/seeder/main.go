@@ -11,6 +11,9 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// sqlInsertEvent is the SQL statement for inserting events.
+const sqlInsertEvent = "INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data) VALUES (?, ?, ?, ?)"
+
 func main() {
 	db, err := sql.Open("sqlite3", "./healarr.db")
 	if err != nil {
@@ -80,8 +83,7 @@ func main() {
 		data, _ := json.Marshal(e.Data)
 
 		// 1. Detect
-		_, err := db.Exec("INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data) VALUES (?, ?, ?, ?)",
-			"corruption", id, "CorruptionDetected", string(data))
+		_, err := db.Exec(sqlInsertEvent, "corruption", id, "CorruptionDetected", string(data))
 		if err != nil {
 			log.Printf("Failed to insert event: %v", err)
 		}
@@ -89,12 +91,9 @@ func main() {
 		// 2. Simulate some state changes
 		if e.Data["file_path"] == "/mnt/media/Movies/Inception/Inception.mkv" {
 			// Mark as resolved
-			_, _ = db.Exec("INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data) VALUES (?, ?, ?, ?)",
-				"corruption", id, "RemediationStarted", "{}")
-			_, _ = db.Exec("INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data) VALUES (?, ?, ?, ?)",
-				"corruption", id, "FileDeleted", "{}") // Or whatever resolves it
-			_, _ = db.Exec("INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data) VALUES (?, ?, ?, ?)",
-				"corruption", id, "SearchCompleted", "{}") // This might mark it resolved in our logic?
+			_, _ = db.Exec(sqlInsertEvent, "corruption", id, "RemediationStarted", "{}")
+			_, _ = db.Exec(sqlInsertEvent, "corruption", id, "FileDeleted", "{}")     // Or whatever resolves it
+			_, _ = db.Exec(sqlInsertEvent, "corruption", id, "SearchCompleted", "{}") // This might mark it resolved in our logic?
 			// Actually the view looks for latest event_type.
 			// If we want 'resolved', we need an event that maps to that state or logic.
 			// The view just takes the latest event_type as current_state.

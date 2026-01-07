@@ -20,6 +20,9 @@ import (
 // verifierQueryTimeout is the maximum time for database queries in verifier service.
 const verifierQueryTimeout = 10 * time.Second
 
+// logMsgDownloadMonitorShutdown is the log message format for shutdown during download monitoring.
+const logMsgDownloadMonitorShutdown = "Verifier: stopping download monitoring for %s due to shutdown"
+
 // VerificationMeta stores quality/release info captured from history for VerificationSuccess events
 type VerificationMeta struct {
 	Quality        string
@@ -478,7 +481,7 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 	for {
 		// Check for shutdown
 		if v.isShuttingDown() {
-			logger.Infof("Verifier: stopping download monitoring for %s due to shutdown", corruptionID)
+			logger.Infof(logMsgDownloadMonitorShutdown, corruptionID)
 			return
 		}
 
@@ -549,7 +552,7 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 
 			// Use shorter interval during active download
 			if v.waitWithShutdown(pollInterval) {
-				logger.Infof("Verifier: stopping download monitoring for %s due to shutdown", corruptionID)
+				logger.Infof(logMsgDownloadMonitorShutdown, corruptionID)
 				return
 			}
 			continue
@@ -577,7 +580,7 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 			logger.Debugf("Verification poll #%d for %s, no queue activity, next check in %s", attempt, corruptionID, backoff)
 		}
 		if v.waitWithShutdown(backoff) {
-			logger.Infof("Verifier: stopping download monitoring for %s due to shutdown", corruptionID)
+			logger.Infof(logMsgDownloadMonitorShutdown, corruptionID)
 			return
 		}
 	}

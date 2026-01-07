@@ -89,7 +89,7 @@ func setupSchedulesTestServer(t *testing.T, db *sql.DB, scheduler *testutil.Mock
 }
 
 // createTestPathWithSchedule helper to create arr instance, path, and optionally schedule
-func createTestPathWithSchedule(t *testing.T, db *sql.DB, withSchedule bool) (arrID, pathID, scheduleID int64) {
+func createTestPathWithSchedule(_ *testing.T, db *sql.DB, withSchedule bool) (arrID, pathID, scheduleID int64) {
 	// Create arr instance
 	encryptedKey, _ := crypto.Encrypt("api-key")
 	result, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",

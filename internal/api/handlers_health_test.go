@@ -161,11 +161,11 @@ type mockHealthChecker struct {
 	err     *integration.HealthCheckError
 }
 
-func (m *mockHealthChecker) Check(path string, mode string) (bool, *integration.HealthCheckError) {
+func (m *mockHealthChecker) Check(_, _ string) (bool, *integration.HealthCheckError) {
 	return m.healthy, m.err
 }
 
-func (m *mockHealthChecker) CheckWithConfig(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError) {
+func (m *mockHealthChecker) CheckWithConfig(_ string, _ integration.DetectionConfig) (bool, *integration.HealthCheckError) {
 	return m.healthy, m.err
 }
 

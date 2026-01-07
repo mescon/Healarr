@@ -23,6 +23,9 @@ import (
 // notifierQueryTimeout is the maximum time for database queries in notifier.
 const notifierQueryTimeout = 10 * time.Second
 
+// logFmtDecryptFailed is the log format for config decryption failures.
+const logFmtDecryptFailed = "Failed to decrypt config for notification %d: %v"
+
 // Provider types
 const (
 	ProviderDiscord    = "discord"
@@ -388,7 +391,7 @@ func (n *Notifier) loadConfigs() error {
 		// Decrypt config if encrypted
 		decryptedConfig, err := crypto.Decrypt(configJSON)
 		if err != nil {
-			logger.Errorf("Failed to decrypt config for notification %d: %v", cfg.ID, err)
+			logger.Errorf(logFmtDecryptFailed, cfg.ID, err)
 			continue
 		}
 		cfg.Config = json.RawMessage(decryptedConfig)
@@ -1000,7 +1003,7 @@ func (n *Notifier) GetAllConfigs() ([]*NotificationConfig, error) {
 		// Decrypt config
 		decryptedConfig, err := crypto.Decrypt(configJSON)
 		if err != nil {
-			logger.Errorf("Failed to decrypt config for notification %d: %v", cfg.ID, err)
+			logger.Errorf(logFmtDecryptFailed, cfg.ID, err)
 			continue
 		}
 		cfg.Config = json.RawMessage(decryptedConfig)
@@ -1038,7 +1041,7 @@ func (n *Notifier) GetConfig(id int64) (*NotificationConfig, error) {
 	// Decrypt config
 	decryptedConfig, err := crypto.Decrypt(configJSON)
 	if err != nil {
-		logger.Errorf("Failed to decrypt config for notification %d: %v", id, err)
+		logger.Errorf(logFmtDecryptFailed, id, err)
 		return nil, fmt.Errorf("failed to decrypt config: %w", err)
 	}
 	cfg.Config = json.RawMessage(decryptedConfig)

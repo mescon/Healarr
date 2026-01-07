@@ -798,7 +798,7 @@ func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProg
 
 	// Save current position
 	if scanDBID > 0 {
-		pauseCtx, pauseCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+		pauseCtx, pauseCancel := context.WithTimeout(ctx, scannerQueryTimeout)
 		if _, err := s.db.ExecContext(pauseCtx, `UPDATE scans SET current_file_index = ?, status = 'paused' WHERE id = ?`, fileIndex, scanDBID); err != nil {
 			logger.Warnf("Failed to update scan pause state for scan %d: %v", scanDBID, err)
 		}
@@ -814,7 +814,7 @@ func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProg
 		progress.isPaused = false
 		s.mu.Unlock()
 		if scanDBID > 0 {
-			resumeCtx, resumeCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+			resumeCtx, resumeCancel := context.WithTimeout(ctx, scannerQueryTimeout)
 			if _, err := s.db.ExecContext(resumeCtx, `UPDATE scans SET status = 'running' WHERE id = ?`, scanDBID); err != nil {
 				logger.Warnf("Failed to update scan resume state for scan %d: %v", scanDBID, err)
 			}

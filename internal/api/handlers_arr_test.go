@@ -25,23 +25,23 @@ type mockArrClient struct {
 	rootFoldersError error
 }
 
-func (m *mockArrClient) FindMediaByPath(path string) (int64, error) {
+func (m *mockArrClient) FindMediaByPath(_ string) (int64, error) {
 	return 0, nil
 }
 
-func (m *mockArrClient) DeleteFile(mediaID int64, path string) (map[string]interface{}, error) {
+func (m *mockArrClient) DeleteFile(_ int64, _ string) (map[string]interface{}, error) {
 	return nil, nil
 }
 
-func (m *mockArrClient) GetFilePath(mediaID int64, metadata map[string]interface{}, referencePath string) (string, error) {
+func (m *mockArrClient) GetFilePath(_ int64, _ map[string]interface{}, _ string) (string, error) {
 	return "", nil
 }
 
-func (m *mockArrClient) GetAllFilePaths(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+func (m *mockArrClient) GetAllFilePaths(_ int64, _ map[string]interface{}, _ string) ([]string, error) {
 	return nil, nil
 }
 
-func (m *mockArrClient) TriggerSearch(mediaID int64, path string, episodeIDs []int64) error {
+func (m *mockArrClient) TriggerSearch(_ int64, _ string, _ []int64) error {
 	return nil
 }
 
@@ -49,46 +49,46 @@ func (m *mockArrClient) GetAllInstances() ([]*integration.ArrInstanceInfo, error
 	return nil, nil
 }
 
-func (m *mockArrClient) GetInstanceByID(id int64) (*integration.ArrInstanceInfo, error) {
+func (m *mockArrClient) GetInstanceByID(_ int64) (*integration.ArrInstanceInfo, error) {
 	return nil, nil
 }
 
-func (m *mockArrClient) CheckInstanceHealth(instanceID int64) error {
+func (m *mockArrClient) CheckInstanceHealth(_ int64) error {
 	return nil
 }
 
-func (m *mockArrClient) GetRootFolders(instanceID int64) ([]integration.RootFolder, error) {
+func (m *mockArrClient) GetRootFolders(_ int64) ([]integration.RootFolder, error) {
 	if m.rootFoldersError != nil {
 		return nil, m.rootFoldersError
 	}
 	return m.rootFolders, nil
 }
 
-func (m *mockArrClient) GetQueueForPath(arrPath string) ([]integration.QueueItemInfo, error) {
+func (m *mockArrClient) GetQueueForPath(_ string) ([]integration.QueueItemInfo, error) {
 	return nil, nil
 }
 
-func (m *mockArrClient) FindQueueItemsByMediaIDForPath(arrPath string, mediaID int64) ([]integration.QueueItemInfo, error) {
+func (m *mockArrClient) FindQueueItemsByMediaIDForPath(_ string, _ int64) ([]integration.QueueItemInfo, error) {
 	return nil, nil
 }
 
-func (m *mockArrClient) GetDownloadStatusForPath(arrPath string, downloadID string) (status string, progress float64, errMsg string, err error) {
+func (m *mockArrClient) GetDownloadStatusForPath(_, _ string) (status string, progress float64, errMsg string, err error) {
 	return "", 0, "", nil
 }
 
-func (m *mockArrClient) GetRecentHistoryForMediaByPath(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+func (m *mockArrClient) GetRecentHistoryForMediaByPath(_ string, _ int64, _ int) ([]integration.HistoryItemInfo, error) {
 	return nil, nil
 }
 
-func (m *mockArrClient) RemoveFromQueueByPath(arrPath string, queueID int64, removeFromClient, blocklist bool) error {
+func (m *mockArrClient) RemoveFromQueueByPath(_ string, _ int64, _, _ bool) error {
 	return nil
 }
 
-func (m *mockArrClient) RefreshMonitoredDownloadsByPath(arrPath string) error {
+func (m *mockArrClient) RefreshMonitoredDownloadsByPath(_ string) error {
 	return nil
 }
 
-func (m *mockArrClient) GetMediaDetails(mediaID int64, arrPath string) (*integration.MediaDetails, error) {
+func (m *mockArrClient) GetMediaDetails(_ int64, _ string) (*integration.MediaDetails, error) {
 	return nil, nil
 }
 

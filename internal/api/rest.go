@@ -139,6 +139,9 @@ func NewRESTServer(db *sql.DB, eb *eventbus.EventBus, scanner services.Scanner, 
 // indexHTMLFile is the name of the index file for SPA routing
 const indexHTMLFile = "index.html"
 
+// routeNotificationByID is the route path for notification operations by ID
+const routeNotificationByID = "/config/notifications/:id"
+
 // mustSub returns a sub-filesystem or panics. Used for embedded assets.
 func mustSub(fsys fs.FS, dir string) fs.FS {
 	sub, err := fs.Sub(fsys, dir)
@@ -349,12 +352,12 @@ func (s *RESTServer) setupRoutes() {
 			// Notifications
 			protected.GET("/config/notifications", s.getNotifications)
 			protected.POST("/config/notifications", s.createNotification)
-			protected.PUT("/config/notifications/:id", s.updateNotification)
-			protected.DELETE("/config/notifications/:id", s.deleteNotification)
+			protected.PUT(routeNotificationByID, s.updateNotification)
+			protected.DELETE(routeNotificationByID, s.deleteNotification)
 			protected.POST("/config/notifications/test", s.testNotification)
 			protected.GET("/config/notifications/events", s.getNotificationEvents)
-			protected.GET("/config/notifications/:id/log", s.getNotificationLog)
-			protected.GET("/config/notifications/:id", s.getNotification)
+			protected.GET(routeNotificationByID+"/log", s.getNotificationLog)
+			protected.GET(routeNotificationByID, s.getNotification)
 
 			// Config export/import
 			protected.GET("/config/export", s.exportConfig)

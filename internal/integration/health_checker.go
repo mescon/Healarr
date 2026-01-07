@@ -20,6 +20,18 @@ const (
 	argShowStreams = "-show_streams" // Show stream information
 )
 
+// HandBrake CLI argument constants
+const (
+	argScan     = "--scan"     // Scan mode for HandBrakeCLI
+	argPreviews = "--previews" // Preview frames argument
+)
+
+// MediaInfo CLI argument constants
+const (
+	argOutputJSON = "--Output=JSON" // JSON output format
+	argFull       = "--Full"        // Full output mode
+)
+
 // validateMediaPath ensures a file path is safe to pass to subprocess commands.
 // Since we use exec.Command directly (not via shell), the main concerns are:
 // - Null bytes that could truncate the path
@@ -437,23 +449,23 @@ func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []strin
 	if mode == ModeThorough {
 		// Thorough mode: Full scan with preview analysis
 		// --previews 10:0 generates 10 previews at different points to verify stream integrity
-		args = []string{"--scan", "--previews", "10:0", "-i", path}
+		args = []string{argScan, argPreviews, "10:0", "-i", path}
 		timeout = 10 * time.Minute
 	} else {
 		// Quick mode: Basic container scan
-		args = []string{"--scan", "-i", path}
+		args = []string{argScan, "-i", path}
 		timeout = 2 * time.Minute
 	}
 
 	// Insert custom args before -i
 	if len(customArgs) > 0 {
 		if mode == ModeThorough {
-			newArgs := []string{"--scan", "--previews", "10:0"}
+			newArgs := []string{argScan, argPreviews, "10:0"}
 			newArgs = append(newArgs, customArgs...)
 			newArgs = append(newArgs, "-i", path)
 			args = newArgs
 		} else {
-			newArgs := []string{"--scan"}
+			newArgs := []string{argScan}
 			newArgs = append(newArgs, customArgs...)
 			newArgs = append(newArgs, "-i", path)
 			args = newArgs
@@ -509,23 +521,23 @@ func (hc *CmdHealthChecker) runMediaInfo(path string, customArgs []string, mode 
 
 	if mode == ModeThorough {
 		// Thorough mode: Full details including all track info
-		args = []string{"--Output=JSON", "--Full", path}
+		args = []string{argOutputJSON, argFull, path}
 		timeout = 2 * time.Minute
 	} else {
 		// Quick mode: Basic JSON output
-		args = []string{"--Output=JSON", path}
+		args = []string{argOutputJSON, path}
 		timeout = 30 * time.Second
 	}
 
 	// Insert custom args before path
 	if len(customArgs) > 0 {
 		if mode == ModeThorough {
-			newArgs := []string{"--Output=JSON", "--Full"}
+			newArgs := []string{argOutputJSON, argFull}
 			newArgs = append(newArgs, customArgs...)
 			newArgs = append(newArgs, path)
 			args = newArgs
 		} else {
-			newArgs := []string{"--Output=JSON"}
+			newArgs := []string{argOutputJSON}
 			newArgs = append(newArgs, customArgs...)
 			newArgs = append(newArgs, path)
 			args = newArgs
@@ -633,13 +645,13 @@ func (hc *CmdHealthChecker) GetCommandPreview(method DetectionMethod, mode strin
 	case DetectionMediaInfo:
 		var args []string
 		if mode == ModeThorough {
-			args = []string{hc.MediaInfoPath, "--Output=JSON", "--Full"}
+			args = []string{hc.MediaInfoPath, argOutputJSON, argFull}
 			if len(customArgs) > 0 {
 				args = append(args, customArgs...)
 			}
 			args = append(args, filePath)
 		} else {
-			args = []string{hc.MediaInfoPath, "--Output=JSON"}
+			args = []string{hc.MediaInfoPath, argOutputJSON}
 			if len(customArgs) > 0 {
 				args = append(args, customArgs...)
 			}
@@ -650,13 +662,13 @@ func (hc *CmdHealthChecker) GetCommandPreview(method DetectionMethod, mode strin
 	case DetectionHandBrake:
 		var args []string
 		if mode == ModeThorough {
-			args = []string{hc.HandBrakePath, "--scan", "--previews", "10:0"}
+			args = []string{hc.HandBrakePath, argScan, argPreviews, "10:0"}
 			if len(customArgs) > 0 {
 				args = append(args, customArgs...)
 			}
 			args = append(args, "-i", filePath)
 		} else {
-			args = []string{hc.HandBrakePath, "--scan"}
+			args = []string{hc.HandBrakePath, argScan}
 			if len(customArgs) > 0 {
 				args = append(args, customArgs...)
 			}

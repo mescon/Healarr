@@ -161,7 +161,14 @@ func (s *RESTServer) handleDatabaseRestore(c *gin.Context) {
 		return
 	}
 
-	tempPath := filepath.Join(backupDir, fmt.Sprintf("restore_temp_%d.db", time.Now().UnixNano()))
+	tempPathRaw := filepath.Join(backupDir, fmt.Sprintf("restore_temp_%d.db", time.Now().UnixNano()))
+	// Security: Validate temp path is within backup directory (defense in depth)
+	tempPath, err := validatePathWithinDir(tempPathRaw, backupDir)
+	if err != nil {
+		logger.Errorf("Temp path validation failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid temp path configuration"})
+		return
+	}
 	tempFile, err := os.Create(tempPath)
 	if err != nil {
 		logger.Errorf("Failed to create temp file for restore: %v", err)
@@ -212,7 +219,16 @@ func (s *RESTServer) handleDatabaseRestore(c *gin.Context) {
 	}
 
 	// Mark the pending restore file
-	pendingPath := cfg.DatabasePath + ".pending"
+	// Security: Validate pending path is within the database directory
+	dbDir := filepath.Dir(cfg.DatabasePath)
+	pendingPathRaw := cfg.DatabasePath + ".pending"
+	pendingPath, err := validatePathWithinDir(pendingPathRaw, dbDir)
+	if err != nil {
+		os.Remove(tempPath)
+		logger.Errorf("Pending path validation failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid pending path configuration"})
+		return
+	}
 	if err := os.Rename(tempPath, pendingPath); err != nil {
 		os.Remove(tempPath)
 		logger.Errorf("Failed to stage restore file: %v", err)
