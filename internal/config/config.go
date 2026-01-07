@@ -109,19 +109,19 @@ type Config struct {
 // Global singleton
 var cfg *Config
 
-// Load reads configuration from environment variables with sensible defaults.
-// Should be called once at application startup.
-func Load() *Config {
+// resolveBasePath resolves and normalizes the base path from environment.
+// Returns the normalized path and its source ("environment" or "default").
+func resolveBasePath() (string, string) {
 	basePath := getEnvOrDefault("HEALARR_BASE_PATH", "")
-	basePathSource := "default"
+	source := "default"
 
 	if basePath != "" {
-		basePathSource = "environment"
+		source = "environment"
 	} else {
 		basePath = "/"
 	}
 
-	// Normalize base path: ensure it starts with / and doesn't end with /
+	// Normalize: ensure it starts with / and doesn't end with /
 	if basePath != "/" {
 		if !strings.HasPrefix(basePath, "/") {
 			basePath = "/" + basePath
@@ -129,96 +129,120 @@ func Load() *Config {
 		basePath = strings.TrimSuffix(basePath, "/")
 	}
 
-	// Determine DataDir - this is where all persistent data lives
-	// Default: ./config (relative to executable or cwd)
-	// In Docker: /config is created automatically
+	return basePath, source
+}
+
+// resolveDataDir determines the data directory path.
+// Priority: HEALARR_DATA_DIR env var > /config (Docker) > ./config (local)
+func resolveDataDir() string {
 	dataDir := getEnvOrDefault("HEALARR_DATA_DIR", "")
-	if dataDir == "" {
-		// Check if we're in Docker (has /config directory)
-		if info, err := os.Stat(dockerConfigDir); err == nil && info.IsDir() {
-			dataDir = dockerConfigDir
-		} else {
-			// Local/bare-metal - use ./config relative to executable or cwd
-			if execPath, err := os.Executable(); err == nil {
-				execDir := filepath.Dir(execPath)
-				dataDir = filepath.Join(execDir, "config")
-			} else if cwd, err := os.Getwd(); err == nil {
-				dataDir = filepath.Join(cwd, "config")
-			} else {
-				dataDir = "./config"
+	if dataDir != "" {
+		return makeAbsolute(dataDir)
+	}
+
+	// Check if we're in Docker (has /config directory)
+	if info, err := os.Stat(dockerConfigDir); err == nil && info.IsDir() {
+		return dockerConfigDir
+	}
+
+	// Local/bare-metal - use ./config relative to executable or cwd
+	if execPath, err := os.Executable(); err == nil {
+		execDir := filepath.Dir(execPath)
+		return makeAbsolute(filepath.Join(execDir, "config"))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return makeAbsolute(filepath.Join(cwd, "config"))
+	}
+	return "./config"
+}
+
+// makeAbsolute converts a path to absolute if possible.
+func makeAbsolute(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
+}
+
+// resolveWebDir finds the web directory containing index.html.
+func resolveWebDir() string {
+	webDir := getEnvOrDefault("HEALARR_WEB_DIR", "")
+	if webDir != "" {
+		return webDir
+	}
+
+	candidates := buildWebDirCandidates()
+	for _, candidate := range candidates {
+		if isValidWebDir(candidate) {
+			if abs, err := filepath.Abs(candidate); err == nil {
+				return abs
 			}
 		}
 	}
 
-	// Ensure dataDir is absolute
-	if absDataDir, err := filepath.Abs(dataDir); err == nil {
-		dataDir = absDataDir
+	return "./web"
+}
+
+// buildWebDirCandidates returns a list of potential web directory paths.
+func buildWebDirCandidates() []string {
+	candidates := []string{"/app/web"} // Docker container default
+
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(cwd, "web"),
+			filepath.Join(cwd, "..", "web"),
+			filepath.Join(cwd, "..", "..", "web"),
+		)
 	}
 
-	// Create data directory if it doesn't exist
+	if execPath, err := os.Executable(); err == nil {
+		execDir := filepath.Dir(execPath)
+		candidates = append(candidates,
+			filepath.Join(execDir, "web"),
+			filepath.Join(execDir, "..", "..", "web"),
+			filepath.Join(execDir, "..", "web"),
+		)
+	}
+
+	return candidates
+}
+
+// isValidWebDir checks if a directory exists and contains index.html.
+func isValidWebDir(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(dir, "index.html"))
+	return err == nil
+}
+
+// createRequiredDirs creates the data and log directories.
+func createRequiredDirs(dataDir string) string {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		// Log to stderr since logger may not be initialized yet
-		// We continue anyway since the directory may already exist
 		fmt.Fprintf(os.Stderr, "Warning: failed to create data directory %s: %v\n", dataDir, err)
 	}
 
-	// Determine WebDir - find the web directory
-	webDir := getEnvOrDefault("HEALARR_WEB_DIR", "")
-	if webDir == "" {
-		// Build list of candidate directories to check
-		candidates := []string{
-			"/app/web", // Docker container default
-		}
-
-		// Add paths relative to current working directory
-		if cwd, err := os.Getwd(); err == nil {
-			candidates = append(candidates,
-				filepath.Join(cwd, "web"),             // cwd/web
-				filepath.Join(cwd, "..", "web"),       // For running from cmd/server (../web goes to project root)
-				filepath.Join(cwd, "..", "..", "web"), // Two levels up
-			)
-		}
-
-		// Add paths relative to executable location
-		if execPath, err := os.Executable(); err == nil {
-			execDir := filepath.Dir(execPath)
-			candidates = append(candidates,
-				filepath.Join(execDir, "web"),             // Same dir as executable
-				filepath.Join(execDir, "..", "..", "web"), // For go run from cmd/server
-				filepath.Join(execDir, "..", "web"),       // One level up
-			)
-		}
-
-		// Check each candidate
-		for _, candidate := range candidates {
-			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-				// Verify it contains index.html
-				indexPath := filepath.Join(candidate, "index.html")
-				if _, err := os.Stat(indexPath); err == nil {
-					if absPath, err := filepath.Abs(candidate); err == nil {
-						webDir = absPath
-						break
-					}
-				}
-			}
-		}
-
-		// Fall back to relative path if nothing found
-		if webDir == "" {
-			webDir = "./web"
-		}
+	logDir := filepath.Join(dataDir, "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to create log directory %s: %v\n", logDir, err)
 	}
+
+	return logDir
+}
+
+// Load reads configuration from environment variables with sensible defaults.
+// Should be called once at application startup.
+func Load() *Config {
+	basePath, basePathSource := resolveBasePath()
+	dataDir := resolveDataDir()
+	webDir := resolveWebDir()
+	logDir := createRequiredDirs(dataDir)
 
 	// Database path - inside data directory unless explicitly set
 	dbPath := getEnvOrDefault("HEALARR_DATABASE_PATH", "")
 	if dbPath == "" {
 		dbPath = filepath.Join(dataDir, "healarr.db")
-	}
-
-	// Log directory - inside data directory
-	logDir := filepath.Join(dataDir, "logs")
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to create log directory %s: %v\n", logDir, err)
 	}
 
 	cfg = &Config{
