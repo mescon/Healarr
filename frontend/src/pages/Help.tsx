@@ -882,41 +882,40 @@ server {
                             <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Supported Notification Services</h3>
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                                 <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-3">
-                                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">📱 Popular</p>
-                                    <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-1">
-                                        <li>🎮 Discord</li>
-                                        <li>💬 Slack</li>
-                                        <li>✈️ Telegram</li>
-                                        <li>📧 Email (SMTP)</li>
+                                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Popular</p>
+                                    <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-2">
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/discord.svg" alt="Discord" className="w-4 h-4" /> Discord</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/slack.svg" alt="Slack" className="w-4 h-4" /> Slack</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/telegram.svg" alt="Telegram" className="w-4 h-4" /> Telegram</li>
+                                        <li className="flex items-center gap-2"><span className="w-4 h-4 flex items-center justify-center text-sm">📧</span> Email (SMTP)</li>
                                     </ul>
                                 </div>
                                 <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-3">
-                                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">🔔 Push</p>
-                                    <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-1">
-                                        <li>📱 Pushover</li>
-                                        <li>🔔 Gotify</li>
-                                        <li>📣 ntfy</li>
-                                        <li>📤 Pushbullet</li>
-                                        <li>🐕 Bark</li>
-                                        <li>🔗 Join</li>
+                                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Push</p>
+                                    <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-2">
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/pushover.svg" alt="Pushover" className="w-4 h-4" /> Pushover</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/gotify.svg" alt="Gotify" className="w-4 h-4" /> Gotify</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/ntfy.svg" alt="ntfy" className="w-4 h-4" /> ntfy</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/pushbullet.svg" alt="Pushbullet" className="w-4 h-4" /> Pushbullet</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/bark.png" alt="Bark" className="w-4 h-4" /> Bark</li>
                                     </ul>
                                 </div>
                                 <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-3">
-                                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">👥 Team</p>
-                                    <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-1">
-                                        <li>👥 Microsoft Teams</li>
-                                        <li>💭 Google Chat</li>
-                                        <li>🟣 Mattermost</li>
-                                        <li>🚀 Rocket.Chat</li>
-                                        <li>💧 Zulip</li>
+                                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Team</p>
+                                    <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-2">
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/teams.svg" alt="Teams" className="w-4 h-4" /> Microsoft Teams</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/google-chat.svg" alt="Google Chat" className="w-4 h-4" /> Google Chat</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/mattermost.svg" alt="Mattermost" className="w-4 h-4" /> Mattermost</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/rocketchat.svg" alt="Rocket.Chat" className="w-4 h-4" /> Rocket.Chat</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/zulip.svg" alt="Zulip" className="w-4 h-4" /> Zulip</li>
                                     </ul>
                                 </div>
                                 <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-3">
-                                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">💬 Messaging</p>
-                                    <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-1">
-                                        <li>💬 WhatsApp</li>
-                                        <li>🔒 Signal</li>
-                                        <li>🔲 Matrix</li>
+                                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Messaging</p>
+                                    <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-2">
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/whatsapp.svg" alt="WhatsApp" className="w-4 h-4" /> WhatsApp</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/signal.svg" alt="Signal" className="w-4 h-4" /> Signal</li>
+                                        <li className="flex items-center gap-2"><img src="/icons/notifications/matrix.svg" alt="Matrix" className="w-4 h-4" /> Matrix</li>
                                     </ul>
                                 </div>
                             </div>

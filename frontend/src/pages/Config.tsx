@@ -1857,7 +1857,7 @@ const SecuritySection = ({ apiKeyData, refetchApiKey }: SecuritySectionProps) =>
                     <div className="bg-amber-100 dark:bg-yellow-500/10 border border-amber-300 dark:border-yellow-500/20 rounded-lg p-3">
                         <p className="text-xs text-amber-800 dark:text-yellow-300">
                             <strong>Webhook URL Format:</strong><br />
-                            <code className="text-xs">http://sokaris:3090/api/webhook/{'{'}instance_id{'}'}</code> + <code>?apikey={apiKeyData?.api_key || 'YOUR_KEY'}</code>
+                            <code className="text-xs">{window.location.origin}/api/webhook/{'{'}instance_id{'}'}</code> + <code>?apikey={apiKeyData?.api_key || 'YOUR_KEY'}</code>
                         </p>
                     </div>
                 </div>

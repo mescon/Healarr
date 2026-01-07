@@ -81,9 +81,10 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
     const [rootFolders, setRootFolders] = useState<RootFolder[]>([]);
     const [loadingRootFolders, setLoadingRootFolders] = useState(false);
 
-    // Import/restore
-    const [importFile, setImportFile] = useState<File | null>(null);
-    const [importMode, setImportMode] = useState<'fresh' | 'import' | 'restore' | null>(null);
+    // Import/restore - support both config JSON and database backup
+    const [configFile, setConfigFile] = useState<File | null>(null);
+    const [databaseFile, setDatabaseFile] = useState<File | null>(null);
+    const [importMode, setImportMode] = useState<'fresh' | 'restore' | null>(null);
 
     // Auth token for completing setup
     const [authToken, setAuthToken] = useState<string | null>(null);
@@ -132,45 +133,53 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
         }
     }, [createdArrId, loadRootFolders]);
 
-    const handleImportConfig = async () => {
-        if (!importFile) return;
-        setLoading(true);
-        setError('');
-
-        try {
-            const text = await importFile.text();
-            const config = JSON.parse(text) as Partial<ConfigExport>;
-            await importConfigPublic(config);
-            // After import, check status again and proceed
-            const status = await getSetupStatus();
-            if (!status.has_password) {
-                setStep('password');
-            } else {
-                setStep('complete');
-            }
-        } catch (err) {
-            setError('Failed to import configuration. Please check the file format.');
-            console.error(err);
-        } finally {
-            setLoading(false);
+    // Route to the appropriate step based on setup status
+    const routeToNextStep = (status: { has_password: boolean; has_instances: boolean; has_scan_paths: boolean }) => {
+        if (!status.has_password) {
+            setStep('password');
+        } else if (!status.has_instances) {
+            setStep('arr');
+        } else if (!status.has_scan_paths) {
+            setStep('path');
+        } else {
+            setStep('complete');
         }
     };
 
-    const handleRestoreDatabase = async () => {
-        if (!importFile) return;
+    const handleRestore = async () => {
+        if (!configFile && !databaseFile) return;
         setLoading(true);
         setError('');
 
         try {
-            const result = await restoreDatabasePublic(importFile);
-            if (result.restart_required) {
-                // Redirect to login after restore
-                window.location.reload();
-            } else {
-                setStep('complete');
+            // Step 1: Restore database if provided
+            if (databaseFile) {
+                const result = await restoreDatabasePublic(databaseFile);
+                if (result.restart_required) {
+                    // If config file also provided, we need to import it after restart
+                    // For now, just reload - config can be imported from settings later
+                    window.location.reload();
+                    return;
+                }
             }
+
+            // Step 2: Import config if provided
+            if (configFile) {
+                const text = await configFile.text();
+                const config = JSON.parse(text) as Partial<ConfigExport>;
+                await importConfigPublic(config);
+            }
+
+            // Route to appropriate next step
+            const status = await getSetupStatus();
+            routeToNextStep(status);
         } catch (err) {
-            setError('Failed to restore database. Please check the file format.');
+            const errorMessage = databaseFile && configFile
+                ? 'Failed to restore. Please check your files.'
+                : databaseFile
+                    ? 'Failed to restore database. Please check the file format.'
+                    : 'Failed to import configuration. Please check the file format.';
+            setError(errorMessage);
             console.error(err);
         } finally {
             setLoading(false);
@@ -197,7 +206,9 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 setAuthToken(token);
                 localStorage.setItem('healarr_token', token);
             }
-            setStep('arr');
+            // Check status to route to next needed step (may have imported instances)
+            const status = await getSetupStatus();
+            routeToNextStep(status);
         } catch (err: unknown) {
             const error = err as { response?: { data?: { error?: string } } };
             setError(error.response?.data?.error || 'Failed to set password');
@@ -367,9 +378,9 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 </button>
 
                 <button
-                    onClick={() => setImportMode('import')}
+                    onClick={() => setImportMode('restore')}
                     className={`flex items-center gap-4 p-4 rounded-xl border-2 transition-colors text-left group ${
-                        importMode === 'import'
+                        importMode === 'restore'
                             ? 'border-green-500 bg-green-50 dark:bg-green-900/20'
                             : 'border-slate-200 dark:border-slate-700 hover:border-green-500 dark:hover:border-green-500'
                     }`}
@@ -378,68 +389,98 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                         <Upload className="w-6 h-6" />
                     </div>
                     <div>
-                        <h3 className="font-semibold text-slate-900 dark:text-white">Import Configuration</h3>
+                        <h3 className="font-semibold text-slate-900 dark:text-white">Restore from Backup</h3>
                         <p className="text-sm text-slate-600 dark:text-slate-400">
-                            Import settings from an exported JSON file
-                        </p>
-                    </div>
-                </button>
-
-                <button
-                    onClick={() => setImportMode('restore')}
-                    className={`flex items-center gap-4 p-4 rounded-xl border-2 transition-colors text-left group ${
-                        importMode === 'restore'
-                            ? 'border-green-500 bg-green-50 dark:bg-green-900/20'
-                            : 'border-slate-200 dark:border-slate-700 hover:border-green-500 dark:hover:border-green-500'
-                    }`}
-                >
-                    <div className="p-3 rounded-lg bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400">
-                        <Database className="w-6 h-6" />
-                    </div>
-                    <div>
-                        <h3 className="font-semibold text-slate-900 dark:text-white">Restore Backup</h3>
-                        <p className="text-sm text-slate-600 dark:text-slate-400">
-                            Restore from a database backup file
+                            Import config JSON, database backup, or both
                         </p>
                     </div>
                 </button>
             </div>
 
-            {(importMode === 'import' || importMode === 'restore') && (
+            {importMode === 'restore' && (
                 <motion.div
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: 'auto' }}
                     className="space-y-4"
                 >
-                    <div className="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl p-6 text-center">
-                        <input
-                            type="file"
-                            accept={importMode === 'import' ? '.json' : '.db,.sqlite,.sqlite3'}
-                            onChange={(e) => setImportFile(e.target.files?.[0] || null)}
-                            className="hidden"
-                            id="file-upload"
-                        />
-                        <label
-                            htmlFor="file-upload"
-                            className="cursor-pointer flex flex-col items-center gap-2"
-                        >
-                            <Upload className="w-8 h-8 text-slate-400" />
-                            <span className="text-slate-600 dark:text-slate-400">
-                                {importFile ? importFile.name : `Click to select ${importMode === 'import' ? 'JSON' : 'database'} file`}
-                            </span>
+                    {/* Database backup upload */}
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                            <Database className="w-4 h-4 text-purple-400" />
+                            Database Backup <span className="text-slate-500 text-xs">(optional)</span>
                         </label>
+                        <div className={`border-2 border-dashed rounded-xl p-4 text-center transition-colors ${
+                            databaseFile ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'border-slate-300 dark:border-slate-600'
+                        }`}>
+                            <input
+                                type="file"
+                                accept=".db,.sqlite,.sqlite3"
+                                onChange={(e) => setDatabaseFile(e.target.files?.[0] || null)}
+                                className="hidden"
+                                id="database-upload"
+                            />
+                            <label
+                                htmlFor="database-upload"
+                                className="cursor-pointer flex flex-col items-center gap-1"
+                            >
+                                <span className="text-sm text-slate-600 dark:text-slate-400">
+                                    {databaseFile ? (
+                                        <span className="text-purple-600 dark:text-purple-400 font-medium">{databaseFile.name}</span>
+                                    ) : (
+                                        'Click to select .db file'
+                                    )}
+                                </span>
+                            </label>
+                        </div>
                     </div>
 
+                    {/* Config JSON upload */}
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                            <Upload className="w-4 h-4 text-blue-400" />
+                            Configuration JSON <span className="text-slate-500 text-xs">(optional)</span>
+                        </label>
+                        <div className={`border-2 border-dashed rounded-xl p-4 text-center transition-colors ${
+                            configFile ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-300 dark:border-slate-600'
+                        }`}>
+                            <input
+                                type="file"
+                                accept=".json"
+                                onChange={(e) => setConfigFile(e.target.files?.[0] || null)}
+                                className="hidden"
+                                id="config-upload"
+                            />
+                            <label
+                                htmlFor="config-upload"
+                                className="cursor-pointer flex flex-col items-center gap-1"
+                            >
+                                <span className="text-sm text-slate-600 dark:text-slate-400">
+                                    {configFile ? (
+                                        <span className="text-blue-600 dark:text-blue-400 font-medium">{configFile.name}</span>
+                                    ) : (
+                                        'Click to select .json file'
+                                    )}
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
+                        You can provide either file or both. Database is restored first, then config is imported on top.
+                    </p>
+
                     <button
-                        onClick={importMode === 'import' ? handleImportConfig : handleRestoreDatabase}
-                        disabled={!importFile || loading}
+                        onClick={handleRestore}
+                        disabled={(!configFile && !databaseFile) || loading}
                         className="w-full py-3 px-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-green-500/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         {loading ? (
                             <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                         ) : (
                             <>
-                                <span>{importMode === 'import' ? 'Import Configuration' : 'Restore Database'}</span>
+                                <span>
+                                    {databaseFile && configFile ? 'Restore & Import' : databaseFile ? 'Restore Database' : 'Import Configuration'}
+                                </span>
                                 <ArrowRight className="w-5 h-5" />
                             </>
                         )}
