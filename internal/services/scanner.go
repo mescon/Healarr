@@ -609,44 +609,65 @@ func (s *ScannerService) loadScanPathSettings(pathID int64) scanPathSettings {
 	}
 }
 
+// walkStats tracks statistics during directory enumeration
+type walkStats struct {
+	files        []string
+	skippedCount int
+	symlinkCount int
+}
+
+// classifyFile determines whether a file should be included as a media file
+// Returns: (isMedia, isSkipped, isSymlink)
+func classifyFile(filePath string, info os.FileInfo) (isMedia, isSkipped, isSymlink bool) {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, false, true
+	}
+	if info.IsDir() {
+		return false, false, false
+	}
+	if isHiddenOrTempFile(filePath) {
+		return false, true, false
+	}
+	if isMediaFile(filePath) {
+		return true, false, false
+	}
+	return false, true, false
+}
+
 // enumerateMediaFiles walks the directory and returns a list of media files
 func (s *ScannerService) enumerateMediaFiles(localPath string) ([]string, error) {
-	var files []string
-	var skippedCount, symlinkCount int
+	stats := walkStats{}
 
 	err := filepath.Walk(localPath, func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
-			if os.IsPermission(err) {
-				logger.Debugf("Permission denied: %s", filePath)
-				return nil
-			}
-			return err
+			return s.handleWalkError(filePath, err)
 		}
-
-		if info.Mode()&os.ModeSymlink != 0 {
-			symlinkCount++
-			return nil
-		}
-
-		if !info.IsDir() {
-			if isHiddenOrTempFile(filePath) {
-				skippedCount++
-				return nil
-			}
-			if isMediaFile(filePath) {
-				files = append(files, filePath)
-			} else {
-				skippedCount++
-			}
+		isMedia, isSkipped, isSymlink := classifyFile(filePath, info)
+		switch {
+		case isSymlink:
+			stats.symlinkCount++
+		case isSkipped:
+			stats.skippedCount++
+		case isMedia:
+			stats.files = append(stats.files, filePath)
 		}
 		return nil
 	})
 
-	if err == nil && (skippedCount > 0 || symlinkCount > 0) {
-		logger.Debugf("Skipped %d non-media/hidden files and %d symlinks in %s", skippedCount, symlinkCount, localPath)
+	if err == nil && (stats.skippedCount > 0 || stats.symlinkCount > 0) {
+		logger.Debugf("Skipped %d non-media/hidden files and %d symlinks in %s", stats.skippedCount, stats.symlinkCount, localPath)
 	}
 
-	return files, err
+	return stats.files, err
+}
+
+// handleWalkError handles errors during file system traversal
+func (s *ScannerService) handleWalkError(filePath string, err error) error {
+	if os.IsPermission(err) {
+		logger.Debugf("Permission denied: %s", filePath)
+		return nil
+	}
+	return err
 }
 
 // recordScanStart inserts the scan record into the database and returns the scan ID
