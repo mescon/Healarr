@@ -208,6 +208,7 @@ func TestHealthMonitorService_GetHealthStatus_WithDB(t *testing.T) {
 // =============================================================================
 
 func TestHealthMonitorService_checkDatabaseHealth_NilDB(t *testing.T) {
+	t.Helper() // Mark as helper to use t parameter
 	h := &HealthMonitorService{db: nil}
 
 	// Should not panic
@@ -235,6 +236,7 @@ func TestHealthMonitorService_checkDatabaseHealth_WithDB(t *testing.T) {
 // =============================================================================
 
 func TestHealthMonitorService_checkStuckRemediations_NilDB(t *testing.T) {
+	t.Helper() // Mark as helper to use t parameter
 	h := &HealthMonitorService{db: nil}
 
 	// Should not panic
@@ -320,6 +322,7 @@ func TestHealthMonitorService_checkStuckRemediations_WithStuck(t *testing.T) {
 // =============================================================================
 
 func TestHealthMonitorService_checkRepeatedFailures_NilDB(t *testing.T) {
+	t.Helper() // Mark as helper to use t parameter
 	h := &HealthMonitorService{db: nil}
 
 	// Should not panic
@@ -347,6 +350,7 @@ func TestHealthMonitorService_checkRepeatedFailures_NoFailures(t *testing.T) {
 // =============================================================================
 
 func TestHealthMonitorService_checkInstanceHealth_NilClient(t *testing.T) {
+	t.Helper() // Mark as helper to use t parameter
 	h := &HealthMonitorService{arrClient: nil}
 
 	// Should not panic

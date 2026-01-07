@@ -499,6 +499,7 @@ func TestLoad_ValidLogLevels(t *testing.T) {
 // =============================================================================
 
 func TestLoadBasePathFromDB_NotLoaded(t *testing.T) {
+	t.Helper() // Mark as helper to use t parameter
 	// Save and clear global config
 	original := cfg
 	cfg = nil
@@ -594,6 +595,7 @@ func TestLoadBasePathFromDB_NormalizesPath(t *testing.T) {
 // =============================================================================
 
 func TestApplyFlags_NilConfig(t *testing.T) {
+	t.Helper() // Mark as helper to use t parameter
 	original := cfg
 	cfg = nil
 	defer func() { cfg = original }()

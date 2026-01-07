@@ -128,6 +128,29 @@ type scanPathConfig struct {
 	DryRun        bool
 }
 
+// resumeScanConfig holds all parameters needed to resume an interrupted scan
+type resumeScanConfig struct {
+	ScanDBID            int64
+	PathID              int64
+	LocalPath           string
+	TotalFiles          int
+	StartIndex          int
+	FileListJSON        string
+	DetectionConfigJSON string
+	AutoRemediate       bool
+	DryRun              bool
+}
+
+// scanFilesConfig holds configuration for the main scan loop
+type scanFilesConfig struct {
+	Files           []string
+	StartIndex      int
+	DetectionConfig integration.DetectionConfig
+	AutoRemediate   bool
+	DryRun          bool
+	ScanDBID        int64
+}
+
 // Scanner defines the interface for scan operations.
 // This interface enables mocking in tests while allowing the concrete
 // ScannerService to be used in production.
@@ -290,12 +313,22 @@ func (s *ScannerService) ResumeInterruptedScans() {
 
 	for _, scan := range scansToResume {
 		logger.Infof("Resuming interrupted scan for %s (starting at file %d/%d)", scan.path, scan.currentIndex, scan.totalFiles)
-		go s.resumeScan(scan.scanDBID, scan.pathID, scan.path, scan.totalFiles, scan.currentIndex, scan.fileListJSON, scan.detectionConfig, scan.autoRemediate, scan.dryRun)
+		go s.resumeScan(resumeScanConfig{
+			ScanDBID:            scan.scanDBID,
+			PathID:              scan.pathID,
+			LocalPath:           scan.path,
+			TotalFiles:          scan.totalFiles,
+			StartIndex:          scan.currentIndex,
+			FileListJSON:        scan.fileListJSON,
+			DetectionConfigJSON: scan.detectionConfig,
+			AutoRemediate:       scan.autoRemediate,
+			DryRun:              scan.dryRun,
+		})
 	}
 }
 
 // resumeScan continues a previously interrupted scan
-func (s *ScannerService) resumeScan(scanDBID, pathID int64, localPath string, totalFiles, startIndex int, fileListJSON, detectionConfigJSON string, autoRemediate bool, dryRun bool) {
+func (s *ScannerService) resumeScan(cfg resumeScanConfig) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -304,15 +337,15 @@ func (s *ScannerService) resumeScan(scanDBID, pathID int64, localPath string, to
 
 	// Parse file list
 	var files []string
-	if err := json.Unmarshal([]byte(fileListJSON), &files); err != nil {
+	if err := json.Unmarshal([]byte(cfg.FileListJSON), &files); err != nil {
 		logger.Errorf("Failed to parse file list for resumed scan: %v", err)
 		return
 	}
 
 	// Parse detection config
 	var detectionConfig integration.DetectionConfig
-	if detectionConfigJSON != "" {
-		if err := json.Unmarshal([]byte(detectionConfigJSON), &detectionConfig); err != nil {
+	if cfg.DetectionConfigJSON != "" {
+		if err := json.Unmarshal([]byte(cfg.DetectionConfigJSON), &detectionConfig); err != nil {
 			logger.Errorf("Failed to parse detection config: %v", err)
 			detectionConfig = integration.DetectionConfig{
 				Method: integration.DetectionMethod("ffprobe"),
@@ -330,14 +363,14 @@ func (s *ScannerService) resumeScan(scanDBID, pathID int64, localPath string, to
 	progress := &ScanProgress{
 		ID:          scanID,
 		Type:        "path",
-		Path:        localPath,
-		PathID:      pathID,
-		TotalFiles:  totalFiles,
-		FilesDone:   startIndex,
+		Path:        cfg.LocalPath,
+		PathID:      cfg.PathID,
+		TotalFiles:  cfg.TotalFiles,
+		FilesDone:   cfg.StartIndex,
 		CurrentFile: "",
 		Status:      "scanning",
 		StartTime:   time.Now().Format(time.RFC3339),
-		ScanDBID:    scanDBID,
+		ScanDBID:    cfg.ScanDBID,
 		pauseChan:   make(chan struct{}),
 		resumeChan:  make(chan struct{}),
 		isPaused:    false,
@@ -350,7 +383,7 @@ func (s *ScannerService) resumeScan(scanDBID, pathID int64, localPath string, to
 
 	// Update scan status to running
 	statusCtx, statusCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-	_, err := s.db.ExecContext(statusCtx, `UPDATE scans SET status = 'running' WHERE id = ?`, scanDBID)
+	_, err := s.db.ExecContext(statusCtx, `UPDATE scans SET status = 'running' WHERE id = ?`, cfg.ScanDBID)
 	statusCancel()
 	if err != nil {
 		logger.Errorf("Failed to update scan status: %v", err)
@@ -365,7 +398,7 @@ func (s *ScannerService) resumeScan(scanDBID, pathID int64, localPath string, to
 		_, err := s.db.ExecContext(deferCtx, `
 			UPDATE scans SET status = ?, files_scanned = ?, completed_at = datetime('now')
 			WHERE id = ?
-		`, finalStatus, progress.FilesDone, scanDBID)
+		`, finalStatus, progress.FilesDone, cfg.ScanDBID)
 		deferCancel()
 		if err != nil {
 			logger.Errorf("Failed to update scan record: %v", err)
@@ -390,10 +423,17 @@ func (s *ScannerService) resumeScan(scanDBID, pathID int64, localPath string, to
 	}()
 
 	s.emitProgress(progress)
-	logger.Infof("Resumed scan %s for %s at file %d/%d", scanID, localPath, startIndex, totalFiles)
+	logger.Infof("Resumed scan %s for %s at file %d/%d", scanID, cfg.LocalPath, cfg.StartIndex, cfg.TotalFiles)
 
 	// Continue scanning from where we left off
-	s.scanFiles(ctx, progress, files, startIndex, detectionConfig, autoRemediate, dryRun, scanDBID)
+	s.scanFiles(ctx, progress, scanFilesConfig{
+		Files:           files,
+		StartIndex:      cfg.StartIndex,
+		DetectionConfig: detectionConfig,
+		AutoRemediate:   cfg.AutoRemediate,
+		DryRun:          cfg.DryRun,
+		ScanDBID:        cfg.ScanDBID,
+	})
 }
 
 // ScanFile scans a single file for corruption
@@ -733,7 +773,14 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 	}()
 
 	// Scan files starting from index 0
-	s.scanFiles(ctx, progress, files, 0, detectionConfig, autoRemediate, dryRun, scanDBID)
+	s.scanFiles(ctx, progress, scanFilesConfig{
+		Files:           files,
+		StartIndex:      0,
+		DetectionConfig: detectionConfig,
+		AutoRemediate:   autoRemediate,
+		DryRun:          dryRun,
+		ScanDBID:        scanDBID,
+	})
 	return nil
 }
 
@@ -1062,7 +1109,7 @@ func (s *ScannerService) applyBatchThrottling(ctx context.Context, progress *Sca
 
 // scanFiles is the shared file scanning loop used by both new and resumed scans.
 // The main loop orchestrates helper methods that handle specific concerns.
-func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, files []string, startIndex int, detectionConfig integration.DetectionConfig, autoRemediate bool, dryRun bool, scanDBID int64) {
+func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, cfg scanFilesConfig) {
 	localPath := progress.Path
 	pathID := progress.PathID
 
@@ -1070,16 +1117,16 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 	// This loads all files under this path that already have active corruption records.
 	activeCorruptions := s.LoadActiveCorruptionsForPath(localPath)
 
-	for i := startIndex; i < len(files); i++ {
-		filePath := files[i]
+	for i := cfg.StartIndex; i < len(cfg.Files); i++ {
+		filePath := cfg.Files[i]
 
 		// Check for cancellation or shutdown
-		if action := s.checkScanCancellation(ctx, progress, localPath, i, len(files)); action == scanReturn {
+		if action := s.checkScanCancellation(ctx, progress, localPath, i, len(cfg.Files)); action == scanReturn {
 			return
 		}
 
 		// Handle pause/resume
-		if action := s.handleScanPause(ctx, progress, localPath, i, scanDBID); action == scanReturn {
+		if action := s.handleScanPause(ctx, progress, localPath, i, cfg.ScanDBID); action == scanReturn {
 			return
 		}
 
@@ -1102,31 +1149,31 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 			fileSize:          fileSize,
 			fileMtime:         fileMtime,
 			pathID:            pathID,
-			scanDBID:          scanDBID,
-			autoRemediate:     autoRemediate,
-			dryRun:            dryRun,
-			detectionConfig:   detectionConfig,
+			scanDBID:          cfg.ScanDBID,
+			autoRemediate:     cfg.AutoRemediate,
+			dryRun:            cfg.DryRun,
+			detectionConfig:   cfg.DetectionConfig,
 			activeCorruptions: activeCorruptions,
 		}
 
 		// SAFETY: Skip recently modified files (likely being written)
 		if s.shouldSkipRecentlyModified(sfc) {
-			s.markFileProcessed(progress, i, scanDBID)
+			s.markFileProcessed(progress, i, cfg.ScanDBID)
 			continue
 		}
 
 		// SAFETY: Skip files with changing size (download in progress)
 		if s.shouldSkipChangingSize(sfc) {
-			s.markFileProcessed(progress, i, scanDBID)
+			s.markFileProcessed(progress, i, cfg.ScanDBID)
 			continue
 		}
 
 		// Run health check
-		healthy, healthErr := s.detector.CheckWithConfig(filePath, detectionConfig)
+		healthy, healthErr := s.detector.CheckWithConfig(filePath, cfg.DetectionConfig)
 
 		if healthy {
 			s.recordHealthyFile(sfc)
-			s.markFileProcessed(progress, i, scanDBID)
+			s.markFileProcessed(progress, i, cfg.ScanDBID)
 			continue
 		}
 
@@ -1136,7 +1183,7 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 				return
 			}
 			// scanSkipToNext - continue to next file
-			s.markFileProcessed(progress, i, scanDBID)
+			s.markFileProcessed(progress, i, cfg.ScanDBID)
 			continue
 		}
 
@@ -1145,7 +1192,7 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 			return
 		}
 		// scanSkipToNext means duplicate, scanContinue means event was published
-		s.markFileProcessed(progress, i, scanDBID)
+		s.markFileProcessed(progress, i, cfg.ScanDBID)
 	}
 
 	progress.Status = "completed"

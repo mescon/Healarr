@@ -1083,7 +1083,7 @@ func (m *scansMockScanner) ScanPath(pathID int64, localPath string) error {
 	return nil
 }
 
-func (m *scansMockScanner) IsPathBeingScanned(path string) bool {
+func (m *scansMockScanner) IsPathBeingScanned(_ string) bool {
 	return m.isPathScanning
 }
 

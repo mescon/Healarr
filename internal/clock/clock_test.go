@@ -133,10 +133,12 @@ func TestRealClock_AfterFunc_ZeroDuration(t *testing.T) {
 // =============================================================================
 
 func TestRealClock_ImplementsClock(t *testing.T) {
+	t.Helper() // Mark as helper to use t parameter
 	var _ Clock = (*RealClock)(nil)
 }
 
 func TestRealTimer_ImplementsTimer(t *testing.T) {
+	t.Helper() // Mark as helper to use t parameter
 	var _ Timer = (*realTimer)(nil)
 }
 
@@ -145,6 +147,7 @@ func TestRealTimer_ImplementsTimer(t *testing.T) {
 // =============================================================================
 
 func TestRealClock_ConcurrentNow(t *testing.T) {
+	t.Helper() // Mark as helper to use t parameter
 	clock := NewRealClock()
 
 	const goroutines = 100

@@ -296,7 +296,7 @@ func (hc *CmdHealthChecker) classifyOSError(err error, path string, isParent boo
 // classifyDetectorError analyzes errors from ffprobe/mediainfo and classifies them appropriately.
 // This catches cases where files disappear between accessibility check and detector execution (race condition),
 // or where the detector sees different paths than Go's os.Stat (e.g., symlink resolution differences).
-func (hc *CmdHealthChecker) classifyDetectorError(err error, path string) *HealthCheckError {
+func (hc *CmdHealthChecker) classifyDetectorError(err error, _ string) *HealthCheckError {
 	errStr := err.Error()
 
 	// Check for path-related errors (file disappeared, wrong path, symlink issues)

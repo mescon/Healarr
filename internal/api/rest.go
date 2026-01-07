@@ -44,7 +44,19 @@ type RESTServer struct {
 	toolChecker *integration.ToolChecker
 }
 
-func NewRESTServer(db *sql.DB, eb *eventbus.EventBus, scanner services.Scanner, pm integration.PathMapper, arrClient integration.ArrClient, scheduler services.Scheduler, n *notifier.Notifier, m *metrics.MetricsService) *RESTServer {
+// ServerDeps contains all dependencies required for the REST server
+type ServerDeps struct {
+	DB         *sql.DB
+	EventBus   *eventbus.EventBus
+	Scanner    services.Scanner
+	PathMapper integration.PathMapper
+	ArrClient  integration.ArrClient
+	Scheduler  services.Scheduler
+	Notifier   *notifier.Notifier
+	Metrics    *metrics.MetricsService
+}
+
+func NewRESTServer(deps ServerDeps) *RESTServer {
 	// Set Gin to release mode for production (suppresses debug warnings)
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -118,15 +130,15 @@ func NewRESTServer(db *sql.DB, eb *eventbus.EventBus, scanner services.Scanner, 
 
 	s := &RESTServer{
 		router:      r,
-		db:          db,
-		eventBus:    eb,
-		scanner:     scanner,
-		pathMapper:  pm,
-		arrClient:   arrClient,
-		scheduler:   scheduler,
-		notifier:    n,
-		metrics:     m,
-		hub:         NewWebSocketHub(eb),
+		db:          deps.DB,
+		eventBus:    deps.EventBus,
+		scanner:     deps.Scanner,
+		pathMapper:  deps.PathMapper,
+		arrClient:   deps.ArrClient,
+		scheduler:   deps.Scheduler,
+		notifier:    deps.Notifier,
+		metrics:     deps.Metrics,
+		hub:         NewWebSocketHub(deps.EventBus),
 		startTime:   time.Now(),
 		toolChecker: toolChecker,
 	}

@@ -200,14 +200,14 @@ func (m *MetricsService) handleCorruptionDetected(event domain.Event) {
 	m.corruptionsDetected.WithLabelValues(corruptionType, pathID).Inc()
 }
 
-func (m *MetricsService) handleRemediationQueued(event domain.Event) {
+func (m *MetricsService) handleRemediationQueued(_ domain.Event) {
 	m.mu.Lock()
 	m.queuedRemediationCount++
 	m.queuedRemediations.Set(float64(m.queuedRemediationCount))
 	m.mu.Unlock()
 }
 
-func (m *MetricsService) handleDeletionStarted(event domain.Event) {
+func (m *MetricsService) handleDeletionStarted(_ domain.Event) {
 	m.mu.Lock()
 	// Move from queued to active
 	if m.queuedRemediationCount > 0 {
@@ -219,7 +219,7 @@ func (m *MetricsService) handleDeletionStarted(event domain.Event) {
 	m.mu.Unlock()
 }
 
-func (m *MetricsService) handleVerificationSuccess(event domain.Event) {
+func (m *MetricsService) handleVerificationSuccess(_ domain.Event) {
 	m.verificationsTotal.WithLabelValues("success").Inc()
 	m.remediationsTotal.WithLabelValues("success").Inc()
 
@@ -231,12 +231,12 @@ func (m *MetricsService) handleVerificationSuccess(event domain.Event) {
 	m.mu.Unlock()
 }
 
-func (m *MetricsService) handleVerificationFailed(event domain.Event) {
+func (m *MetricsService) handleVerificationFailed(_ domain.Event) {
 	m.verificationsTotal.WithLabelValues("failed").Inc()
 	// Don't decrement active count yet - retry may happen
 }
 
-func (m *MetricsService) handleMaxRetriesReached(event domain.Event) {
+func (m *MetricsService) handleMaxRetriesReached(_ domain.Event) {
 	m.remediationsTotal.WithLabelValues("max_retries").Inc()
 
 	m.mu.Lock()
@@ -247,16 +247,16 @@ func (m *MetricsService) handleMaxRetriesReached(event domain.Event) {
 	m.mu.Unlock()
 }
 
-func (m *MetricsService) handleScanStarted(event domain.Event) {
+func (m *MetricsService) handleScanStarted(_ domain.Event) {
 	m.currentScanProgress.Set(0)
 }
 
-func (m *MetricsService) handleScanCompleted(event domain.Event) {
+func (m *MetricsService) handleScanCompleted(_ domain.Event) {
 	m.scansTotal.WithLabelValues("completed").Inc()
 	m.currentScanProgress.Set(100)
 }
 
-func (m *MetricsService) handleScanFailed(event domain.Event) {
+func (m *MetricsService) handleScanFailed(_ domain.Event) {
 	m.scansTotal.WithLabelValues("failed").Inc()
 	m.currentScanProgress.Set(0)
 }
@@ -267,29 +267,29 @@ func (m *MetricsService) handleScanProgress(event domain.Event) {
 	}
 }
 
-func (m *MetricsService) handleNotificationSent(event domain.Event) {
+func (m *MetricsService) handleNotificationSent(_ domain.Event) {
 	m.notificationsTotal.WithLabelValues("sent").Inc()
 }
 
-func (m *MetricsService) handleNotificationFailed(event domain.Event) {
+func (m *MetricsService) handleNotificationFailed(_ domain.Event) {
 	m.notificationsTotal.WithLabelValues("failed").Inc()
 }
 
-func (m *MetricsService) handleStuckRemediation(event domain.Event) {
+func (m *MetricsService) handleStuckRemediation(_ domain.Event) {
 	m.mu.Lock()
 	m.stuckRemediationCount++
 	m.stuckRemediations.Set(float64(m.stuckRemediationCount))
 	m.mu.Unlock()
 }
 
-func (m *MetricsService) handleInstanceUnhealthy(event domain.Event) {
+func (m *MetricsService) handleInstanceUnhealthy(_ domain.Event) {
 	m.mu.Lock()
 	m.unhealthyInstanceCount++
 	m.unhealthyInstances.Set(float64(m.unhealthyInstanceCount))
 	m.mu.Unlock()
 }
 
-func (m *MetricsService) handleInstanceHealthy(event domain.Event) {
+func (m *MetricsService) handleInstanceHealthy(_ domain.Event) {
 	m.mu.Lock()
 	if m.unhealthyInstanceCount > 0 {
 		m.unhealthyInstanceCount--

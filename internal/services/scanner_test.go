@@ -2447,7 +2447,14 @@ func TestScannerService_ScanFiles(t *testing.T) {
 			Mode:   "quick",
 		}
 
-		scanner.scanFiles(ctx, progress, []string{testFile}, 0, detectionConfig, true, false, scanDBID)
+		scanner.scanFiles(ctx, progress, scanFilesConfig{
+			Files:           []string{testFile},
+			StartIndex:      0,
+			DetectionConfig: detectionConfig,
+			AutoRemediate:   true,
+			DryRun:          false,
+			ScanDBID:        scanDBID,
+		})
 
 		if progress.corruptionCount != 1 {
 			t.Errorf("Expected 1 corruption, got %d", progress.corruptionCount)
@@ -2515,7 +2522,14 @@ func TestScannerService_ScanFiles(t *testing.T) {
 			Mode:   "quick",
 		}
 
-		scanner.scanFiles(ctx, progress, files, 0, detectionConfig, false, false, scanDBID)
+		scanner.scanFiles(ctx, progress, scanFilesConfig{
+			Files:           files,
+			StartIndex:      0,
+			DetectionConfig: detectionConfig,
+			AutoRemediate:   false,
+			DryRun:          false,
+			ScanDBID:        scanDBID,
+		})
 
 		if progress.FilesDone != 15 {
 			t.Errorf("Expected 15 files done, got %d", progress.FilesDone)

@@ -324,6 +324,7 @@ func TestGlobalRateLimiters(t *testing.T) {
 }
 
 func TestRateLimiter_ConcurrentAccess(t *testing.T) {
+	t.Helper() // Mark as helper to use t parameter
 	rl := NewRateLimiter(100, time.Second, 100)
 
 	done := make(chan bool)
