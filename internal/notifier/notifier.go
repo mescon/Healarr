@@ -649,22 +649,27 @@ func extractMessageContext(data map[string]interface{}) messageContext {
 	}
 	ctx.CorruptionType, _ = data["corruption_type"].(string)
 	ctx.ScanPath, _ = data["path"].(string)
-	ctx.Healthy, _ = data["healthy_files"].(int)
-	ctx.Corrupt, _ = data["corrupt_files"].(int)
-	ctx.Total, _ = data["total_files"].(int)
-	ctx.RetryCount, _ = data["retry_count"].(int)
-	ctx.MaxRetries, _ = data["max_retries"].(int)
+	ctx.Healthy = extractInt(data, "healthy_files")
+	ctx.Corrupt = extractInt(data, "corrupt_files")
+	ctx.Total = extractInt(data, "total_files")
+	ctx.RetryCount = extractInt(data, "retry_count")
+	ctx.MaxRetries = extractInt(data, "max_retries")
+	ctx.Attempts = extractInt(data, "attempts")
 	ctx.ErrorMsg, _ = data["error"].(string)
 	ctx.Reason, _ = data["reason"].(string)
 
-	// Handle attempts which could be int or float64 from JSON
-	if attempts, ok := data["attempts"].(int); ok {
-		ctx.Attempts = attempts
-	} else if f, ok := data["attempts"].(float64); ok {
-		ctx.Attempts = int(f)
-	}
-
 	return ctx
+}
+
+// extractInt extracts an int from a map, handling both int and float64 (from JSON).
+func extractInt(data map[string]interface{}, key string) int {
+	if v, ok := data[key].(int); ok {
+		return v
+	}
+	if v, ok := data[key].(float64); ok {
+		return int(v)
+	}
+	return 0
 }
 
 // messageFormatter is a function type for formatting event messages

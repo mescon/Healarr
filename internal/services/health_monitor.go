@@ -471,7 +471,11 @@ func (h *HealthMonitorService) processSyncItem(item arrSyncItem) (synced, exhaus
 	}
 
 	// Check if item is in arr queue
-	inQueue, _ := h.isInArrQueue(item.filePath)
+	inQueue, queueErr := h.isInArrQueue(item.filePath)
+	if queueErr != nil {
+		logger.Debugf("Health monitor: failed to check queue for %s: %v", item.filePath, queueErr)
+		return false, false
+	}
 	if !inQueue {
 		logger.Infof("Health monitor: item %s not in arr queue and no file, marking as exhausted", item.filePath)
 		if err := h.publishSearchExhausted(item); err != nil {
