@@ -136,6 +136,9 @@ func NewRESTServer(db *sql.DB, eb *eventbus.EventBus, scanner services.Scanner, 
 	return s
 }
 
+// indexHTMLFile is the name of the index file for SPA routing
+const indexHTMLFile = "index.html"
+
 // mustSub returns a sub-filesystem or panics. Used for embedded assets.
 func mustSub(fsys fs.FS, dir string) fs.FS {
 	sub, err := fs.Sub(fsys, dir)
@@ -209,11 +212,11 @@ func (s *RESTServer) setupEmbeddedAssets(base *gin.RouterGroup, basePath string)
 	}
 
 	indexHandler := s.serveIndexWithBasePath(basePath, func() ([]byte, error) {
-		return fs.ReadFile(webFS, "index.html")
+		return fs.ReadFile(webFS, indexHTMLFile)
 	})
 
 	base.GET("/", indexHandler)
-	base.GET("/index.html", indexHandler)
+	base.GET("/"+indexHTMLFile, indexHandler)
 	base.GET("/favicon.png", func(c *gin.Context) { serveEmbeddedFile(c, "favicon.png", "image/png") })
 	base.GET("/healarr.svg", func(c *gin.Context) { serveEmbeddedFile(c, "healarr.svg", "image/svg+xml") })
 
@@ -236,13 +239,13 @@ func (s *RESTServer) setupFilesystemAssets(base *gin.RouterGroup, basePath, webD
 	base.StaticFile("/favicon.png", filepath.Join(webDir, "favicon.png"))
 	base.StaticFile("/healarr.svg", filepath.Join(webDir, "healarr.svg"))
 
-	indexFile := filepath.Join(webDir, "index.html")
+	indexFile := filepath.Join(webDir, indexHTMLFile)
 	indexHandler := s.serveIndexWithBasePath(basePath, func() ([]byte, error) {
 		return os.ReadFile(indexFile)
 	})
 
 	base.GET("/", indexHandler)
-	base.GET("/index.html", indexHandler)
+	base.GET("/"+indexHTMLFile, indexHandler)
 
 	// SPA fallback
 	s.router.NoRoute(func(c *gin.Context) {
