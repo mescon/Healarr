@@ -1269,8 +1269,8 @@ func TestRemediatorService_BuildSearchEventData(t *testing.T) {
 			GetMediaDetailsFunc: func(mediaID int64, arrPath string) (*integration.MediaDetails, error) {
 				return &integration.MediaDetails{
 					Title:         "Movie",
-					SeasonNumber:  0, // Should not be included
-					EpisodeNumber: 0, // Should not be included
+					SeasonNumber:  0,  // Should not be included
+					EpisodeNumber: 0,  // Should not be included
 					EpisodeTitle:  "", // Should not be included
 				}, nil
 			},
