@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -616,13 +617,15 @@ type walkStats struct {
 	symlinkCount int
 }
 
-// classifyFile determines whether a file should be included as a media file
+// classifyEntry determines whether a file should be included as a media file.
+// Uses fs.DirEntry to correctly detect symlinks (unlike os.FileInfo from filepath.Walk).
 // Returns: (isMedia, isSkipped, isSymlink)
-func classifyFile(filePath string, info os.FileInfo) (isMedia, isSkipped, isSymlink bool) {
-	if info.Mode()&os.ModeSymlink != 0 {
+func classifyEntry(filePath string, d fs.DirEntry) (isMedia, isSkipped, isSymlink bool) {
+	// DirEntry.Type() correctly returns ModeSymlink for symlinks
+	if d.Type()&os.ModeSymlink != 0 {
 		return false, false, true
 	}
-	if info.IsDir() {
+	if d.IsDir() {
 		return false, false, false
 	}
 	if isHiddenOrTempFile(filePath) {
@@ -634,15 +637,16 @@ func classifyFile(filePath string, info os.FileInfo) (isMedia, isSkipped, isSyml
 	return false, true, false
 }
 
-// enumerateMediaFiles walks the directory and returns a list of media files
+// enumerateMediaFiles walks the directory and returns a list of media files.
+// Uses filepath.WalkDir to correctly detect symlinks.
 func (s *ScannerService) enumerateMediaFiles(localPath string) ([]string, error) {
 	stats := walkStats{}
 
-	err := filepath.Walk(localPath, func(filePath string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(localPath, func(filePath string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return s.handleWalkError(filePath, err)
 		}
-		isMedia, isSkipped, isSymlink := classifyFile(filePath, info)
+		isMedia, isSkipped, isSymlink := classifyEntry(filePath, d)
 		switch {
 		case isSymlink:
 			stats.symlinkCount++
