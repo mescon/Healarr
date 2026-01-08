@@ -62,6 +62,7 @@ func (s *RESTServer) getScans(c *gin.Context) {
 	// Get total count
 	var total int
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM scans").Scan(&total); err != nil {
+		logger.Errorf("Failed to query scans count: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -80,6 +81,7 @@ func (s *RESTServer) getScans(c *gin.Context) {
 	query := fmt.Sprintf("SELECT id, path, status, files_scanned, corruptions_found, started_at, completed_at FROM scans %s LIMIT ? OFFSET ?", orderByClause) // NOSONAR - validated ORDER BY
 	rows, err := s.db.Query(query, p.Limit, p.Offset)                                                                                                         // NOSONAR
 	if err != nil {
+		logger.Errorf("Failed to query scans: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
