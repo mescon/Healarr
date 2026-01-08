@@ -2489,3 +2489,129 @@ func TestNotifier_SendGenericWebhook_AllEventData(t *testing.T) {
 		t.Errorf("sendGenericWebhook() error = %v", err)
 	}
 }
+
+// =============================================================================
+// Helper function tests
+// =============================================================================
+
+func TestEnsureHTTPScheme(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"already https", "https://example.com", "https://example.com"},
+		{"already http", "http://example.com", "http://example.com"},
+		{"no scheme", "example.com", "https://example.com"},
+		{"no scheme with path", "example.com/webhook", "https://example.com/webhook"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ensureHTTPScheme(tt.url); got != tt.want {
+				t.Errorf("ensureHTTPScheme(%q) = %v, want %v", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseKeyValuePairs(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  map[string]string
+	}{
+		{"empty string", "", map[string]string{}},
+		{"single pair", "key=value", map[string]string{"key": "value"}},
+		{"multiple pairs", "key1=value1\nkey2=value2", map[string]string{"key1": "value1", "key2": "value2"}},
+		{"with whitespace", " key = value ", map[string]string{"key": "value"}},
+		{"empty lines", "key1=value1\n\nkey2=value2", map[string]string{"key1": "value1", "key2": "value2"}},
+		{"no equals sign", "invalid line", map[string]string{}},
+		{"value with equals", "key=val=ue", map[string]string{"key": "val=ue"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseKeyValuePairs(tt.input)
+			if len(got) != len(tt.want) {
+				t.Errorf("parseKeyValuePairs(%q) = %v, want %v", tt.input, got, tt.want)
+				return
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("parseKeyValuePairs(%q)[%q] = %v, want %v", tt.input, k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestExtractWebhookData(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[string]interface{}
+		want map[string]interface{}
+	}{
+		{
+			"empty data",
+			map[string]interface{}{},
+			map[string]interface{}{},
+		},
+		{
+			"file path only",
+			map[string]interface{}{"file_path": "/media/movie.mkv"},
+			map[string]interface{}{"file_path": "/media/movie.mkv", "file_name": "movie.mkv"},
+		},
+		{
+			"path renamed to scan_path",
+			map[string]interface{}{"path": "/media/movies"},
+			map[string]interface{}{"scan_path": "/media/movies"},
+		},
+		{
+			"numeric fields",
+			map[string]interface{}{"healthy_files": 95, "corrupt_files": 5},
+			map[string]interface{}{"healthy_files": 95, "corrupt_files": 5},
+		},
+		{
+			"empty string values ignored",
+			map[string]interface{}{"file_path": "", "error": ""},
+			map[string]interface{}{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractWebhookData(tt.data)
+			if len(got) != len(tt.want) {
+				t.Errorf("extractWebhookData() got %d fields, want %d", len(got), len(tt.want))
+				return
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("extractWebhookData()[%q] = %v, want %v", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestGetFileName(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[string]interface{}
+		want string
+	}{
+		{"with path", map[string]interface{}{"file_path": "/media/movie.mkv"}, "movie.mkv"},
+		{"no path", map[string]interface{}{"file_path": "movie.mkv"}, "movie.mkv"},
+		{"empty", map[string]interface{}{}, ""},
+		{"missing file_path", map[string]interface{}{"other": "value"}, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := getFileName(tt.data); got != tt.want {
+				t.Errorf("getFileName() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

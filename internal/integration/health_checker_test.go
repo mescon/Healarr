@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // =============================================================================
@@ -962,4 +963,175 @@ func TestCmdHealthChecker_CheckAccessibility_ParentIsFile(t *testing.T) {
 		// The exact error type depends on OS behavior
 		t.Logf("Error type: %s, message: %s", err.Type, err.Message)
 	})
+}
+
+// =============================================================================
+// Helper function tests
+// =============================================================================
+
+func TestBuildMediaInfoArgs(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       string
+		customArgs []string
+		path       string
+		wantArgs   []string
+		wantMinTO  time.Duration
+	}{
+		{
+			"quick mode no custom args",
+			ModeQuick,
+			nil,
+			"/path/to/file.mkv",
+			[]string{"--Output=JSON", "/path/to/file.mkv"},
+			30 * time.Second,
+		},
+		{
+			"thorough mode no custom args",
+			ModeThorough,
+			nil,
+			"/path/to/file.mkv",
+			[]string{"--Output=JSON", "--Full", "/path/to/file.mkv"},
+			2 * time.Minute,
+		},
+		{
+			"quick mode with custom args",
+			ModeQuick,
+			[]string{"--extra", "--flags"},
+			"/path/to/file.mkv",
+			[]string{"--Output=JSON", "--extra", "--flags", "/path/to/file.mkv"},
+			30 * time.Second,
+		},
+		{
+			"thorough mode with custom args",
+			ModeThorough,
+			[]string{"--extra"},
+			"/path/to/file.mkv",
+			[]string{"--Output=JSON", "--Full", "--extra", "/path/to/file.mkv"},
+			2 * time.Minute,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args, timeout := buildMediaInfoArgs(tt.mode, tt.customArgs, tt.path)
+			if len(args) != len(tt.wantArgs) {
+				t.Errorf("buildMediaInfoArgs() args len = %d, want %d", len(args), len(tt.wantArgs))
+				return
+			}
+			for i, arg := range args {
+				if arg != tt.wantArgs[i] {
+					t.Errorf("buildMediaInfoArgs() args[%d] = %v, want %v", i, arg, tt.wantArgs[i])
+				}
+			}
+			if timeout < tt.wantMinTO {
+				t.Errorf("buildMediaInfoArgs() timeout = %v, want >= %v", timeout, tt.wantMinTO)
+			}
+		})
+	}
+}
+
+func TestHasValidMediaTrack(t *testing.T) {
+	tests := []struct {
+		name   string
+		tracks []interface{}
+		want   bool
+	}{
+		{
+			"empty tracks",
+			[]interface{}{},
+			false,
+		},
+		{
+			"only general track",
+			[]interface{}{
+				map[string]interface{}{"@type": "General"},
+			},
+			false,
+		},
+		{
+			"video track present",
+			[]interface{}{
+				map[string]interface{}{"@type": "General"},
+				map[string]interface{}{"@type": "Video"},
+			},
+			true,
+		},
+		{
+			"audio track present",
+			[]interface{}{
+				map[string]interface{}{"@type": "General"},
+				map[string]interface{}{"@type": "Audio"},
+			},
+			true,
+		},
+		{
+			"invalid track type",
+			[]interface{}{
+				"not a map",
+			},
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasValidMediaTrack(tt.tracks); got != tt.want {
+				t.Errorf("hasValidMediaTrack() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateMediaInfoOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		wantErr bool
+	}{
+		{
+			"valid media with video",
+			[]byte(`{"media":{"track":[{"@type":"General"},{"@type":"Video"}]}}`),
+			false,
+		},
+		{
+			"valid media with audio only",
+			[]byte(`{"media":{"track":[{"@type":"General"},{"@type":"Audio"}]}}`),
+			false,
+		},
+		{
+			"invalid JSON",
+			[]byte(`{invalid`),
+			true,
+		},
+		{
+			"no media field",
+			[]byte(`{"other":"field"}`),
+			true,
+		},
+		{
+			"no tracks",
+			[]byte(`{"media":{}}`),
+			true,
+		},
+		{
+			"empty tracks array",
+			[]byte(`{"media":{"track":[]}}`),
+			true,
+		},
+		{
+			"only general track",
+			[]byte(`{"media":{"track":[{"@type":"General"}]}}`),
+			true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMediaInfoOutput(tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateMediaInfoOutput() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
 }

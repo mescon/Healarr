@@ -5464,3 +5464,55 @@ func TestHTTPArrClient_GetFilePath_EpisodeFileNon200(t *testing.T) {
 		t.Error("Expected error for episode file non-200")
 	}
 }
+
+// =============================================================================
+// Path matching helper tests
+// =============================================================================
+
+func TestIsValidPathMatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		rootPath string
+		filePath string
+		want     bool
+	}{
+		{"exact match", "/data/movies", "/data/movies", true},
+		{"subpath match", "/data/movies", "/data/movies/movie.mkv", true},
+		{"trailing slash root", "/data/movies/", "/data/movies/movie.mkv", true},
+		{"no match different path", "/data/movies", "/data/tv/show.mkv", false},
+		{"no match partial name", "/data/movies", "/data/movies-archive/movie.mkv", false},
+		{"no match prefix only", "/data/movie", "/data/movies/movie.mkv", false},
+		{"root path match", "/", "/anything/here", true},
+		{"empty file path", "/data/movies", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isValidPathMatch(tt.rootPath, tt.filePath); got != tt.want {
+				t.Errorf("isValidPathMatch(%q, %q) = %v, want %v", tt.rootPath, tt.filePath, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizedPathLength(t *testing.T) {
+	tests := []struct {
+		name     string
+		rootPath string
+		want     int
+	}{
+		{"no trailing slash", "/data/movies", 12},
+		{"single trailing slash", "/data/movies/", 12},
+		{"multiple trailing slashes", "/data/movies///", 12},
+		{"root path", "/", 0},
+		{"empty path", "", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizedPathLength(tt.rootPath); got != tt.want {
+				t.Errorf("normalizedPathLength(%q) = %v, want %v", tt.rootPath, got, tt.want)
+			}
+		})
+	}
+}
