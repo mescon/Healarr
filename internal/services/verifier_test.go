@@ -1955,3 +1955,32 @@ func TestVerifierService_ShouldLogPollingProgress(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// logFilesDetected tests
+// =============================================================================
+
+func TestVerifierService_LogFilesDetected(t *testing.T) {
+	v := &VerifierService{}
+
+	// These tests verify the function doesn't panic with various inputs
+	// The function just logs, so we verify it handles edge cases gracefully
+	t.Run("logs single file detected", func(t *testing.T) {
+		// Should not panic
+		v.logFilesDetected("corruption-123", 5, []string{"/media/show/episode.mkv"})
+	})
+
+	t.Run("logs multiple files detected", func(t *testing.T) {
+		// Should not panic
+		v.logFilesDetected("corruption-456", 3, []string{
+			"/media/show/episode1.mkv",
+			"/media/show/episode2.mkv",
+			"/media/show/episode3.mkv",
+		})
+	})
+
+	t.Run("handles empty path list", func(t *testing.T) {
+		// Should not panic even with empty list
+		v.logFilesDetected("corruption-789", 1, []string{})
+	})
+}

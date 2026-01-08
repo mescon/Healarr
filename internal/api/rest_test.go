@@ -502,3 +502,172 @@ func TestRESTServer_ExtractAPIToken(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// verifyAPIToken tests
+// =============================================================================
+
+func TestRESTServer_VerifyAPIToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("valid token matches stored key", func(t *testing.T) {
+		db, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer db.Close()
+
+		_, err = db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`)
+		require.NoError(t, err)
+
+		// Store an unencrypted key (crypto.Decrypt returns unencrypted values as-is)
+		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'test-secret-key')`)
+		require.NoError(t, err)
+
+		s := &RESTServer{db: db}
+
+		err = s.verifyAPIToken("test-secret-key")
+		assert.NoError(t, err)
+	})
+
+	t.Run("invalid token returns errInvalidToken", func(t *testing.T) {
+		db, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer db.Close()
+
+		_, err = db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`)
+		require.NoError(t, err)
+
+		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'correct-key')`)
+		require.NoError(t, err)
+
+		s := &RESTServer{db: db}
+
+		err = s.verifyAPIToken("wrong-key")
+		assert.Equal(t, errInvalidToken, err)
+	})
+
+	t.Run("missing api_key returns error", func(t *testing.T) {
+		db, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer db.Close()
+
+		_, err = db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`)
+		require.NoError(t, err)
+
+		s := &RESTServer{db: db}
+
+		err = s.verifyAPIToken("any-token")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to retrieve API key")
+	})
+
+	t.Run("missing settings table returns error", func(t *testing.T) {
+		db, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer db.Close()
+
+		s := &RESTServer{db: db}
+
+		err = s.verifyAPIToken("any-token")
+		assert.Error(t, err)
+	})
+}
+
+// =============================================================================
+// authMiddleware tests
+// =============================================================================
+
+func TestRESTServer_AuthMiddleware(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("rejects request with no token", func(t *testing.T) {
+		db, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer db.Close()
+
+		s := &RESTServer{db: db, router: gin.New()}
+
+		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
+			c.String(http.StatusOK, "success")
+		})
+
+		req := httptest.NewRequest("GET", "/protected", nil)
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		assert.Contains(t, w.Body.String(), "No authentication token provided")
+	})
+
+	t.Run("rejects request with invalid token", func(t *testing.T) {
+		db, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer db.Close()
+
+		_, err = db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`)
+		require.NoError(t, err)
+
+		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'correct-key')`)
+		require.NoError(t, err)
+
+		s := &RESTServer{db: db, router: gin.New()}
+
+		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
+			c.String(http.StatusOK, "success")
+		})
+
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("X-API-Key", "wrong-key")
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		assert.Contains(t, w.Body.String(), "Invalid authentication token")
+	})
+
+	t.Run("accepts request with valid token", func(t *testing.T) {
+		db, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer db.Close()
+
+		_, err = db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`)
+		require.NoError(t, err)
+
+		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'valid-api-key')`)
+		require.NoError(t, err)
+
+		s := &RESTServer{db: db, router: gin.New()}
+
+		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
+			c.String(http.StatusOK, "success")
+		})
+
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("X-API-Key", "valid-api-key")
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "success", w.Body.String())
+	})
+
+	t.Run("returns 500 on database error", func(t *testing.T) {
+		db, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer db.Close()
+
+		// No settings table - will cause DB error
+		s := &RESTServer{db: db, router: gin.New()}
+
+		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
+			c.String(http.StatusOK, "success")
+		})
+
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("X-API-Key", "some-key")
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Contains(t, w.Body.String(), "Authentication error")
+	})
+}

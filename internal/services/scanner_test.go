@@ -3661,3 +3661,53 @@ func TestScannerService_ClassifyStatError(t *testing.T) {
 		})
 	}
 }
+
+func TestScannerService_TestFileAccess(t *testing.T) {
+	scanner := &ScannerService{}
+
+	t.Run("returns nil for empty entries", func(t *testing.T) {
+		err := scanner.testFileAccess("/tmp", []os.DirEntry{})
+		if err != nil {
+			t.Errorf("testFileAccess() with empty entries = %v, want nil", err)
+		}
+	})
+
+	t.Run("returns nil when file can be accessed", func(t *testing.T) {
+		// Create a temp directory with a file
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "test.txt")
+		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+
+		entries, err := os.ReadDir(tmpDir)
+		if err != nil {
+			t.Fatalf("Failed to read temp dir: %v", err)
+		}
+
+		err = scanner.testFileAccess(tmpDir, entries)
+		if err != nil {
+			t.Errorf("testFileAccess() with accessible file = %v, want nil", err)
+		}
+	})
+
+	t.Run("skips directories", func(t *testing.T) {
+		// Create temp directory with only a subdirectory (no files)
+		tmpDir := t.TempDir()
+		subDir := filepath.Join(tmpDir, "subdir")
+		if err := os.Mkdir(subDir, 0755); err != nil {
+			t.Fatalf("Failed to create subdir: %v", err)
+		}
+
+		entries, err := os.ReadDir(tmpDir)
+		if err != nil {
+			t.Fatalf("Failed to read temp dir: %v", err)
+		}
+
+		// Should return nil since we skip directories
+		err = scanner.testFileAccess(tmpDir, entries)
+		if err != nil {
+			t.Errorf("testFileAccess() with only directories = %v, want nil", err)
+		}
+	})
+}
