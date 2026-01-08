@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -3601,4 +3602,62 @@ func TestScannerService_HandleWalkError(t *testing.T) {
 			t.Errorf("Expected nil for nil error, got %v", err)
 		}
 	})
+}
+
+// =============================================================================
+// Path accessibility helper tests
+// =============================================================================
+
+func TestScannerService_IsMountError(t *testing.T) {
+	scanner := &ScannerService{}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"stale file handle", fmt.Errorf("stale file handle"), true},
+		{"STALE FILE HANDLE (uppercase)", fmt.Errorf("STALE FILE HANDLE"), true},
+		{"transport endpoint not connected", fmt.Errorf("transport endpoint is not connected"), true},
+		{"no such device", fmt.Errorf("no such device or address"), true},
+		{"regular error", fmt.Errorf("file not found"), false},
+		{"permission error", fmt.Errorf("permission denied"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := scanner.isMountError(tt.err); got != tt.want {
+				t.Errorf("isMountError(%q) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScannerService_ClassifyStatError(t *testing.T) {
+	scanner := &ScannerService{}
+
+	tests := []struct {
+		name        string
+		err         error
+		wantContain string
+	}{
+		{"not exist error", os.ErrNotExist, "does not exist"},
+		{"permission error", os.ErrPermission, "permission denied"},
+		{"stale mount error", fmt.Errorf("stale file handle"), "mount appears offline"},
+		{"transport error", fmt.Errorf("transport endpoint is not connected"), "mount appears offline"},
+		{"generic error", fmt.Errorf("some other error"), "cannot access path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanner.classifyStatError("/test/path", tt.err)
+			if got == nil {
+				t.Errorf("classifyStatError() returned nil, want error containing %q", tt.wantContain)
+				return
+			}
+			if !strings.Contains(got.Error(), tt.wantContain) {
+				t.Errorf("classifyStatError() = %q, want to contain %q", got.Error(), tt.wantContain)
+			}
+		})
+	}
 }

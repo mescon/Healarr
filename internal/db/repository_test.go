@@ -3409,3 +3409,61 @@ func TestExecWithRetry_UpdateQuery(t *testing.T) {
 		t.Errorf("Expected 2 rows affected, got %d", affected)
 	}
 }
+
+// =============================================================================
+// Migration helper function tests
+// =============================================================================
+
+func TestParseMigrationVersion(t *testing.T) {
+	tests := []struct {
+		name   string
+		file   string
+		want   int
+		wantOK bool
+	}{
+		{"valid migration file", "001_initial.sql", 1, true},
+		{"multi-digit version", "123_add_tables.sql", 123, true},
+		{"no underscore", "001.sql", 0, false},
+		{"non-numeric prefix", "abc_migration.sql", 0, false},
+		{"empty string", "", 0, false},
+		{"just underscore", "_migration.sql", 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseMigrationVersion(tt.file)
+			if ok != tt.wantOK {
+				t.Errorf("parseMigrationVersion(%q) ok = %v, want %v", tt.file, ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Errorf("parseMigrationVersion(%q) = %v, want %v", tt.file, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetMigrationFiles(t *testing.T) {
+	files, err := getMigrationFiles()
+	if err != nil {
+		t.Fatalf("getMigrationFiles() error = %v", err)
+	}
+
+	// Should have at least one migration file
+	if len(files) == 0 {
+		t.Error("getMigrationFiles() returned empty list, expected at least one migration")
+	}
+
+	// All files should end with .sql
+	for _, f := range files {
+		if !strings.HasSuffix(f, ".sql") {
+			t.Errorf("getMigrationFiles() returned non-sql file: %s", f)
+		}
+	}
+
+	// Files should be sorted
+	for i := 1; i < len(files); i++ {
+		if files[i] < files[i-1] {
+			t.Errorf("getMigrationFiles() files not sorted: %s before %s", files[i-1], files[i])
+		}
+	}
+}
