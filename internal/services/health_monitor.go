@@ -530,7 +530,7 @@ func (h *HealthMonitorService) syncWithArrState() {
 		var pathID int64
 		var mediaIDRaw sql.NullFloat64
 
-		if err := rows.Scan(&corruptionID, &filePath, &pathID, &mediaIDRaw); err != nil {
+		if rows.Scan(&corruptionID, &filePath, &pathID, &mediaIDRaw) != nil {
 			continue
 		}
 

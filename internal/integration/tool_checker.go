@@ -162,7 +162,7 @@ func (tc *ToolChecker) checkFFprobe() *ToolStatus {
 	cmd := exec.Command(path, "-version")
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	if err := cmd.Run(); err == nil {
+	if cmd.Run() == nil {
 		// Extract version from first line: "ffprobe version 6.1.1 Copyright..."
 		firstLine := strings.Split(out.String(), "\n")[0]
 		if matches := regexp.MustCompile(`version\s+(\S+)`).FindStringSubmatch(firstLine); len(matches) > 1 {
@@ -193,7 +193,7 @@ func (tc *ToolChecker) checkFFmpeg() *ToolStatus {
 	cmd := exec.Command(path, "-version")
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	if err := cmd.Run(); err == nil {
+	if cmd.Run() == nil {
 		firstLine := strings.Split(out.String(), "\n")[0]
 		if matches := regexp.MustCompile(`version\s+(\S+)`).FindStringSubmatch(firstLine); len(matches) > 1 {
 			status.Version = matches[1]
@@ -223,7 +223,7 @@ func (tc *ToolChecker) checkMediaInfo() *ToolStatus {
 	cmd := exec.Command(path, "--Version")
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	if err := cmd.Run(); err == nil {
+	if cmd.Run() == nil {
 		// MediaInfo outputs "MediaInfo Command line, MediaInfoLib - v24.01"
 		output := strings.TrimSpace(out.String())
 		if matches := regexp.MustCompile(`v(\d+\.\d+)`).FindStringSubmatch(output); len(matches) > 1 {
@@ -255,7 +255,7 @@ func (tc *ToolChecker) checkHandBrake() *ToolStatus {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out // HandBrake outputs to stderr
-	if err := cmd.Run(); err == nil {
+	if cmd.Run() == nil {
 		// HandBrake outputs "HandBrake 1.7.3"
 		output := strings.TrimSpace(out.String())
 		if matches := regexp.MustCompile(`HandBrake\s+(\S+)`).FindStringSubmatch(output); len(matches) > 1 {

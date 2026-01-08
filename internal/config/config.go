@@ -417,28 +417,28 @@ type FlagOverrides struct {
 }
 
 // applyStringFlag applies a string flag override if the value is non-empty.
-func applyStringFlag(target *string, flag *string) {
+func applyStringFlag(target, flag *string) {
 	if flag != nil && *flag != "" {
 		*target = *flag
 	}
 }
 
 // applyDurationFlag applies a duration flag override if the value is non-zero.
-func applyDurationFlag(target *time.Duration, flag *time.Duration) {
+func applyDurationFlag(target, flag *time.Duration) {
 	if flag != nil && *flag != 0 {
 		*target = *flag
 	}
 }
 
 // applyIntFlag applies an int flag override if the value is non-zero.
-func applyIntFlag(target *int, flag *int) {
+func applyIntFlag(target, flag *int) {
 	if flag != nil && *flag != 0 {
 		*target = *flag
 	}
 }
 
 // applyFloatFlag applies a float64 flag override if the value is non-zero.
-func applyFloatFlag(target *float64, flag *float64) {
+func applyFloatFlag(target, flag *float64) {
 	if flag != nil && *flag != 0 {
 		*target = *flag
 	}

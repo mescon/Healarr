@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // Register pure-Go SQLite driver for database/sql
 
 	"github.com/mescon/Healarr/internal/crypto"
 )
@@ -544,7 +544,7 @@ func TestRepository_BackupIntegrityCheck(t *testing.T) {
 	}
 
 	// Verify invalid backup fails integrity check
-	if err := verifyBackupIntegrity(invalidBackupPath); err == nil {
+	if verifyBackupIntegrity(invalidBackupPath) == nil {
 		t.Error("Invalid backup should have failed integrity check")
 	}
 }

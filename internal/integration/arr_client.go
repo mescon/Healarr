@@ -435,7 +435,7 @@ func (c *HTTPArrClient) tryParseMedia(instance *ArrInstance, path string) (int64
 	defer resp.Body.Close()
 
 	var result ParseResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if json.NewDecoder(resp.Body).Decode(&result) != nil {
 		return 0, false
 	}
 
@@ -592,7 +592,7 @@ func (c *HTTPArrClient) collectEpisodeMetadata(instance *ArrInstance, mediaID, f
 		EpisodeFileID int64 `json:"episodeFileId"`
 	}
 	var episodes []Episode
-	if err := json.NewDecoder(epResp.Body).Decode(&episodes); err != nil {
+	if json.NewDecoder(epResp.Body).Decode(&episodes) != nil {
 		return nil
 	}
 
@@ -1541,7 +1541,7 @@ func (c *HTTPArrClient) getMovieDetails(instance *ArrInstance, movieID int64) (*
 		Title string `json:"title"`
 		Year  int    `json:"year"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&movie); err != nil {
+	if json.NewDecoder(resp.Body).Decode(&movie) != nil {
 		return nil, nil
 	}
 
@@ -1574,7 +1574,7 @@ func (c *HTTPArrClient) getSeriesDetails(instance *ArrInstance, seriesID int64) 
 		Title string `json:"title"`
 		Year  int    `json:"year"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&series); err != nil {
+	if json.NewDecoder(resp.Body).Decode(&series) != nil {
 		return nil, nil
 	}
 
@@ -1621,7 +1621,7 @@ func (c *HTTPArrClient) GetEpisodeDetails(episodeID int64, arrPath string) (*Med
 			Year  int    `json:"year"`
 		} `json:"series"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&episode); err != nil {
+	if json.NewDecoder(resp.Body).Decode(&episode) != nil {
 		return nil, nil
 	}
 

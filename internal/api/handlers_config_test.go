@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/mattn/go-sqlite3" // Register CGo SQLite driver for database/sql
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 

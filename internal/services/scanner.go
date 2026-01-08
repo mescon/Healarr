@@ -1177,12 +1177,12 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 		filePath := cfg.Files[i]
 
 		// Check for cancellation or shutdown
-		if action := s.checkScanCancellation(ctx, progress, localPath, i, len(cfg.Files)); action == scanReturn {
+		if s.checkScanCancellation(ctx, progress, localPath, i, len(cfg.Files)) == scanReturn {
 			return
 		}
 
 		// Handle pause/resume
-		if action := s.handleScanPause(ctx, progress, localPath, i, cfg.ScanDBID); action == scanReturn {
+		if s.handleScanPause(ctx, progress, localPath, i, cfg.ScanDBID) == scanReturn {
 			return
 		}
 

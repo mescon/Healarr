@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/mattn/go-sqlite3" // Register CGo SQLite driver for database/sql
 )
 
 // sqlInsertEvent is the SQL statement for inserting events.

@@ -150,7 +150,7 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 		var retryCount int
 		var detectedAt, lastUpdatedAt string
 
-		if err := rows.Scan(&id, &state, &retryCount, &filePath, &pathID, &lastError, &detectedAt, &lastUpdatedAt, &corruptionType); err != nil {
+		if rows.Scan(&id, &state, &retryCount, &filePath, &pathID, &lastError, &detectedAt, &lastUpdatedAt, &corruptionType) != nil {
 			continue
 		}
 
@@ -213,7 +213,7 @@ func (s *RESTServer) fetchEventData(ctx context.Context, corruptionID, eventType
 	}
 	var eventData sql.NullString
 	query := fmt.Sprintf(`SELECT event_data FROM events WHERE aggregate_id = ? AND event_type = ? ORDER BY created_at %s LIMIT 1`, order) // NOSONAR - order is validated above
-	if err := s.db.QueryRowContext(ctx, query, corruptionID, eventType).Scan(&eventData); err != nil {
+	if s.db.QueryRowContext(ctx, query, corruptionID, eventType).Scan(&eventData) != nil {
 		return nil
 	}
 	if !eventData.Valid {

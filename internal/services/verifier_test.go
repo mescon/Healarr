@@ -204,7 +204,7 @@ func TestVerifierService_VerifyHealthMultiple(t *testing.T) {
 
 		checkedPaths := make([]string, 0)
 		mockHC := &testutil.MockHealthChecker{
-			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 				checkedPaths = append(checkedPaths, path)
 				return true, nil // All files healthy
 			},
@@ -230,7 +230,7 @@ func TestVerifierService_VerifyHealthMultiple(t *testing.T) {
 
 		callCount := 0
 		mockHC := &testutil.MockHealthChecker{
-			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 				callCount++
 				if callCount == 2 {
 					// Second file is corrupt
@@ -273,7 +273,7 @@ func TestVerifierService_EmitFilesDetected(t *testing.T) {
 		defer eb.Shutdown()
 
 		mockHC := &testutil.MockHealthChecker{
-			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 				return true, nil
 			},
 		}
@@ -311,7 +311,7 @@ func TestVerifierService_EmitFilesDetected(t *testing.T) {
 		defer eb.Shutdown()
 
 		mockHC := &testutil.MockHealthChecker{
-			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 				return true, nil
 			},
 		}
@@ -429,7 +429,7 @@ func TestVerifierService_EmitPartialReplacement(t *testing.T) {
 		defer eb.Shutdown()
 
 		mockHC := &testutil.MockHealthChecker{
-			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 				return true, nil // All existing files are healthy
 			},
 		}
@@ -494,7 +494,7 @@ func TestVerifierService_EmitPartialReplacement(t *testing.T) {
 
 		checkedPaths := make([]string, 0)
 		mockHC := &testutil.MockHealthChecker{
-			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 				checkedPaths = append(checkedPaths, path)
 				return true, nil
 			},
@@ -1128,7 +1128,7 @@ func TestVerifierService_CheckHistoryForImport_WithExistingFiles(t *testing.T) {
 
 	// Mock health checker returns healthy for all files
 	mockDetector := &testutil.MockHealthChecker{
-		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 			return true, nil
 		},
 	}
@@ -1249,7 +1249,7 @@ func TestVerifierService_MonitorDownloadProgress_HistoryImportDetected(t *testin
 
 	// Mock health checker returns healthy for all files
 	mockDetector := &testutil.MockHealthChecker{
-		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 			return true, nil
 		},
 	}
@@ -1632,7 +1632,7 @@ func TestVerifierService_CheckAndEmitFilesFromArrAPI(t *testing.T) {
 		}
 		mockPM := &testutil.MockPathMapper{}
 		mockHC := &testutil.MockHealthChecker{
-			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 				return true, nil
 			},
 		}
@@ -1671,7 +1671,7 @@ func TestVerifierService_CheckAndEmitFilesFromArrAPI(t *testing.T) {
 		}
 		mockPM := &testutil.MockPathMapper{}
 		mockHC := &testutil.MockHealthChecker{
-			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 				return true, nil
 			},
 		}

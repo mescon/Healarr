@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // Register pure-Go SQLite driver for database/sql
 )
 
 // testDBCounter ensures unique database names across parallel test runs

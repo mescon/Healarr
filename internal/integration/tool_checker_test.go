@@ -377,6 +377,8 @@ func TestToolStatus_Fields(t *testing.T) {
 // =============================================================================
 
 func TestToolChecker_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
 	tc := NewToolChecker()
 	tc.CheckAllTools()
 
