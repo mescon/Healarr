@@ -373,49 +373,73 @@ func (c *HTTPArrClient) doRequestWithRetry(instance *ArrInstance, method, endpoi
 	}
 
 	var lastErr error
-
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := c.rateLimiter.Wait(ctx); err != nil {
-			cancel()
-			cb.RecordFailure()
-			return nil, fmt.Errorf("rate limiter timeout: %w", err)
+		resp, err, shouldReturn := c.executeAttempt(instance, method, endpoint, bodyData, cb, attempt, maxRetries)
+		if shouldReturn {
+			return resp, err
 		}
-		cancel()
-
-		req, err := c.buildRequest(instance, method, endpoint, bodyData)
 		if err != nil {
-			return nil, err
-		}
-
-		resp, err := c.httpClient.Do(req)
-		if err == nil {
-			// Handle 5xx server errors
-			if resp.StatusCode >= 500 && resp.StatusCode < 600 {
-				action, retryErr := handleServerError(resp, cb, instance, attempt, maxRetries)
-				if action == retryActionContinue {
-					continue
-				}
-				return nil, retryErr
-			}
-			cb.RecordSuccess()
-			return resp, nil
-		}
-
-		lastErr = err
-		if !isRetryableError(err) {
-			cb.RecordFailure()
-			return nil, err
-		}
-
-		if attempt < maxRetries-1 {
-			logger.Infof("*arr API request failed (attempt %d/%d): %v, retrying...", attempt+1, maxRetries, err)
-			time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+			lastErr = err
 		}
 	}
 
 	cb.RecordFailure()
 	return nil, fmt.Errorf("*arr API unavailable after %d attempts: %w", maxRetries, lastErr)
+}
+
+// executeAttempt performs a single request attempt with rate limiting and error handling.
+// Returns (response, error, shouldReturn) where shouldReturn indicates if the caller should return immediately.
+func (c *HTTPArrClient) executeAttempt(instance *ArrInstance, method, endpoint string, bodyData interface{}, cb *CircuitBreaker, attempt, maxRetries int) (*http.Response, error, bool) {
+	// Apply rate limiting
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := c.rateLimiter.Wait(ctx); err != nil {
+		cancel()
+		cb.RecordFailure()
+		return nil, fmt.Errorf("rate limiter timeout: %w", err), true
+	}
+	cancel()
+
+	// Build and execute request
+	req, err := c.buildRequest(instance, method, endpoint, bodyData)
+	if err != nil {
+		return nil, err, true
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return c.handleRequestError(err, cb, attempt, maxRetries)
+	}
+
+	return c.handleRequestSuccess(resp, cb, instance, attempt, maxRetries)
+}
+
+// handleRequestError processes network errors and determines if retry is appropriate.
+func (c *HTTPArrClient) handleRequestError(err error, cb *CircuitBreaker, attempt, maxRetries int) (*http.Response, error, bool) {
+	if !isRetryableError(err) {
+		cb.RecordFailure()
+		return nil, err, true
+	}
+
+	if attempt < maxRetries-1 {
+		logger.Infof("*arr API request failed (attempt %d/%d): %v, retrying...", attempt+1, maxRetries, err)
+		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+	}
+	return nil, err, false // Continue retrying
+}
+
+// handleRequestSuccess processes successful HTTP responses, including server errors.
+func (c *HTTPArrClient) handleRequestSuccess(resp *http.Response, cb *CircuitBreaker, instance *ArrInstance, attempt, maxRetries int) (*http.Response, error, bool) {
+	// Handle 5xx server errors
+	if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+		action, retryErr := handleServerError(resp, cb, instance, attempt, maxRetries)
+		if action == retryActionContinue {
+			return nil, nil, false // Continue retrying
+		}
+		return nil, retryErr, true
+	}
+
+	cb.RecordSuccess()
+	return resp, nil, true
 }
 
 // tryParseMedia attempts to find media ID using the parse API endpoint

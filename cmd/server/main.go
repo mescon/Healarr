@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -118,45 +119,33 @@ func logConfiguration(cfg *config.Config) {
 	}
 }
 
-func main() {
-	flags := parseFlags()
+// serviceDeps holds all initialized services for dependency injection
+type serviceDeps struct {
+	repo                 *db.Repository
+	eb                   *eventbus.EventBus
+	pathMapper           integration.PathMapper
+	healthChecker        integration.HealthChecker
+	arrClient            integration.ArrClient
+	scannerService       *services.ScannerService
+	remediatorService    *services.RemediatorService
+	verifierService      *services.VerifierService
+	monitorService       *services.MonitorService
+	healthMonitorService *services.HealthMonitorService
+	recoveryService      *services.RecoveryService
+	schedulerService     *services.SchedulerService
+	notifierService      *notifier.Notifier
+	metricsService       *metrics.MetricsService
+	stopCheckpoint       func()
+}
 
-	if *flags.showVersion {
-		fmt.Printf("Healarr %s\n", config.Version)
-		os.Exit(0)
-	}
-
-	// Load configuration from environment variables (initial load, refreshed after flags)
-	config.Load()
-	applyFlagOverrides(flags)
-
-	// Refresh config after applying flags
-	cfg := config.Get()
-
-	// Initialize logger with configured log directory
-	logger.Init(cfg.LogDir)
-	logger.SetLevel(cfg.LogLevel)
-
-	logger.Infof(logSeparator)
-	logger.Infof("Starting Healarr %s...", config.Version)
-	logger.Infof("Health Evaluation And Library Auto-Recovery for *aRR")
-	logger.Infof(logSeparator)
-
-	// Log initial configuration (base path may be updated from DB)
-	logConfiguration(cfg)
-
-	// Validate configuration and warn about potential issues
-	// This checks for misconfigured paths that could cause data loss
-	config.ValidateAndWarn()
-
-	// Initialize Database
+// initDatabase initializes the database and starts background maintenance goroutines.
+func initDatabase(cfg *config.Config) (*db.Repository, func()) {
 	logger.Infof("Initializing database: %s", cfg.DatabasePath)
 	repo, err := db.NewRepository(cfg.DatabasePath)
 	if err != nil {
 		logger.Errorf("Failed to initialize database: %v", err)
 		os.Exit(1)
 	}
-	// Note: GracefulClose is called explicitly in shutdown section
 	logger.Infof("✓ Database initialized successfully")
 
 	// Create a database backup on startup
@@ -167,164 +156,170 @@ func main() {
 	}
 
 	// Start scheduled backup goroutine (every 6 hours)
-	go func() {
-		ticker := time.NewTicker(6 * time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
-			if _, err := repo.Backup(cfg.DatabasePath); err != nil {
-				logger.Errorf("Scheduled backup failed: %v", err)
-			}
-		}
-	}()
+	go runScheduledBackups(repo, cfg.DatabasePath)
 
 	// Start periodic WAL checkpoint (every 5 minutes)
-	// This prevents the WAL file from growing too large and ensures
-	// data is regularly synced to the main database file
 	stopCheckpoint := repo.StartPeriodicCheckpoint(5 * time.Minute)
-	defer stopCheckpoint()
 	logger.Debugf("✓ Periodic WAL checkpoint started (every 5 minutes)")
 
 	// Start scheduled maintenance goroutine (daily at 3 AM local time)
-	go func() {
-		retentionDays := cfg.RetentionDays // Capture config value for goroutine
-		for {
-			// Calculate time until next 3 AM
-			now := time.Now()
-			next3AM := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, now.Location())
-			if now.After(next3AM) {
-				next3AM = next3AM.Add(24 * time.Hour)
-			}
-			sleepDuration := next3AM.Sub(now)
-			logger.Debugf("Next database maintenance scheduled in %v", sleepDuration)
+	go runScheduledMaintenance(repo, cfg.RetentionDays)
 
-			time.Sleep(sleepDuration)
+	return repo, stopCheckpoint
+}
 
-			// Run maintenance with configured retention
-			if err := repo.RunMaintenance(retentionDays); err != nil {
-				logger.Errorf("Scheduled maintenance failed: %v", err)
-			}
+// runScheduledBackups runs database backups every 6 hours.
+func runScheduledBackups(repo *db.Repository, dbPath string) {
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		if _, err := repo.Backup(dbPath); err != nil {
+			logger.Errorf("Scheduled backup failed: %v", err)
 		}
-	}()
+	}
+}
 
-	// Load base path from database if not set via environment
-	config.LoadBasePathFromDB(repo.DB)
-	cfg = config.Get() // Refresh config after DB load
-	logger.Infof("  Base Path: %s (source: %s)", cfg.BasePath, cfg.BasePathSource)
+// runScheduledMaintenance runs database maintenance daily at 3 AM local time.
+func runScheduledMaintenance(repo *db.Repository, retentionDays int) {
+	for {
+		sleepDuration := timeUntilNext3AM()
+		logger.Debugf("Next database maintenance scheduled in %v", sleepDuration)
+		time.Sleep(sleepDuration)
 
-	// Initialize Event Bus
-	logger.Infof("Initializing Event Bus...")
-	eb := eventbus.NewEventBus(repo.DB)
-	logger.Infof("✓ Event Bus initialized")
+		if err := repo.RunMaintenance(retentionDays); err != nil {
+			logger.Errorf("Scheduled maintenance failed: %v", err)
+		}
+	}
+}
 
-	// Initialize Integration
-	// For verification, we try to initialize the real components
-	// In production, we would handle errors properly
+// timeUntilNext3AM calculates the duration until the next 3 AM local time.
+func timeUntilNext3AM() time.Duration {
+	now := time.Now()
+	next3AM := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, now.Location())
+	if now.After(next3AM) {
+		next3AM = next3AM.Add(24 * time.Hour)
+	}
+	return next3AM.Sub(now)
+}
 
-	// PathMapper
+// initIntegration initializes integration components (path mapper, health checker, arr client).
+func initIntegration(sqlDB *sql.DB, cfg *config.Config) (integration.PathMapper, integration.HealthChecker, integration.ArrClient) {
 	logger.Infof("Initializing Path Mapper (maps *arr paths to local paths)...")
-	pathMapper, err := integration.NewPathMapper(repo.DB)
+	pathMapper, err := integration.NewPathMapper(sqlDB)
 	if err != nil {
 		logger.Infof("⚠ Path Mapper initialized with no configured paths (configure in /config)")
 	} else {
 		logger.Infof("✓ Path Mapper initialized")
 	}
 
-	// HealthChecker (with custom binary paths from config)
 	logger.Infof("Initializing Health Checker (corruption detection engine)...")
 	healthChecker := integration.NewHealthCheckerWithPaths(
-		cfg.FFprobePath,
-		cfg.FFmpegPath,
-		cfg.MediaInfoPath,
-		cfg.HandBrakePath,
+		cfg.FFprobePath, cfg.FFmpegPath, cfg.MediaInfoPath, cfg.HandBrakePath,
 	)
 	logger.Infof("✓ Health Checker initialized (ffprobe, mediainfo, handbrake)")
 
-	// ArrClient
 	logger.Infof("Initializing *arr Client (Sonarr/Radarr/Whisparr integration)...")
-	arrClient := integration.NewArrClient(repo.DB)
+	arrClient := integration.NewArrClient(sqlDB)
 	logger.Infof("✓ *arr Client initialized")
 
-	// Initialize Services
+	return pathMapper, healthChecker, arrClient
+}
+
+// initCoreServices initializes all core services.
+func initCoreServices(
+	sqlDB *sql.DB, eb *eventbus.EventBus,
+	healthChecker integration.HealthChecker, pathMapper integration.PathMapper,
+	arrClient integration.ArrClient, cfg *config.Config,
+) (*services.ScannerService, *services.RemediatorService, *services.VerifierService,
+	*services.MonitorService, *services.HealthMonitorService, *services.RecoveryService,
+	*services.SchedulerService) {
 	logger.Infof("Initializing core services...")
-	scannerService := services.NewScannerService(repo.DB, eb, healthChecker, pathMapper)
+
+	scannerService := services.NewScannerService(sqlDB, eb, healthChecker, pathMapper)
 	logger.Infof("✓ Scanner Service (detects corrupted files)")
 
-	remediatorService := services.NewRemediatorService(eb, arrClient, pathMapper, repo.DB)
+	remediatorService := services.NewRemediatorService(eb, arrClient, pathMapper, sqlDB)
 	logger.Infof("✓ Remediator Service (fixes corrupted files via *arr)")
 
-	verifierService := services.NewVerifierService(eb, healthChecker, pathMapper, arrClient, repo.DB)
+	verifierService := services.NewVerifierService(eb, healthChecker, pathMapper, arrClient, sqlDB)
 	logger.Infof("✓ Verifier Service (verifies remediation success)")
 
-	monitorService := services.NewMonitorService(eb, repo.DB)
+	monitorService := services.NewMonitorService(eb, sqlDB)
 	logger.Infof("✓ Monitor Service (tracks corruption lifecycle)")
 
-	healthMonitorService := services.NewHealthMonitorService(repo.DB, eb, arrClient, cfg.StaleThreshold)
+	healthMonitorService := services.NewHealthMonitorService(sqlDB, eb, arrClient, cfg.StaleThreshold)
 	logger.Infof("✓ Health Monitor Service (detects stuck remediations)")
 
-	recoveryService := services.NewRecoveryService(repo.DB, eb, arrClient, pathMapper, healthChecker, cfg.StaleThreshold)
+	recoveryService := services.NewRecoveryService(sqlDB, eb, arrClient, pathMapper, healthChecker, cfg.StaleThreshold)
 	logger.Infof("✓ Recovery Service (recovers stale remediations on startup)")
 
-	schedulerService := services.NewSchedulerService(repo.DB, scannerService)
+	schedulerService := services.NewSchedulerService(sqlDB, scannerService)
 	logger.Infof("✓ Scheduler Service (cron-based scans)")
 
-	// Initialize Notifier Service
+	return scannerService, remediatorService, verifierService, monitorService,
+		healthMonitorService, recoveryService, schedulerService
+}
+
+// initNotifierAndMetrics initializes the notification and metrics services.
+func initNotifierAndMetrics(sqlDB *sql.DB, eb *eventbus.EventBus) (*notifier.Notifier, *metrics.MetricsService) {
 	logger.Infof("Initializing Notification Service...")
-	notifierService := notifier.NewNotifier(repo.DB, eb)
+	notifierService := notifier.NewNotifier(sqlDB, eb)
 	if err := notifierService.Start(); err != nil {
 		logger.Errorf("Failed to start notification service: %v", err)
-		// Non-fatal - continue without notifications
 	} else {
 		logger.Infof("✓ Notification Service (alerts for events)")
 	}
 
-	// Initialize Metrics Service (Prometheus metrics)
 	logger.Infof("Initializing Metrics Service...")
 	metricsService := metrics.NewMetricsService(eb)
 	metricsService.Start()
 	logger.Infof("✓ Metrics Service (Prometheus endpoint at /metrics)")
 
-	// Start Services
-	logger.Infof("Starting background services...")
-	remediatorService.Start()
-	verifierService.Start()
-	monitorService.Start()
-	healthMonitorService.Start()
+	return notifierService, metricsService
+}
 
-	// Clean up any orphaned schedules before starting the scheduler
-	// This handles cases where scan paths were deleted but schedules remain
-	// (e.g., if foreign key constraints weren't enforced in older versions)
-	if cleaned, err := schedulerService.CleanupOrphanedSchedules(); err != nil {
+// startBackgroundServices starts all background services and performs initial recovery.
+func startBackgroundServices(deps *serviceDeps) {
+	logger.Infof("Starting background services...")
+	deps.remediatorService.Start()
+	deps.verifierService.Start()
+	deps.monitorService.Start()
+	deps.healthMonitorService.Start()
+
+	// Clean up orphaned schedules before starting the scheduler
+	if cleaned, err := deps.schedulerService.CleanupOrphanedSchedules(); err != nil {
 		logger.Errorf("Failed to cleanup orphaned schedules: %v", err)
 	} else if cleaned > 0 {
 		logger.Debugf("Cleaned up %d orphaned schedules", cleaned)
 	}
 
 	logger.Infof("Starting Scheduler Service...")
-	schedulerService.Start()
+	deps.schedulerService.Start()
 	logger.Infof("✓ All background services started")
 
-	// Resume any interrupted scans from previous shutdown
+	// Resume any interrupted scans and start rescan worker
 	logger.Infof("Checking for interrupted scans to resume...")
-	scannerService.ResumeInterruptedScans()
+	deps.scannerService.ResumeInterruptedScans()
+	deps.scannerService.StartRescanWorker()
 
-	// Start the rescan worker for files that had infrastructure errors
-	scannerService.StartRescanWorker()
+	// Run recovery service to reconcile stale in-progress items
+	deps.recoveryService.Run()
+}
 
-	// Run recovery service to reconcile stale in-progress items with arr state
-	recoveryService.Run()
-
-	// Start API Server
+// startAPIServer initializes and starts the API server in a goroutine.
+func startAPIServer(deps *serviceDeps, cfg *config.Config) *api.RESTServer {
 	logger.Infof("Initializing REST API and WebSocket server...")
 	apiServer := api.NewRESTServer(api.ServerDeps{
-		DB:         repo.DB,
-		EventBus:   eb,
-		Scanner:    scannerService,
-		PathMapper: pathMapper,
-		ArrClient:  arrClient,
-		Scheduler:  schedulerService,
-		Notifier:   notifierService,
-		Metrics:    metricsService,
+		DB:         deps.repo.DB,
+		EventBus:   deps.eb,
+		Scanner:    deps.scannerService,
+		PathMapper: deps.pathMapper,
+		ArrClient:  deps.arrClient,
+		Scheduler:  deps.schedulerService,
+		Notifier:   deps.notifierService,
+		Metrics:    deps.metricsService,
 	})
+
 	go func() {
 		addr := ":" + cfg.Port
 		if err := apiServer.Start(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -333,6 +328,11 @@ func main() {
 		}
 	}()
 
+	return apiServer
+}
+
+// logStartupComplete logs the successful startup message.
+func logStartupComplete(cfg *config.Config) {
 	logger.Infof(logSeparator)
 	logger.Infof("✓ Healarr %s started successfully", config.Version)
 	logger.Infof("✓ Server listening on port %s", cfg.Port)
@@ -340,39 +340,31 @@ func main() {
 		logger.Infof("✓ Web UI available at base path: %s", cfg.BasePath)
 	}
 	logger.Infof(logSeparator)
+}
 
-	// Graceful shutdown handling
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-quit
-
-	logger.Infof(logSeparator)
-	logger.Infof("Received signal %v, initiating graceful shutdown...", sig)
-	logger.Infof(logSeparator)
-
-	// Create a context with timeout for graceful shutdown
+// gracefulShutdown handles the graceful shutdown of all services.
+func gracefulShutdown(deps *serviceDeps, apiServer *api.RESTServer) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
-	// Shutdown in reverse order of startup
 	logger.Infof("Stopping Scheduler Service...")
-	schedulerService.Stop()
+	deps.schedulerService.Stop()
 	logger.Infof("✓ Scheduler Service stopped")
 
 	logger.Infof("Stopping Scanner Service (saving state for interrupted scans)...")
-	scannerService.Shutdown()
+	deps.scannerService.Shutdown()
 	logger.Infof("✓ Scanner Service stopped")
 
 	logger.Infof("Stopping Notification Service...")
-	notifierService.Stop()
+	deps.notifierService.Stop()
 	logger.Infof("✓ Notification Service stopped")
 
 	logger.Infof("Stopping Health Monitor Service...")
-	healthMonitorService.Shutdown()
+	deps.healthMonitorService.Shutdown()
 	logger.Infof("✓ Health Monitor Service stopped")
 
 	logger.Infof("Stopping Event Bus...")
-	eb.Shutdown()
+	deps.eb.Shutdown()
 	logger.Infof("✓ Event Bus stopped")
 
 	logger.Infof("Stopping API Server...")
@@ -383,11 +375,99 @@ func main() {
 	}
 
 	logger.Infof("Closing database connection (with final checkpoint)...")
-	if err := repo.GracefulClose(); err != nil {
+	if err := deps.repo.GracefulClose(); err != nil {
 		logger.Errorf("Failed to close database connection: %v", err)
 	}
 
 	logger.Infof(logSeparator)
 	logger.Infof("✓ Healarr shutdown complete")
 	logger.Infof(logSeparator)
+}
+
+func main() {
+	flags := parseFlags()
+
+	if *flags.showVersion {
+		fmt.Printf("Healarr %s\n", config.Version)
+		os.Exit(0)
+	}
+
+	// Load configuration
+	config.Load()
+	applyFlagOverrides(flags)
+	cfg := config.Get()
+
+	// Initialize logger
+	logger.Init(cfg.LogDir)
+	logger.SetLevel(cfg.LogLevel)
+
+	logger.Infof(logSeparator)
+	logger.Infof("Starting Healarr %s...", config.Version)
+	logger.Infof("Health Evaluation And Library Auto-Recovery for *aRR")
+	logger.Infof(logSeparator)
+
+	logConfiguration(cfg)
+	config.ValidateAndWarn()
+
+	// Initialize database with background maintenance
+	repo, stopCheckpoint := initDatabase(cfg)
+	defer stopCheckpoint()
+
+	// Load base path from database if not set via environment
+	config.LoadBasePathFromDB(repo.DB)
+	cfg = config.Get()
+	logger.Infof("  Base Path: %s (source: %s)", cfg.BasePath, cfg.BasePathSource)
+
+	// Initialize event bus
+	logger.Infof("Initializing Event Bus...")
+	eb := eventbus.NewEventBus(repo.DB)
+	logger.Infof("✓ Event Bus initialized")
+
+	// Initialize integration components
+	pathMapper, healthChecker, arrClient := initIntegration(repo.DB, cfg)
+
+	// Initialize core services
+	scannerService, remediatorService, verifierService,
+		monitorService, healthMonitorService, recoveryService,
+		schedulerService := initCoreServices(repo.DB, eb, healthChecker, pathMapper, arrClient, cfg)
+
+	// Initialize notification and metrics
+	notifierService, metricsService := initNotifierAndMetrics(repo.DB, eb)
+
+	// Bundle all services for dependency injection
+	deps := &serviceDeps{
+		repo:                 repo,
+		eb:                   eb,
+		pathMapper:           pathMapper,
+		healthChecker:        healthChecker,
+		arrClient:            arrClient,
+		scannerService:       scannerService,
+		remediatorService:    remediatorService,
+		verifierService:      verifierService,
+		monitorService:       monitorService,
+		healthMonitorService: healthMonitorService,
+		recoveryService:      recoveryService,
+		schedulerService:     schedulerService,
+		notifierService:      notifierService,
+		metricsService:       metricsService,
+		stopCheckpoint:       stopCheckpoint,
+	}
+
+	// Start all background services
+	startBackgroundServices(deps)
+
+	// Start API server
+	apiServer := startAPIServer(deps, cfg)
+	logStartupComplete(cfg)
+
+	// Wait for shutdown signal
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-quit
+
+	logger.Infof(logSeparator)
+	logger.Infof("Received signal %v, initiating graceful shutdown...", sig)
+	logger.Infof(logSeparator)
+
+	gracefulShutdown(deps, apiServer)
 }

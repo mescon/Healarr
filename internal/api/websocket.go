@@ -149,47 +149,62 @@ func (h *WebSocketHub) run() {
 	for {
 		select {
 		case <-h.shutdown:
-			// Close all clients on shutdown
-			h.mu.Lock()
-			for client := range h.clients {
-				if err := client.Close(); err != nil {
-					logger.Debugf("WebSocket close error during shutdown: %v", err)
-				}
-				delete(h.clients, client)
-			}
-			h.mu.Unlock()
+			h.closeAllClients()
 			return
-
 		case client := <-h.register:
-			h.mu.Lock()
-			h.clients[client] = true
-			logger.Debugf("WebSocket client connected (Total: %d)", len(h.clients))
-			h.mu.Unlock()
-
+			h.registerClient(client)
 		case client := <-h.unregister:
-			h.mu.Lock()
-			if _, ok := h.clients[client]; ok {
-				delete(h.clients, client)
-				if err := client.Close(); err != nil {
-					logger.Debugf("WebSocket close error: %v", err)
-				}
-				logger.Debugf("WebSocket client disconnected")
-			}
-			h.mu.Unlock()
-
+			h.unregisterClient(client)
 		case message := <-h.broadcast:
-			h.mu.Lock()
-			for client := range h.clients {
-				err := client.WriteJSON(message)
-				if err != nil {
-					logger.Errorf("WebSocket error: %v", err)
-					if closeErr := client.Close(); closeErr != nil {
-						logger.Debugf("WebSocket close error during broadcast: %v", closeErr)
-					}
-					delete(h.clients, client)
-				}
+			h.broadcastMessage(message)
+		}
+	}
+}
+
+// closeAllClients closes all connected WebSocket clients during shutdown.
+func (h *WebSocketHub) closeAllClients() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for client := range h.clients {
+		if err := client.Close(); err != nil {
+			logger.Debugf("WebSocket close error during shutdown: %v", err)
+		}
+		delete(h.clients, client)
+	}
+}
+
+// registerClient adds a new client to the hub.
+func (h *WebSocketHub) registerClient(client *websocket.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.clients[client] = true
+	logger.Debugf("WebSocket client connected (Total: %d)", len(h.clients))
+}
+
+// unregisterClient removes a client from the hub and closes its connection.
+func (h *WebSocketHub) unregisterClient(client *websocket.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.clients[client]; ok {
+		delete(h.clients, client)
+		if err := client.Close(); err != nil {
+			logger.Debugf("WebSocket close error: %v", err)
+		}
+		logger.Debugf("WebSocket client disconnected")
+	}
+}
+
+// broadcastMessage sends a message to all connected clients.
+func (h *WebSocketHub) broadcastMessage(message interface{}) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for client := range h.clients {
+		if err := client.WriteJSON(message); err != nil {
+			logger.Errorf("WebSocket error: %v", err)
+			if closeErr := client.Close(); closeErr != nil {
+				logger.Debugf("WebSocket close error during broadcast: %v", closeErr)
 			}
-			h.mu.Unlock()
+			delete(h.clients, client)
 		}
 	}
 }

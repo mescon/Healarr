@@ -575,50 +575,70 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 	logger.Infof("Starting download monitoring for corruption %s (media ID: %d)", corruptionID, mediaID)
 
 	for {
-		if v.isShuttingDown() {
-			logger.Infof(logMsgDownloadMonitorShutdown, corruptionID)
-			return
-		}
-
-		elapsed := time.Since(state.startTime)
-		if elapsed > state.timeout {
-			v.publishDownloadTimeout(corruptionID, elapsed, state.attempt, state.lastStatus)
-			return
-		}
-
-		state.attempt++
-
-		// Check queue for active download
-		queueItems, err := v.arrClient.FindQueueItemsByMediaIDForPath(arrPath, mediaID)
-		if err != nil {
-			logger.Debugf("Queue check error for %s: %v", corruptionID, err)
-		}
-
-		if len(queueItems) > 0 {
-			if v.handleQueueItem(state, queueItems[0]) == monitorStop {
-				return
-			}
-			if v.waitWithShutdown(state.pollInterval) {
-				logger.Infof(logMsgDownloadMonitorShutdown, corruptionID)
-				return
-			}
-			continue
-		}
-
-		if v.handleNoQueueItems(state, elapsed) == monitorStop {
-			return
-		}
-
-		// Exponential backoff when not actively downloading
-		backoff := calculateBackoffInterval(state.attempt, state.pollInterval, 10*time.Minute)
-		if state.attempt%10 == 0 {
-			logger.Debugf("Verification poll #%d for %s, no queue activity, next check in %s", state.attempt, corruptionID, backoff)
-		}
-		if v.waitWithShutdown(backoff) {
-			logger.Infof(logMsgDownloadMonitorShutdown, corruptionID)
+		action := v.executeMonitorIteration(state)
+		if action == monitorStop {
 			return
 		}
 	}
+}
+
+// executeMonitorIteration performs a single iteration of download monitoring.
+// Returns monitorStop if monitoring should end, monitorContinue to keep polling.
+func (v *VerifierService) executeMonitorIteration(state *monitorState) monitorAction {
+	if v.isShuttingDown() {
+		logger.Infof(logMsgDownloadMonitorShutdown, state.corruptionID)
+		return monitorStop
+	}
+
+	elapsed := time.Since(state.startTime)
+	if elapsed > state.timeout {
+		v.publishDownloadTimeout(state.corruptionID, elapsed, state.attempt, state.lastStatus)
+		return monitorStop
+	}
+
+	state.attempt++
+
+	// Check queue for active download
+	queueItems, err := v.arrClient.FindQueueItemsByMediaIDForPath(state.arrPath, state.mediaID)
+	if err != nil {
+		logger.Debugf("Queue check error for %s: %v", state.corruptionID, err)
+	}
+
+	if len(queueItems) > 0 {
+		return v.handleActiveDownload(state, queueItems[0])
+	}
+
+	return v.handleInactiveDownload(state, elapsed)
+}
+
+// handleActiveDownload processes the case where a download is in the queue.
+func (v *VerifierService) handleActiveDownload(state *monitorState, queueItem integration.QueueItemInfo) monitorAction {
+	if v.handleQueueItem(state, queueItem) == monitorStop {
+		return monitorStop
+	}
+	if v.waitWithShutdown(state.pollInterval) {
+		logger.Infof(logMsgDownloadMonitorShutdown, state.corruptionID)
+		return monitorStop
+	}
+	return monitorContinue
+}
+
+// handleInactiveDownload processes the case where no download is in the queue.
+func (v *VerifierService) handleInactiveDownload(state *monitorState, elapsed time.Duration) monitorAction {
+	if v.handleNoQueueItems(state, elapsed) == monitorStop {
+		return monitorStop
+	}
+
+	// Exponential backoff when not actively downloading
+	backoff := calculateBackoffInterval(state.attempt, state.pollInterval, 10*time.Minute)
+	if state.attempt%10 == 0 {
+		logger.Debugf("Verification poll #%d for %s, no queue activity, next check in %s", state.attempt, state.corruptionID, backoff)
+	}
+	if v.waitWithShutdown(backoff) {
+		logger.Infof(logMsgDownloadMonitorShutdown, state.corruptionID)
+		return monitorStop
+	}
+	return monitorContinue
 }
 
 // checkAndEmitFilesFromArrAPI checks if files exist via *arr API and emits appropriate events.

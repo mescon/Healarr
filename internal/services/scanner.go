@@ -1166,92 +1166,135 @@ func (s *ScannerService) applyBatchThrottling(ctx context.Context, progress *Sca
 // scanFiles is the shared file scanning loop used by both new and resumed scans.
 // The main loop orchestrates helper methods that handle specific concerns.
 func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, cfg scanFilesConfig) {
-	localPath := progress.Path
-	pathID := progress.PathID
-
 	// PERFORMANCE: Preload active corruptions in a single query to avoid N+1 problem
-	// This loads all files under this path that already have active corruption records.
-	activeCorruptions := s.LoadActiveCorruptionsForPath(localPath)
+	activeCorruptions := s.LoadActiveCorruptionsForPath(progress.Path)
 
 	for i := cfg.StartIndex; i < len(cfg.Files); i++ {
-		filePath := cfg.Files[i]
-
-		// Check for cancellation or shutdown
-		if s.checkScanCancellation(ctx, progress, localPath, i, len(cfg.Files)) == scanReturn {
+		action := s.processFileInScan(ctx, progress, cfg, i, activeCorruptions)
+		if action == scanReturn {
 			return
 		}
-
-		// Handle pause/resume
-		if s.handleScanPause(ctx, progress, localPath, i, cfg.ScanDBID) == scanReturn {
-			return
-		}
-
-		// Update progress - show which file we're currently processing
-		// Note: FilesDone is incremented AFTER processing, not before
-		progress.CurrentFile = filePath
-		s.emitProgress(progress)
-
-		// Get file info for tracking and safety checks
-		var fileSize int64
-		var fileMtime time.Time
-		if info, err := os.Stat(filePath); err == nil {
-			fileSize = info.Size()
-			fileMtime = info.ModTime()
-		}
-
-		// Build scan file context for helper methods
-		sfc := &scanFileContext{
-			filePath:          filePath,
-			fileSize:          fileSize,
-			fileMtime:         fileMtime,
-			pathID:            pathID,
-			scanDBID:          cfg.ScanDBID,
-			autoRemediate:     cfg.AutoRemediate,
-			dryRun:            cfg.DryRun,
-			detectionConfig:   cfg.DetectionConfig,
-			activeCorruptions: activeCorruptions,
-		}
-
-		// SAFETY: Skip recently modified files (likely being written)
-		if s.shouldSkipRecentlyModified(sfc) {
-			s.markFileProcessed(progress, i, cfg.ScanDBID)
-			continue
-		}
-
-		// SAFETY: Skip files with changing size (download in progress)
-		if s.shouldSkipChangingSize(sfc) {
-			s.markFileProcessed(progress, i, cfg.ScanDBID)
-			continue
-		}
-
-		// Run health check
-		healthy, healthErr := s.detector.CheckWithConfig(filePath, cfg.DetectionConfig)
-
-		if healthy {
-			s.recordHealthyFile(sfc)
-			s.markFileProcessed(progress, i, cfg.ScanDBID)
-			continue
-		}
-
-		// Handle based on error type
-		if healthErr.IsRecoverable() {
-			if action := s.handleRecoverableError(progress, sfc, healthErr); action == scanReturn {
-				return
-			}
-			// scanSkipToNext - continue to next file
-			s.markFileProcessed(progress, i, cfg.ScanDBID)
-			continue
-		}
-
-		// Handle true corruption
-		if action := s.handleTrueCorruption(ctx, progress, sfc, healthErr); action == scanReturn {
-			return
-		}
-		// scanSkipToNext means duplicate, scanContinue means event was published
-		s.markFileProcessed(progress, i, cfg.ScanDBID)
 	}
 
 	progress.Status = "completed"
+}
+
+// processFileInScan handles all processing for a single file during a scan.
+// Returns scanReturn if the scan should stop, scanContinue to proceed to the next file.
+func (s *ScannerService) processFileInScan(
+	ctx context.Context,
+	progress *ScanProgress,
+	cfg scanFilesConfig,
+	fileIndex int,
+	activeCorruptions map[string]bool,
+) scanLoopAction {
+	filePath := cfg.Files[fileIndex]
+
+	// Check for cancellation or shutdown
+	if s.checkScanCancellation(ctx, progress, progress.Path, fileIndex, len(cfg.Files)) == scanReturn {
+		return scanReturn
+	}
+
+	// Handle pause/resume
+	if s.handleScanPause(ctx, progress, progress.Path, fileIndex, cfg.ScanDBID) == scanReturn {
+		return scanReturn
+	}
+
+	// Update progress
+	progress.CurrentFile = filePath
+	s.emitProgress(progress)
+
+	// Build scan file context
+	sfc := s.buildScanFileContext(filePath, progress.PathID, cfg, activeCorruptions)
+
+	// Process the file and return result
+	return s.checkAndHandleFile(ctx, progress, cfg, fileIndex, sfc)
+}
+
+// buildScanFileContext creates the context struct for file processing.
+func (s *ScannerService) buildScanFileContext(
+	filePath string,
+	pathID int64,
+	cfg scanFilesConfig,
+	activeCorruptions map[string]bool,
+) *scanFileContext {
+	var fileSize int64
+	var fileMtime time.Time
+	if info, err := os.Stat(filePath); err == nil {
+		fileSize = info.Size()
+		fileMtime = info.ModTime()
+	}
+
+	return &scanFileContext{
+		filePath:          filePath,
+		fileSize:          fileSize,
+		fileMtime:         fileMtime,
+		pathID:            pathID,
+		scanDBID:          cfg.ScanDBID,
+		autoRemediate:     cfg.AutoRemediate,
+		dryRun:            cfg.DryRun,
+		detectionConfig:   cfg.DetectionConfig,
+		activeCorruptions: activeCorruptions,
+	}
+}
+
+// checkAndHandleFile performs safety checks and health verification for a file.
+func (s *ScannerService) checkAndHandleFile(
+	ctx context.Context,
+	progress *ScanProgress,
+	cfg scanFilesConfig,
+	fileIndex int,
+	sfc *scanFileContext,
+) scanLoopAction {
+	// SAFETY: Skip recently modified files (likely being written)
+	if s.shouldSkipRecentlyModified(sfc) {
+		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
+		return scanContinue
+	}
+
+	// SAFETY: Skip files with changing size (download in progress)
+	if s.shouldSkipChangingSize(sfc) {
+		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
+		return scanContinue
+	}
+
+	// Run health check
+	healthy, healthErr := s.detector.CheckWithConfig(sfc.filePath, cfg.DetectionConfig)
+
+	if healthy {
+		s.recordHealthyFile(sfc)
+		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
+		return scanContinue
+	}
+
+	// Handle the health check result
+	return s.handleHealthCheckResult(ctx, progress, cfg, fileIndex, sfc, healthErr)
+}
+
+// handleHealthCheckResult processes the result of a failed health check.
+func (s *ScannerService) handleHealthCheckResult(
+	ctx context.Context,
+	progress *ScanProgress,
+	cfg scanFilesConfig,
+	fileIndex int,
+	sfc *scanFileContext,
+	healthErr *integration.HealthCheckError,
+) scanLoopAction {
+	// Handle recoverable errors (infrastructure issues)
+	if healthErr.IsRecoverable() {
+		if action := s.handleRecoverableError(progress, sfc, healthErr); action == scanReturn {
+			return scanReturn
+		}
+		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
+		return scanContinue
+	}
+
+	// Handle true corruption
+	if action := s.handleTrueCorruption(ctx, progress, sfc, healthErr); action == scanReturn {
+		return scanReturn
+	}
+	s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
+	return scanContinue
 }
 
 // markFileProcessed increments the file counter and saves progress periodically

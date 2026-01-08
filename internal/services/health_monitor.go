@@ -495,6 +495,26 @@ func (h *HealthMonitorService) syncWithArrState() {
 
 	logger.Debugf("Health monitor: syncing in-progress items with arr state")
 
+	rows, err := h.queryInProgressItems()
+	if err != nil {
+		logger.Debugf("Health monitor: failed to query in-progress items: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	synced, exhausted := h.processArrSyncRows(rows)
+
+	if err := rows.Err(); err != nil {
+		logger.Errorf("Error iterating arr sync items: %v", err)
+	}
+
+	if synced > 0 || exhausted > 0 {
+		logger.Infof("Health monitor: arr sync complete - resolved=%d, exhausted=%d", synced, exhausted)
+	}
+}
+
+// queryInProgressItems queries for items that need arr state synchronization.
+func (h *HealthMonitorService) queryInProgressItems() (*sql.Rows, error) {
 	query := `
 		SELECT
 			cs.corruption_id,
@@ -517,37 +537,15 @@ func (h *HealthMonitorService) syncWithArrState() {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 
-	rows, err := h.db.QueryContext(ctx, query)
-	if err != nil {
-		logger.Debugf("Health monitor: failed to query in-progress items: %v", err)
-		return
-	}
-	defer rows.Close()
+	return h.db.QueryContext(ctx, query)
+}
 
-	var synced, exhausted int
+// processArrSyncRows iterates through sync rows and processes each one.
+func (h *HealthMonitorService) processArrSyncRows(rows *sql.Rows) (synced, exhausted int) {
 	for rows.Next() {
-		var corruptionID, filePath string
-		var pathID int64
-		var mediaIDRaw sql.NullFloat64
-
-		if rows.Scan(&corruptionID, &filePath, &pathID, &mediaIDRaw) != nil {
+		item, ok := h.scanSyncRow(rows)
+		if !ok {
 			continue
-		}
-
-		mediaID := int64(0)
-		if mediaIDRaw.Valid {
-			mediaID = int64(mediaIDRaw.Float64)
-		}
-
-		if mediaID == 0 {
-			continue
-		}
-
-		item := arrSyncItem{
-			corruptionID: corruptionID,
-			filePath:     filePath,
-			pathID:       pathID,
-			mediaID:      mediaID,
 		}
 
 		s, e := h.processSyncItem(item)
@@ -558,14 +556,34 @@ func (h *HealthMonitorService) syncWithArrState() {
 			exhausted++
 		}
 	}
+	return synced, exhausted
+}
 
-	if err := rows.Err(); err != nil {
-		logger.Errorf("Error iterating arr sync items: %v", err)
+// scanSyncRow scans a single row into an arrSyncItem.
+func (h *HealthMonitorService) scanSyncRow(rows *sql.Rows) (arrSyncItem, bool) {
+	var corruptionID, filePath string
+	var pathID int64
+	var mediaIDRaw sql.NullFloat64
+
+	if rows.Scan(&corruptionID, &filePath, &pathID, &mediaIDRaw) != nil {
+		return arrSyncItem{}, false
 	}
 
-	if synced > 0 || exhausted > 0 {
-		logger.Infof("Health monitor: arr sync complete - resolved=%d, exhausted=%d", synced, exhausted)
+	mediaID := int64(0)
+	if mediaIDRaw.Valid {
+		mediaID = int64(mediaIDRaw.Float64)
 	}
+
+	if mediaID == 0 {
+		return arrSyncItem{}, false
+	}
+
+	return arrSyncItem{
+		corruptionID: corruptionID,
+		filePath:     filePath,
+		pathID:       pathID,
+		mediaID:      mediaID,
+	}, true
 }
 
 // checkArrHasFile checks if arr reports the media as having a file
