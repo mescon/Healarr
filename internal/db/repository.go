@@ -374,6 +374,39 @@ func (r *Repository) recreateViews() error {
 	return nil
 }
 
+// pruneOperation represents a data pruning operation with query and logging format.
+type pruneOperation struct {
+	name   string
+	query  string
+	args   []interface{}
+	format string
+}
+
+// executePruneOperation executes a pruning query and logs the result.
+func (r *Repository) executePruneOperation(op pruneOperation) {
+	result, err := r.DB.Exec(op.query, op.args...)
+	if err != nil {
+		logger.Errorf("Failed to %s: %v", op.name, err)
+		return
+	}
+	if deleted, _ := result.RowsAffected(); deleted > 0 {
+		logger.Infof(op.format, deleted)
+	}
+}
+
+// executeMaintenanceCommand executes a maintenance SQL command and logs the result.
+func (r *Repository) executeMaintenanceCommand(name, sql string, warnOnError bool) {
+	if _, err := r.DB.Exec(sql); err != nil {
+		if warnOnError {
+			logger.Errorf("Failed to run %s: %v", name, err)
+		} else {
+			logger.Debugf("%s failed (might not be applicable): %v", name, err)
+		}
+		return
+	}
+	logger.Debugf("%s completed", name)
+}
+
 // RunMaintenance performs database maintenance tasks:
 // - Incremental vacuum to reclaim space
 // - Prune old data (events, scan history older than retention period)
@@ -382,68 +415,44 @@ func (r *Repository) recreateViews() error {
 func (r *Repository) RunMaintenance(retentionDays int) error {
 	logger.Infof("Starting database maintenance...")
 
-	// 1. Prune old events (keep last N days)
 	if retentionDays > 0 {
 		cutoff := time.Now().AddDate(0, 0, -retentionDays).Format(time.RFC3339)
-
-		// Delete old events
-		result, err := r.DB.Exec("DELETE FROM events WHERE created_at < ?", cutoff)
-		if err != nil {
-			logger.Errorf("Failed to prune old events: %v", err)
-		} else {
-			deleted, _ := result.RowsAffected()
-			if deleted > 0 {
-				logger.Infof("Pruned %d old events (older than %d days)", deleted, retentionDays)
-			}
+		pruneOps := []pruneOperation{
+			{
+				name:   "prune old events",
+				query:  "DELETE FROM events WHERE created_at < ?",
+				args:   []interface{}{cutoff},
+				format: "Pruned %d old events",
+			},
+			{
+				name:   "prune old scans",
+				query:  "DELETE FROM scans WHERE status IN ('completed', 'cancelled', 'error') AND completed_at < ?",
+				args:   []interface{}{cutoff},
+				format: "Pruned %d old scan records",
+			},
+			{
+				name:   "prune orphaned scan_files",
+				query:  "DELETE FROM scan_files WHERE scan_id NOT IN (SELECT id FROM scans)",
+				args:   nil,
+				format: "Pruned %d orphaned scan_files records",
+			},
 		}
-
-		// Delete old completed scans (keep scan records but clean up old ones)
-		result, err = r.DB.Exec(`
-			DELETE FROM scans
-			WHERE status IN ('completed', 'cancelled', 'error')
-			AND completed_at < ?
-		`, cutoff)
-		if err != nil {
-			logger.Errorf("Failed to prune old scans: %v", err)
-		} else {
-			deleted, _ := result.RowsAffected()
-			if deleted > 0 {
-				logger.Infof("Pruned %d old scan records (older than %d days)", deleted, retentionDays)
-			}
-		}
-
-		// Delete orphaned scan_files records (from deleted scans)
-		result, err = r.DB.Exec(`
-			DELETE FROM scan_files
-			WHERE scan_id NOT IN (SELECT id FROM scans)
-		`)
-		if err != nil {
-			logger.Errorf("Failed to prune orphaned scan_files: %v", err)
-		} else {
-			deleted, _ := result.RowsAffected()
-			if deleted > 0 {
-				logger.Infof("Pruned %d orphaned scan_files records", deleted)
-			}
+		for _, op := range pruneOps {
+			r.executePruneOperation(op)
 		}
 	}
 
-	// 2. Run incremental vacuum to reclaim space from deleted rows
-	if _, err := r.DB.Exec("PRAGMA incremental_vacuum"); err != nil {
-		logger.Errorf("Failed to run incremental vacuum: %v", err)
-	} else {
-		logger.Debugf("Incremental vacuum completed")
+	maintenanceOps := []struct {
+		name        string
+		sql         string
+		warnOnError bool
+	}{
+		{"incremental vacuum", "PRAGMA incremental_vacuum", true},
+		{"database analysis", "ANALYZE", true},
+		{"WAL checkpoint", "PRAGMA wal_checkpoint(TRUNCATE)", false},
 	}
-
-	// 3. Analyze tables to update query planner statistics
-	if _, err := r.DB.Exec("ANALYZE"); err != nil {
-		logger.Errorf("Failed to analyze database: %v", err)
-	} else {
-		logger.Debugf("Database analysis completed")
-	}
-
-	// 4. WAL checkpoint to merge WAL into main database
-	if _, err := r.DB.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		logger.Debugf("WAL checkpoint failed (might not be in WAL mode): %v", err)
+	for _, op := range maintenanceOps {
+		r.executeMaintenanceCommand(op.name, op.sql, op.warnOnError)
 	}
 
 	logger.Infof("✓ Database maintenance completed")
@@ -505,76 +514,113 @@ func (r *Repository) GetDatabaseStats() (map[string]interface{}, error) {
 	return stats, nil
 }
 
-func (r *Repository) runMigrations() error {
-	// Create migrations table if not exists
+// createMigrationsTable ensures the schema_migrations table exists.
+func (r *Repository) createMigrationsTable() error {
 	_, err := r.DB.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
 	if err != nil {
 		return fmt.Errorf("failed to create schema_migrations table: %w", err)
 	}
+	return nil
+}
 
-	// Get current version
-	var currentVersion int
-	err = r.DB.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&currentVersion)
+// getCurrentMigrationVersion returns the highest applied migration version.
+func (r *Repository) getCurrentMigrationVersion() (int, error) {
+	var version int
+	err := r.DB.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&version)
 	if err != nil {
-		return fmt.Errorf("failed to get current migration version: %w", err)
+		return 0, fmt.Errorf("failed to get current migration version: %w", err)
 	}
+	return version, nil
+}
 
-	// Read migrations from embedded filesystem
+// getMigrationFiles returns sorted SQL migration files from the embedded filesystem.
+func getMigrationFiles() ([]string, error) {
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
-		return fmt.Errorf("failed to read embedded migrations: %w", err)
+		return nil, fmt.Errorf("failed to read embedded migrations: %w", err)
 	}
 
-	var migrationFiles []string
+	var files []string
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
-			migrationFiles = append(migrationFiles, entry.Name())
+			files = append(files, entry.Name())
 		}
 	}
-	sort.Strings(migrationFiles)
+	sort.Strings(files)
+	return files, nil
+}
+
+// parseMigrationVersion extracts the version number from a migration filename.
+func parseMigrationVersion(file string) (int, bool) {
+	var version int
+	if _, err := fmt.Sscanf(file, "%d_", &version); err != nil {
+		return 0, false
+	}
+	return version, true
+}
+
+// applyMigration executes a single migration file within a transaction.
+func (r *Repository) applyMigration(file string, version int) error {
+	content, err := migrationsFS.ReadFile("migrations/" + file)
+	if err != nil {
+		return fmt.Errorf("failed to read migration file %s: %w", file, err)
+	}
+
+	tx, err := r.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err := tx.Exec(string(content)); err != nil {
+		return fmt.Errorf("failed to execute migration %s: %w", file, err)
+	}
+
+	if _, err := tx.Exec("INSERT INTO schema_migrations (version) VALUES (?)", version); err != nil {
+		return fmt.Errorf("failed to record migration version %s: %w", file, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit migration %s: %w", file, err)
+	}
+	tx = nil // prevent deferred rollback after successful commit
+	return nil
+}
+
+func (r *Repository) runMigrations() error {
+	if err := r.createMigrationsTable(); err != nil {
+		return err
+	}
+
+	currentVersion, err := r.getCurrentMigrationVersion()
+	if err != nil {
+		return err
+	}
+
+	migrationFiles, err := getMigrationFiles()
+	if err != nil {
+		return err
+	}
 	logger.Debugf("Found %d embedded migration files", len(migrationFiles))
 
 	for _, file := range migrationFiles {
-		var version int
-		_, err := fmt.Sscanf(file, "%d_", &version)
-		if err != nil {
+		version, ok := parseMigrationVersion(file)
+		if !ok {
 			logger.Errorf("Skipping invalid migration file: %s", file)
 			continue
 		}
 
-		if version > currentVersion {
-			logger.Infof("Applying migration: %s", file)
-			content, err := migrationsFS.ReadFile("migrations/" + file)
-			if err != nil {
-				return fmt.Errorf("failed to read migration file %s: %w", file, err)
-			}
+		if version <= currentVersion {
+			continue
+		}
 
-			tx, err := r.DB.Begin()
-			if err != nil {
-				return fmt.Errorf("failed to begin transaction: %w", err)
-			}
-
-			// Execute migration
-			_, err = tx.Exec(string(content))
-			if err != nil {
-				if rbErr := tx.Rollback(); rbErr != nil {
-					logger.Errorf("Failed to rollback transaction after migration error: %v", rbErr)
-				}
-				return fmt.Errorf("failed to execute migration %s: %w", file, err)
-			}
-
-			// Record version
-			_, err = tx.Exec("INSERT INTO schema_migrations (version) VALUES (?)", version)
-			if err != nil {
-				if rbErr := tx.Rollback(); rbErr != nil {
-					logger.Errorf("Failed to rollback transaction after version record error: %v", rbErr)
-				}
-				return fmt.Errorf("failed to record migration version %s: %w", file, err)
-			}
-
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("failed to commit migration %s: %w", file, err)
-			}
+		logger.Infof("Applying migration: %s", file)
+		if err := r.applyMigration(file, version); err != nil {
+			return err
 		}
 	}
 

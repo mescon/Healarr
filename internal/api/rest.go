@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -457,54 +458,69 @@ func (s *RESTServer) Shutdown(ctx context.Context) error {
 
 func (s *RESTServer) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get token from header
-		token := c.GetHeader("X-API-Key")
-		if token == "" {
-			token = c.GetHeader("Authorization")
-			// Remove "Bearer " prefix if present
-			if len(token) > 7 && token[:7] == "Bearer " {
-				token = token[7:]
-			}
-		}
-
-		// Also check query parameter (for WebSockets and simple webhooks)
-		if token == "" {
-			token = c.Query("token")
-		}
-		if token == "" {
-			token = c.Query("apikey")
-		}
-
+		token := s.extractAPIToken(c)
 		if token == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "No authentication token provided"})
 			c.Abort()
 			return
 		}
 
-		// Verify token matches stored API key
-		var encryptedKey string
-		err := s.db.QueryRow("SELECT value FROM settings WHERE key = 'api_key'").Scan(&encryptedKey)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Authentication error"})
-			c.Abort()
-			return
-		}
-
-		// Decrypt the stored API key
-		storedKey, err := crypto.Decrypt(encryptedKey)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Authentication error"})
-			c.Abort()
-			return
-		}
-
-		// Use constant-time comparison to prevent timing attacks
-		if subtle.ConstantTimeCompare([]byte(token), []byte(storedKey)) != 1 {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authentication token"})
+		if err := s.verifyAPIToken(token); err != nil {
+			status := http.StatusInternalServerError
+			msg := "Authentication error"
+			if err == errInvalidToken {
+				status = http.StatusUnauthorized
+				msg = "Invalid authentication token"
+			}
+			c.JSON(status, gin.H{"error": msg})
 			c.Abort()
 			return
 		}
 
 		c.Next()
 	}
+}
+
+// extractAPIToken extracts the API token from request headers or query parameters
+func (s *RESTServer) extractAPIToken(c *gin.Context) string {
+	// Check X-API-Key header first
+	if token := c.GetHeader("X-API-Key"); token != "" {
+		return token
+	}
+
+	// Check Authorization header with Bearer prefix
+	if auth := c.GetHeader("Authorization"); auth != "" {
+		if len(auth) > 7 && auth[:7] == "Bearer " {
+			return auth[7:]
+		}
+		return auth
+	}
+
+	// Check query parameters (for WebSockets and simple webhooks)
+	if token := c.Query("token"); token != "" {
+		return token
+	}
+	return c.Query("apikey")
+}
+
+// errInvalidToken indicates the provided token doesn't match the stored API key
+var errInvalidToken = errors.New("invalid token")
+
+// verifyAPIToken verifies the provided token against the stored API key
+func (s *RESTServer) verifyAPIToken(token string) error {
+	var encryptedKey string
+	if err := s.db.QueryRow("SELECT value FROM settings WHERE key = 'api_key'").Scan(&encryptedKey); err != nil {
+		return fmt.Errorf("failed to retrieve API key: %w", err)
+	}
+
+	storedKey, err := crypto.Decrypt(encryptedKey)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt API key: %w", err)
+	}
+
+	// Use constant-time comparison to prevent timing attacks
+	if subtle.ConstantTimeCompare([]byte(token), []byte(storedKey)) != 1 {
+		return errInvalidToken
+	}
+	return nil
 }

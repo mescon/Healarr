@@ -217,6 +217,22 @@ type HistoryResponse struct {
 	Records      []HistoryItem `json:"records"`
 }
 
+// isValidPathMatch checks if filePath starts with rootPath followed by "/" or end of string.
+// This prevents "/data/movies" from matching "/data/movies-archive".
+func isValidPathMatch(rootPath, filePath string) bool {
+	rootPath = strings.TrimRight(rootPath, "/")
+	if !strings.HasPrefix(filePath, rootPath) {
+		return false
+	}
+	remainder := filePath[len(rootPath):]
+	return remainder == "" || strings.HasPrefix(remainder, "/")
+}
+
+// normalizedPathLength returns the length of rootPath after trimming trailing slashes.
+func normalizedPathLength(rootPath string) int {
+	return len(strings.TrimRight(rootPath, "/"))
+}
+
 func (c *HTTPArrClient) getInstanceForPath(arrPath string) (*ArrInstance, error) {
 	rows, err := c.db.Query("SELECT i.id, i.name, i.type, i.url, i.api_key, sp.arr_path FROM arr_instances i JOIN scan_paths sp ON sp.arr_instance_id = i.id WHERE i.enabled = 1")
 	if err != nil {
@@ -235,7 +251,6 @@ func (c *HTTPArrClient) getInstanceForPath(arrPath string) (*ArrInstance, error)
 			continue
 		}
 
-		// Decrypt API key
 		decryptedKey, err := crypto.Decrypt(encryptedKey)
 		if err != nil {
 			logger.Errorf("Failed to decrypt API key for instance %d: %v", i.ID, err)
@@ -243,20 +258,14 @@ func (c *HTTPArrClient) getInstanceForPath(arrPath string) (*ArrInstance, error)
 		}
 		i.APIKey = decryptedKey
 
-		// Normalize rootPath by removing trailing slash for consistent matching
-		rootPath = strings.TrimRight(rootPath, "/")
+		if !isValidPathMatch(rootPath, arrPath) {
+			continue
+		}
 
-		// Check if arrPath starts with rootPath AND is followed by / or end of string
-		// This prevents /data/movies from matching /data/movies-archive
-		if strings.HasPrefix(arrPath, rootPath) {
-			remainder := arrPath[len(rootPath):]
-			// Valid match only if remainder is empty or starts with /
-			if remainder == "" || strings.HasPrefix(remainder, "/") {
-				if len(rootPath) > longestPrefixLen {
-					longestPrefixLen = len(rootPath)
-					bestMatch = &i
-				}
-			}
+		pathLen := normalizedPathLength(rootPath)
+		if pathLen > longestPrefixLen {
+			longestPrefixLen = pathLen
+			bestMatch = &i
 		}
 	}
 

@@ -496,37 +496,38 @@ func (n *Notifier) sendNotification(cfg *NotificationConfig, eventType string, d
 	if err != nil {
 		logger.Errorf("Failed to send notification %d: %v", cfg.ID, err)
 		n.logNotification(cfg.ID, eventType, message, "failed", err.Error())
-		// Publish NotificationFailed event if we have an aggregate ID
-		if aggregateID != "" {
-			if pubErr := n.eb.Publish(domain.Event{
-				AggregateType: "corruption",
-				AggregateID:   aggregateID,
-				EventType:     domain.NotificationFailed,
-				EventData: map[string]interface{}{
-					"provider":      providerLabel,
-					"trigger_event": eventType,
-					"error":         err.Error(),
-				},
-			}); pubErr != nil {
-				logger.Errorf("Failed to publish NotificationFailed event: %v", pubErr)
-			}
-		}
+		n.publishNotificationEvent(aggregateID, domain.NotificationFailed, providerLabel, eventType, err.Error())
 	} else {
 		logger.Debugf("Sent notification %d for event %s", cfg.ID, eventType)
 		n.logNotification(cfg.ID, eventType, message, "sent", "")
-		// Publish NotificationSent event if we have an aggregate ID
-		if aggregateID != "" {
-			if pubErr := n.eb.Publish(domain.Event{
-				AggregateType: "corruption",
-				AggregateID:   aggregateID,
-				EventType:     domain.NotificationSent,
-				EventData: map[string]interface{}{
-					"provider":      providerLabel,
-					"trigger_event": eventType,
-				},
-			}); pubErr != nil {
-				logger.Debugf("Failed to publish NotificationSent event: %v", pubErr)
-			}
+		n.publishNotificationEvent(aggregateID, domain.NotificationSent, providerLabel, eventType, "")
+	}
+}
+
+// publishNotificationEvent publishes notification success/failure events to the event bus
+func (n *Notifier) publishNotificationEvent(aggregateID string, eventType domain.EventType, provider, triggerEvent, errMsg string) {
+	if aggregateID == "" {
+		return
+	}
+
+	eventData := map[string]interface{}{
+		"provider":      provider,
+		"trigger_event": triggerEvent,
+	}
+	if errMsg != "" {
+		eventData["error"] = errMsg
+	}
+
+	if err := n.eb.Publish(domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   aggregateID,
+		EventType:     eventType,
+		EventData:     eventData,
+	}); err != nil {
+		if eventType == domain.NotificationFailed {
+			logger.Errorf("Failed to publish %s event: %v", eventType, err)
+		} else {
+			logger.Debugf("Failed to publish %s event: %v", eventType, err)
 		}
 	}
 }
@@ -815,63 +816,92 @@ type GenericWebhookPayload struct {
 }
 
 // sendGenericWebhook sends a rich JSON payload directly to a webhook URL
+// ensureHTTPScheme adds https:// prefix if URL doesn't have a scheme.
+func ensureHTTPScheme(url string) string {
+	if strings.HasPrefix(url, "http") {
+		return url
+	}
+	return "https://" + url
+}
+
+// parseKeyValuePairs parses newline-separated "key=value" pairs into a map.
+func parseKeyValuePairs(input string) map[string]string {
+	result := make(map[string]string)
+	for _, line := range strings.Split(input, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			result[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+	return result
+}
+
+// extractWebhookData extracts and structures data fields for webhook payload.
+func extractWebhookData(data map[string]interface{}) map[string]interface{} {
+	structuredData := make(map[string]interface{})
+
+	// String fields with transformation
+	if filePath, ok := data["file_path"].(string); ok && filePath != "" {
+		structuredData["file_path"] = filePath
+		fileName := filePath
+		if idx := strings.LastIndex(filePath, "/"); idx >= 0 {
+			fileName = filePath[idx+1:]
+		}
+		structuredData["file_name"] = fileName
+	}
+
+	// Simple string fields
+	stringFields := []string{"corruption_type", "error"}
+	for _, field := range stringFields {
+		if v, ok := data[field].(string); ok && v != "" {
+			structuredData[field] = v
+		}
+	}
+	// Rename "path" to "scan_path"
+	if v, ok := data["path"].(string); ok && v != "" {
+		structuredData["scan_path"] = v
+	}
+
+	// Pass-through numeric fields
+	numericFields := []string{"healthy_files", "corrupt_files", "total_files", "retry_count", "max_retries"}
+	for _, field := range numericFields {
+		if v, ok := data[field]; ok {
+			structuredData[field] = v
+		}
+	}
+
+	return structuredData
+}
+
+// getFileName extracts the file name from a path in the data map.
+func getFileName(data map[string]interface{}) string {
+	filePath, _ := data["file_path"].(string)
+	if idx := strings.LastIndex(filePath, "/"); idx >= 0 {
+		return filePath[idx+1:]
+	}
+	return filePath
+}
+
 func (n *Notifier) sendGenericWebhook(cfg *NotificationConfig, eventType string, data map[string]interface{}) error {
 	var c GenericConfig
 	if err := json.Unmarshal(cfg.Config, &c); err != nil {
 		return fmt.Errorf("invalid generic config: %w", err)
 	}
 
-	// Ensure URL has scheme
-	targetURL := c.WebhookURL
-	if !strings.HasPrefix(targetURL, "http") {
-		targetURL = "https://" + targetURL
+	targetURL := ensureHTTPScheme(c.WebhookURL)
+	structuredData := extractWebhookData(data)
+
+	// Add extra data from config
+	for k, v := range parseKeyValuePairs(c.ExtraData) {
+		structuredData[k] = v
 	}
 
-	// Extract common fields for the message
-	filePath, _ := data["file_path"].(string)
-	fileName := filePath
-	if idx := strings.LastIndex(filePath, "/"); idx >= 0 {
-		fileName = filePath[idx+1:]
-	}
-	corruptionType, _ := data["corruption_type"].(string)
-	scanPath, _ := data["path"].(string)
-	errorMsg, _ := data["error"].(string)
-
-	// Build structured data payload
-	structuredData := make(map[string]interface{})
-	if filePath != "" {
-		structuredData["file_path"] = filePath
-		structuredData["file_name"] = fileName
-	}
-	if corruptionType != "" {
-		structuredData["corruption_type"] = corruptionType
-	}
-	if scanPath != "" {
-		structuredData["scan_path"] = scanPath
-	}
-	if errorMsg != "" {
-		structuredData["error"] = errorMsg
-	}
-	// Include numeric fields
-	if v, ok := data["healthy_files"]; ok {
-		structuredData["healthy_files"] = v
-	}
-	if v, ok := data["corrupt_files"]; ok {
-		structuredData["corrupt_files"] = v
-	}
-	if v, ok := data["total_files"]; ok {
-		structuredData["total_files"] = v
-	}
-	if v, ok := data["retry_count"]; ok {
-		structuredData["retry_count"] = v
-	}
-	if v, ok := data["max_retries"]; ok {
-		structuredData["max_retries"] = v
-	}
-
-	// Build payload
 	payload := GenericWebhookPayload{
-		Title:     n.formatTitle(eventType, fileName),
+		Title:     n.formatTitle(eventType, getFileName(data)),
 		Message:   n.formatMessage(eventType, data),
 		Event:     eventType,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -879,27 +909,11 @@ func (n *Notifier) sendGenericWebhook(cfg *NotificationConfig, eventType string,
 		Data:      structuredData,
 	}
 
-	// Parse extra data from config and add to payload.Data
-	if c.ExtraData != "" {
-		for _, line := range strings.Split(c.ExtraData, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, "=", 2)
-			if len(parts) == 2 {
-				payload.Data[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-			}
-		}
-	}
-
-	// Marshal to JSON
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	// Create request
 	method := c.Method
 	if method == "" {
 		method = "POST"
@@ -909,7 +923,6 @@ func (n *Notifier) sendGenericWebhook(cfg *NotificationConfig, eventType string,
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set content type
 	contentType := c.ContentType
 	if contentType == "" {
 		contentType = "application/json"
@@ -917,21 +930,10 @@ func (n *Notifier) sendGenericWebhook(cfg *NotificationConfig, eventType string,
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("User-Agent", "Healarr/1.0")
 
-	// Parse and add custom headers
-	if c.CustomHeaders != "" {
-		for _, line := range strings.Split(c.CustomHeaders, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, "=", 2)
-			if len(parts) == 2 {
-				req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
-			}
-		}
+	for k, v := range parseKeyValuePairs(c.CustomHeaders) {
+		req.Header.Set(k, v)
 	}
 
-	// Send request
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -939,7 +941,6 @@ func (n *Notifier) sendGenericWebhook(cfg *NotificationConfig, eventType string,
 	}
 	defer resp.Body.Close()
 
-	// Check response
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(body))

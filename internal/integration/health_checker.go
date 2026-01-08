@@ -511,42 +511,27 @@ func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []strin
 	return nil
 }
 
-func (hc *CmdHealthChecker) runMediaInfo(path string, customArgs []string, mode string) error {
-	// Mode determines the type of check:
-	// - "quick": Basic metadata extraction (container info)
-	// - "thorough": Full parsing with all details (deeper analysis)
-
-	var args []string
+// buildMediaInfoArgs constructs the command arguments and timeout for MediaInfo.
+func buildMediaInfoArgs(mode string, customArgs []string, path string) ([]string, time.Duration) {
+	var baseArgs []string
 	var timeout time.Duration
 
 	if mode == ModeThorough {
-		// Thorough mode: Full details including all track info
-		args = []string{argOutputJSON, argFull, path}
+		baseArgs = []string{argOutputJSON, argFull}
 		timeout = 2 * time.Minute
 	} else {
-		// Quick mode: Basic JSON output
-		args = []string{argOutputJSON, path}
+		baseArgs = []string{argOutputJSON}
 		timeout = 30 * time.Second
 	}
 
-	// Insert custom args before path
-	if len(customArgs) > 0 {
-		if mode == ModeThorough {
-			newArgs := []string{argOutputJSON, argFull}
-			newArgs = append(newArgs, customArgs...)
-			newArgs = append(newArgs, path)
-			args = newArgs
-		} else {
-			newArgs := []string{argOutputJSON}
-			newArgs = append(newArgs, customArgs...)
-			newArgs = append(newArgs, path)
-			args = newArgs
-		}
-	}
+	args := append(baseArgs, customArgs...)
+	args = append(args, path)
+	return args, timeout
+}
 
-	cmd := exec.Command(hc.MediaInfoPath, args...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+// runCommandWithTimeout executes a command with a timeout, returning stdout or an error.
+func runCommandWithTimeout(cmd *exec.Cmd, timeout time.Duration, toolName string) ([]byte, error) {
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -558,55 +543,66 @@ func (hc *CmdHealthChecker) runMediaInfo(path string, customArgs []string, mode 
 	select {
 	case <-time.After(timeout):
 		if cmd.Process != nil {
-			if killErr := cmd.Process.Kill(); killErr != nil {
-				logger.Debugf("mediainfo process kill returned: %v", killErr)
-			}
-			if waitErr := cmd.Wait(); waitErr != nil {
-				logger.Debugf("mediainfo process wait after kill: %v", waitErr)
-			}
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 		}
-		return fmt.Errorf("mediainfo timed out after %v", timeout)
+		return nil, fmt.Errorf("%s timed out after %v", toolName, timeout)
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("mediainfo failed: %s", stderr.String())
+			return nil, fmt.Errorf("%s failed: %s", toolName, stderr.String())
 		}
 	}
+	return stdout.Bytes(), nil
+}
 
-	// Parse JSON output and verify it contains media information
+// validateMediaInfoOutput parses MediaInfo JSON and verifies it contains valid media tracks.
+func validateMediaInfoOutput(data []byte) error {
 	var result map[string]interface{}
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+	if err := json.Unmarshal(data, &result); err != nil {
 		return fmt.Errorf("mediainfo produced invalid JSON: %v", err)
 	}
 
-	// Check if media field exists and has tracks
 	media, ok := result["media"].(map[string]interface{})
 	if !ok || media == nil {
 		return fmt.Errorf("mediainfo: no media information found in file")
 	}
 
-	// Check for tracks - a valid media file should have at least one track with video or audio
 	tracks, ok := media["track"].([]interface{})
 	if !ok || len(tracks) == 0 {
 		return fmt.Errorf("mediainfo: no tracks found in file")
 	}
 
-	// Look for at least one video or audio track (not just General)
-	hasMediaTrack := false
-	for _, track := range tracks {
-		if t, ok := track.(map[string]interface{}); ok {
-			trackType, _ := t["@type"].(string)
-			if trackType == "Video" || trackType == "Audio" {
-				hasMediaTrack = true
-				break
-			}
-		}
-	}
-
-	if !hasMediaTrack {
+	if !hasValidMediaTrack(tracks) {
 		return fmt.Errorf("mediainfo: no video or audio tracks found in file")
 	}
-
 	return nil
+}
+
+// hasValidMediaTrack checks if any track is a Video or Audio track.
+func hasValidMediaTrack(tracks []interface{}) bool {
+	for _, track := range tracks {
+		t, ok := track.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		trackType, _ := t["@type"].(string)
+		if trackType == "Video" || trackType == "Audio" {
+			return true
+		}
+	}
+	return false
+}
+
+func (hc *CmdHealthChecker) runMediaInfo(path string, customArgs []string, mode string) error {
+	args, timeout := buildMediaInfoArgs(mode, customArgs, path)
+	cmd := exec.Command(hc.MediaInfoPath, args...)
+
+	output, err := runCommandWithTimeout(cmd, timeout, "mediainfo")
+	if err != nil {
+		return err
+	}
+
+	return validateMediaInfoOutput(output)
 }
 
 // GetCommandPreview returns the exact command that would be executed for a given configuration.

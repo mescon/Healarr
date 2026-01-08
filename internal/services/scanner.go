@@ -1512,20 +1512,7 @@ func (s *ScannerService) verifyPathAccessible(path string) error {
 	// 1. Check if path exists
 	info, err := os.Stat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("path does not exist: %s", path)
-		}
-		if os.IsPermission(err) {
-			return fmt.Errorf("permission denied: %s", path)
-		}
-		// Check for mount-related errors
-		errStr := strings.ToLower(err.Error())
-		if strings.Contains(errStr, "stale") ||
-			strings.Contains(errStr, "transport endpoint") ||
-			strings.Contains(errStr, "no such device") {
-			return fmt.Errorf("mount appears offline: %v", err)
-		}
-		return fmt.Errorf("cannot access path: %v", err)
+		return s.classifyStatError(path, err)
 	}
 
 	// 2. Verify it's a directory
@@ -1546,18 +1533,43 @@ func (s *ScannerService) verifyPathAccessible(path string) error {
 	}
 
 	// 5. Try to access a random file to verify read capability (if entries exist)
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			testPath := filepath.Join(path, entry.Name())
-			_, err := os.Stat(testPath)
-			if err != nil {
-				// Can't access files in the directory - suspicious
-				return fmt.Errorf("can list directory but cannot access files (partial mount?): %v", err)
-			}
-			break // One successful test is enough
-		}
-	}
+	return s.testFileAccess(path, entries)
+}
 
+// classifyStatError returns an appropriate error based on the type of stat failure
+func (s *ScannerService) classifyStatError(path string, err error) error {
+	if os.IsNotExist(err) {
+		return fmt.Errorf("path does not exist: %s", path)
+	}
+	if os.IsPermission(err) {
+		return fmt.Errorf("permission denied: %s", path)
+	}
+	if s.isMountError(err) {
+		return fmt.Errorf("mount appears offline: %v", err)
+	}
+	return fmt.Errorf("cannot access path: %v", err)
+}
+
+// isMountError checks if an error indicates a mount-related problem
+func (s *ScannerService) isMountError(err error) bool {
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "stale") ||
+		strings.Contains(errStr, "transport endpoint") ||
+		strings.Contains(errStr, "no such device")
+}
+
+// testFileAccess tries to access a file in the directory to verify read capability
+func (s *ScannerService) testFileAccess(path string, entries []os.DirEntry) error {
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		testPath := filepath.Join(path, entry.Name())
+		if _, err := os.Stat(testPath); err != nil {
+			return fmt.Errorf("can list directory but cannot access files (partial mount?): %v", err)
+		}
+		return nil // One successful test is enough
+	}
 	return nil
 }
 

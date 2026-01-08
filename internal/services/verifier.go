@@ -792,7 +792,7 @@ func (v *VerifierService) pollForFileWithBackoff(corruptionID string, referenceP
 
 		currentInterval := calculateBackoffInterval(attempt, initialInterval, maxInterval)
 
-		if attempt > 0 && (attempt%10 == 0 || currentInterval >= time.Hour) {
+		if v.shouldLogPollingProgress(attempt, currentInterval) {
 			logger.Debugf("Verification poll #%d for %s, next check in %s", attempt, corruptionID, currentInterval)
 		}
 
@@ -806,14 +806,24 @@ func (v *VerifierService) pollForFileWithBackoff(corruptionID string, referenceP
 		foundPaths := v.findFilesForVerification(mediaID, metadata, referencePath, useSmartVerification)
 
 		if len(foundPaths) > 0 {
-			if len(foundPaths) == 1 {
-				logger.Infof("File detected for %s after %d attempts: %s", corruptionID, attempt, foundPaths[0])
-			} else {
-				logger.Infof("Multi-episode files detected for %s after %d attempts: %d files", corruptionID, attempt, len(foundPaths))
-			}
+			v.logFilesDetected(corruptionID, attempt, foundPaths)
 			v.emitFilesDetected(corruptionID, foundPaths)
 			return
 		}
+	}
+}
+
+// shouldLogPollingProgress determines if progress should be logged based on attempt count and interval
+func (v *VerifierService) shouldLogPollingProgress(attempt int, interval time.Duration) bool {
+	return attempt > 0 && (attempt%10 == 0 || interval >= time.Hour)
+}
+
+// logFilesDetected logs the detection of files with appropriate messaging
+func (v *VerifierService) logFilesDetected(corruptionID string, attempt int, foundPaths []string) {
+	if len(foundPaths) == 1 {
+		logger.Infof("File detected for %s after %d attempts: %s", corruptionID, attempt, foundPaths[0])
+	} else {
+		logger.Infof("Multi-episode files detected for %s after %d attempts: %d files", corruptionID, attempt, len(foundPaths))
 	}
 }
 
