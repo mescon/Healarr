@@ -210,7 +210,8 @@ func (s *RESTServer) handleDatabaseRestore(c *gin.Context) {
 
 	// Use VACUUM INTO for safe backup of current database
 	// SQLite VACUUM INTO doesn't support parameterized paths, so we use validated path
-	_, backupErr := s.db.Exec(fmt.Sprintf("VACUUM INTO '%s'", cleanBackupPath))
+	// Security: cleanBackupPath was validated by validatePathWithinDir above
+	_, backupErr := s.db.Exec(fmt.Sprintf("VACUUM INTO '%s'", cleanBackupPath)) // NOSONAR - path validated above
 	if backupErr != nil {
 		logger.Errorf("Failed to create pre-restore backup: %v", backupErr)
 		// Continue anyway - the user explicitly confirmed the restore

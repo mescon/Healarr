@@ -345,9 +345,10 @@ func (r *Repository) createViewsLegacy() error {
 
 func (r *Repository) recreateViews() error {
 	// Drop existing views
+	// Security: view names are hardcoded in this slice, not from user input
 	views := []string{"corruption_status", "dashboard_stats"}
 	for _, view := range views {
-		if _, err := r.DB.Exec("DROP VIEW IF EXISTS " + view); err != nil {
+		if _, err := r.DB.Exec("DROP VIEW IF EXISTS " + view); err != nil { // NOSONAR - view name from hardcoded slice
 			return fmt.Errorf("failed to drop view %s: %w", view, err)
 		}
 	}
@@ -474,12 +475,13 @@ func (r *Repository) GetDatabaseStats() (map[string]interface{}, error) {
 	stats["freelist_bytes"] = freelistCount * pageSize
 
 	// Get table row counts
+	// Security: table names are hardcoded in this slice, not from user input
 	tables := []string{"scans", "corruptions", "events", "arr_instances", "path_mappings"}
 	tableCounts := make(map[string]int64)
 	for _, table := range tables {
 		var count int64
 		// Table might not exist yet, so we don't fail on error here
-		if err := r.DB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count); err == nil {
+		if err := r.DB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count); err == nil { // NOSONAR - table name from hardcoded slice
 			tableCounts[table] = count
 		}
 	}
@@ -604,7 +606,8 @@ func (r *Repository) Backup(dbPath string) (string, error) {
 	// VACUUM INTO (SQLite 3.27+) creates a consistent point-in-time backup
 	// that properly handles WAL mode and holds the necessary locks.
 	// It also defragments and optimizes the backup file.
-	_, err := r.DB.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupPath))
+	// Security: backupPath is server-generated from config + timestamp, not user input
+	_, err := r.DB.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupPath)) // NOSONAR - path is server-generated
 	if err != nil {
 		// Clean up any partial backup file
 		_ = os.Remove(backupPath)

@@ -78,8 +78,9 @@ func (s *RESTServer) getScans(c *gin.Context) {
 		"corruptions_found": "corruptions_found",
 	}
 	orderByClause := SafeOrderByClause(p.SortBy, p.SortOrder, allowedSortColumns, "started_at", "desc")
-	query := fmt.Sprintf("SELECT id, path, status, files_scanned, corruptions_found, started_at, completed_at FROM scans %s LIMIT ? OFFSET ?", orderByClause)
-	rows, err := s.db.Query(query, p.Limit, p.Offset)
+	// Security: orderByClause is validated against allowlist by SafeOrderByClause
+	query := fmt.Sprintf("SELECT id, path, status, files_scanned, corruptions_found, started_at, completed_at FROM scans %s LIMIT ? OFFSET ?", orderByClause) // NOSONAR - validated ORDER BY
+	rows, err := s.db.Query(query, p.Limit, p.Offset)                                                                                                         // NOSONAR
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -314,8 +315,9 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 	}
 
 	// Get total count
+	// Security: whereClause contains only fixed strings with ? placeholders, user values are in args
 	var total int
-	countQuery := "SELECT COUNT(*) FROM scan_files " + whereClause
+	countQuery := "SELECT COUNT(*) FROM scan_files " + whereClause // NOSONAR - parameterized query
 	err = s.db.QueryRow(countQuery, args...).Scan(&total)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -323,15 +325,16 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 	}
 
 	// Get paginated data
+	// Security: whereClause uses ? placeholders, ORDER BY is fixed/hardcoded
 	query := fmt.Sprintf(`
 		SELECT id, file_path, status, corruption_type, error_details, file_size, scanned_at
 		FROM scan_files %s
 		ORDER BY status DESC, file_path ASC
 		LIMIT ? OFFSET ?
-	`, whereClause)
+	`, whereClause) // NOSONAR - parameterized query with fixed ORDER BY
 	args = append(args, p.Limit, p.Offset)
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.Query(query, args...) // NOSONAR
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

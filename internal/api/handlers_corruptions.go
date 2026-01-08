@@ -111,8 +111,9 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	}
 
 	// Get total count with filter
+	// Security: whereClause contains only fixed strings with ? placeholders, user values are in args
 	var total int
-	countQuery := "SELECT COUNT(*) " + baseQuery + whereClause
+	countQuery := "SELECT COUNT(*) " + baseQuery + whereClause // NOSONAR - uses parameterized query with args
 	err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -130,10 +131,11 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	}
 	orderByClause := SafeOrderByClause(p.SortBy, p.SortOrder, allowedSortColumns, "last_updated_at", "desc")
 
-	query := fmt.Sprintf("SELECT corruption_id, current_state, retry_count, file_path, path_id, last_error, detected_at, last_updated_at, corruption_type %s%s %s LIMIT ? OFFSET ?", baseQuery, whereClause, orderByClause)
+	// Security: whereClause uses ? placeholders, orderByClause is validated against allowlist
+	query := fmt.Sprintf("SELECT corruption_id, current_state, retry_count, file_path, path_id, last_error, detected_at, last_updated_at, corruption_type %s%s %s LIMIT ? OFFSET ?", baseQuery, whereClause, orderByClause) // NOSONAR - parameterized query + validated ORDER BY
 	args = append(args, p.Limit, p.Offset)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...) // NOSONAR
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -202,9 +204,15 @@ func (s *RESTServer) getEnrichedCorruptionData(ctx context.Context, corruptionID
 }
 
 // fetchEventData fetches and unmarshals event data for a specific event type.
+// The order parameter must be "ASC" or "DESC" - callers use hardcoded values.
 func (s *RESTServer) fetchEventData(ctx context.Context, corruptionID, eventType, order string) map[string]interface{} {
+	// Security: order is hardcoded as "ASC" or "DESC" by all callers (see enrichFrom* methods)
+	// Validate anyway for defense in depth
+	if order != "ASC" && order != "DESC" {
+		order = "DESC"
+	}
 	var eventData sql.NullString
-	query := fmt.Sprintf(`SELECT event_data FROM events WHERE aggregate_id = ? AND event_type = ? ORDER BY created_at %s LIMIT 1`, order)
+	query := fmt.Sprintf(`SELECT event_data FROM events WHERE aggregate_id = ? AND event_type = ? ORDER BY created_at %s LIMIT 1`, order) // NOSONAR - order is validated above
 	if err := s.db.QueryRowContext(ctx, query, corruptionID, eventType).Scan(&eventData); err != nil {
 		return nil
 	}

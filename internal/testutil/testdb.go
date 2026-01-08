@@ -315,10 +315,11 @@ func ClearEvents(db *sql.DB) error {
 }
 
 // ClearAllTables removes all data from all tables.
+// Security: table names are hardcoded in this slice, not from user input
 func ClearAllTables(db *sql.DB) error {
 	tables := []string{"events", "scans", "scan_files", "scan_paths", "pending_rescans", "settings", "arr_instances"}
 	for _, table := range tables {
-		if _, err := db.Exec("DELETE FROM " + table); err != nil {
+		if _, err := db.Exec("DELETE FROM " + table); err != nil { // NOSONAR - table name from hardcoded slice
 			return fmt.Errorf("failed to clear %s: %w", table, err)
 		}
 	}

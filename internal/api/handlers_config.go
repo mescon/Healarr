@@ -446,7 +446,9 @@ func (s *RESTServer) downloadDatabaseBackup(c *gin.Context) {
 	backupPath := filepath.Join(backupDir, backupFilename)
 
 	// Use VACUUM INTO for atomic backup - safe during concurrent access
-	_, err := s.db.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupPath))
+	// Security: backupPath is server-generated from config + timestamp, not user input.
+	// SQLite VACUUM INTO does not support parameterized paths.
+	_, err := s.db.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupPath)) //nolint:gosec // Path is server-generated, not user input
 	if err != nil {
 		_ = os.Remove(backupPath)
 		logger.Errorf("Failed to create backup: %v", err)
