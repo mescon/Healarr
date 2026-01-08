@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"errors"
 	"io/fs"
 	"net/http"
@@ -8,8 +9,16 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/mescon/Healarr/internal/config"
+	"github.com/mescon/Healarr/internal/eventbus"
+
+	_ "modernc.org/sqlite" // SQLite driver
 )
 
 // =============================================================================
@@ -214,5 +223,76 @@ func TestMustSub(t *testing.T) {
 		if string(data) != "icon" {
 			t.Errorf("Expected 'icon', got %q", string(data))
 		}
+	})
+}
+
+// =============================================================================
+// NewRESTServer tests
+// =============================================================================
+
+func TestNewRESTServer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Set up test config
+	config.SetForTesting(&config.Config{
+		Port:                 "8080",
+		BasePath:             "/",
+		LogLevel:             "info",
+		DataDir:              "/tmp",
+		DatabasePath:         "/tmp/test.db",
+		LogDir:               "/tmp/logs",
+		VerificationTimeout:  60 * time.Second,
+		VerificationInterval: 4 * time.Hour,
+	})
+
+	// Create in-memory database with minimal schema
+	db, err := sql.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+		CREATE TABLE IF NOT EXISTS arr_instances (id INTEGER PRIMARY KEY, name TEXT, url TEXT, api_key TEXT, enabled INTEGER DEFAULT 1);
+	`)
+	require.NoError(t, err)
+
+	// Create eventbus and use shared global metrics service (Prometheus metrics can only be registered once)
+	eb := eventbus.NewEventBus(db)
+	metricsService := getGlobalMetricsService(eb)
+
+	t.Run("creates server with expected fields", func(t *testing.T) {
+		deps := ServerDeps{
+			DB:       db,
+			EventBus: eb,
+			Metrics:  metricsService,
+			// Other deps can be nil for basic initialization test
+		}
+
+		server := NewRESTServer(deps)
+
+		// Verify server was created with expected fields
+		assert.NotNil(t, server)
+		assert.NotNil(t, server.router)
+		assert.NotNil(t, server.hub)
+		assert.NotNil(t, server.toolChecker)
+		assert.Equal(t, db, server.db)
+		assert.Equal(t, eb, server.eventBus)
+		assert.Equal(t, metricsService, server.metrics)
+		assert.False(t, server.startTime.IsZero())
+	})
+
+	t.Run("healthNotifier is nil when deps.Notifier is nil", func(t *testing.T) {
+		deps := ServerDeps{
+			DB:       db,
+			EventBus: eb,
+			Metrics:  metricsService,
+			Notifier: nil, // Explicitly nil notifier
+		}
+
+		server := NewRESTServer(deps)
+
+		// When deps.Notifier is nil, healthNotifier should also be nil
+		assert.Nil(t, server.healthNotifier)
+		assert.Nil(t, server.notifier)
 	})
 }
