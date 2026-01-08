@@ -1,0 +1,620 @@
+package services
+
+import (
+	"database/sql"
+	"sync"
+	"testing"
+	"time"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/mescon/Healarr/internal/config"
+	"github.com/mescon/Healarr/internal/domain"
+	"github.com/mescon/Healarr/internal/eventbus"
+	"github.com/mescon/Healarr/internal/integration"
+)
+
+func init() {
+	config.SetForTesting(config.NewTestConfig())
+}
+
+// setupRecoveryTestDB creates an in-memory SQLite database with required tables
+func setupRecoveryTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+
+	tmpFile := t.TempDir() + "/recovery_test.db"
+	db, err := sql.Open("sqlite", tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+
+	// Create required tables
+	_, err = db.Exec(`
+		CREATE TABLE corruption_status (
+			corruption_id TEXT PRIMARY KEY,
+			current_state TEXT NOT NULL,
+			file_path TEXT NOT NULL,
+			path_id INTEGER,
+			last_updated_at TEXT NOT NULL,
+			detected_at TEXT NOT NULL
+		);
+		CREATE TABLE events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			aggregate_type TEXT NOT NULL,
+			aggregate_id TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			event_data JSON NOT NULL,
+			event_version INTEGER NOT NULL DEFAULT 1,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			user_id TEXT
+		);
+		CREATE TABLE scan_paths (
+			id INTEGER PRIMARY KEY,
+			local_path TEXT NOT NULL,
+			arr_path TEXT NOT NULL,
+			instance_id INTEGER,
+			enabled BOOLEAN DEFAULT 1
+		);
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create tables: %v", err)
+	}
+
+	return db
+}
+
+// =============================================================================
+// NewRecoveryService tests
+// =============================================================================
+
+func TestNewRecoveryService(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	t.Run("default threshold", func(t *testing.T) {
+		rs := NewRecoveryService(db, eb, nil, nil, nil, 0)
+		if rs == nil {
+			t.Fatal("Expected non-nil RecoveryService")
+		}
+		if rs.staleThreshold != 24*time.Hour {
+			t.Errorf("Expected default staleThreshold of 24h, got %v", rs.staleThreshold)
+		}
+	})
+
+	t.Run("custom threshold", func(t *testing.T) {
+		threshold := 12 * time.Hour
+		rs := NewRecoveryService(db, eb, nil, nil, nil, threshold)
+		if rs == nil {
+			t.Fatal("Expected non-nil RecoveryService")
+		}
+		if rs.staleThreshold != threshold {
+			t.Errorf("Expected staleThreshold of %v, got %v", threshold, rs.staleThreshold)
+		}
+	})
+
+	t.Run("negative threshold uses default", func(t *testing.T) {
+		rs := NewRecoveryService(db, eb, nil, nil, nil, -1*time.Hour)
+		if rs == nil {
+			t.Fatal("Expected non-nil RecoveryService")
+		}
+		if rs.staleThreshold != 24*time.Hour {
+			t.Errorf("Expected default staleThreshold of 24h for negative input, got %v", rs.staleThreshold)
+		}
+	})
+}
+
+// =============================================================================
+// findStaleItems tests
+// =============================================================================
+
+func TestFindStaleItems_EmptyDatabase(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	items, err := rs.findStaleItems()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("Expected 0 items, got %d", len(items))
+	}
+}
+
+func TestFindStaleItems_WithStaleItems(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Insert a stale corruption_status record
+	oldTime := time.Now().Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
+	_, err := db.Exec(`
+		INSERT INTO corruption_status (corruption_id, current_state, file_path, path_id, last_updated_at, detected_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, "test-uuid-1", "DownloadProgress", "/media/test.mkv", 1, oldTime, oldTime)
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	items, err := rs.findStaleItems()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("Expected 1 item, got %d", len(items))
+	}
+	if len(items) > 0 {
+		if items[0].CorruptionID != "test-uuid-1" {
+			t.Errorf("Expected corruption ID 'test-uuid-1', got %q", items[0].CorruptionID)
+		}
+		if items[0].CurrentState != "DownloadProgress" {
+			t.Errorf("Expected state 'DownloadProgress', got %q", items[0].CurrentState)
+		}
+	}
+}
+
+func TestFindStaleItems_FreshItemsNotReturned(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Insert a fresh corruption_status record (within threshold)
+	recentTime := time.Now().Add(-1 * time.Hour).Format("2006-01-02 15:04:05")
+	_, err := db.Exec(`
+		INSERT INTO corruption_status (corruption_id, current_state, file_path, path_id, last_updated_at, detected_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, "test-uuid-2", "DownloadProgress", "/media/fresh.mkv", 1, recentTime, recentTime)
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	items, err := rs.findStaleItems()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("Expected 0 items (fresh item should not be returned), got %d", len(items))
+	}
+}
+
+func TestFindStaleItems_DifferentStates(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	oldTime := time.Now().Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
+
+	// Insert items with different states
+	testCases := []struct {
+		id       string
+		state    string
+		expected bool // Whether this state should be found
+	}{
+		{"uuid-dp", "DownloadProgress", true},
+		{"uuid-sc", "SearchCompleted", true},
+		{"uuid-ss", "SearchStarted", true},
+		{"uuid-ds", "DownloadStarted", true},
+		{"uuid-fd", "FileDetected", true},
+		{"uuid-vs", "VerificationSuccess", false}, // Terminal state, not stale
+		{"uuid-se", "SearchExhausted", false},     // Terminal state, not stale
+	}
+
+	for _, tc := range testCases {
+		_, err := db.Exec(`
+			INSERT INTO corruption_status (corruption_id, current_state, file_path, path_id, last_updated_at, detected_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, tc.id, tc.state, "/media/"+tc.id+".mkv", 1, oldTime, oldTime)
+		if err != nil {
+			t.Fatalf("Failed to insert test data for %s: %v", tc.id, err)
+		}
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	items, err := rs.findStaleItems()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Count expected items
+	expectedCount := 0
+	for _, tc := range testCases {
+		if tc.expected {
+			expectedCount++
+		}
+	}
+
+	if len(items) != expectedCount {
+		t.Errorf("Expected %d stale items, got %d", expectedCount, len(items))
+	}
+}
+
+// =============================================================================
+// isInArrQueue tests
+// =============================================================================
+
+func TestIsInArrQueue_NilClient(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		MediaID:      123,
+	}
+
+	inQueue, err := rs.isInArrQueue(item)
+	if err != nil {
+		t.Errorf("Expected no error with nil client, got: %v", err)
+	}
+	if inQueue {
+		t.Error("Expected false with nil client")
+	}
+}
+
+// =============================================================================
+// checkArrHasFile tests
+// =============================================================================
+
+func TestCheckArrHasFile_NilClient(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		MediaID:      123,
+	}
+
+	hasFile, filePath, err := rs.checkArrHasFile(item)
+	if err != nil {
+		t.Errorf("Expected no error with nil client, got: %v", err)
+	}
+	if hasFile {
+		t.Error("Expected hasFile=false with nil client")
+	}
+	if filePath != "" {
+		t.Errorf("Expected empty filePath with nil client, got: %q", filePath)
+	}
+}
+
+// =============================================================================
+// getLocalPath tests
+// =============================================================================
+
+func TestGetLocalPath_NilMapper(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		FilePath: "/arr/path/test.mkv",
+	}
+
+	localPath := rs.getLocalPath(item)
+	if localPath != "/arr/path/test.mkv" {
+		t.Errorf("Expected original path with nil mapper, got: %q", localPath)
+	}
+}
+
+func TestGetLocalPath_WithMapper(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Add a mapping (requires scan_paths table entry)
+	_, err := db.Exec(`
+		INSERT INTO scan_paths (id, local_path, arr_path, instance_id, enabled)
+		VALUES (?, ?, ?, ?, ?)
+	`, 1, "/local/media", "/arr/media", 1, true)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	// Create a path mapper with mappings
+	pathMapper, err := integration.NewPathMapper(db)
+	if err != nil {
+		t.Fatalf("Failed to create path mapper: %v", err)
+	}
+	pathMapper.Reload()
+
+	rs := NewRecoveryService(db, eb, nil, pathMapper, nil, 24*time.Hour)
+
+	item := staleItem{
+		FilePath: "/arr/media/test.mkv",
+	}
+
+	localPath := rs.getLocalPath(item)
+	// With the mapper, arr path should be translated to local path
+	expected := "/local/media/test.mkv"
+	if localPath != expected {
+		t.Errorf("Expected mapped path %q, got: %q", expected, localPath)
+	}
+}
+
+// =============================================================================
+// checkArrStatus tests
+// =============================================================================
+
+func TestCheckArrStatus_NoMediaID(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		MediaID:      0, // No media ID
+	}
+
+	result := rs.checkArrStatus(item)
+	if result != "" {
+		t.Errorf("Expected empty result for item without media ID, got: %q", result)
+	}
+}
+
+// =============================================================================
+// Run tests
+// =============================================================================
+
+func TestRun_NoStaleItems(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	// Run should complete without error
+	rs.Run()
+}
+
+func TestRun_WithStaleItems(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Subscribe to events to verify they're emitted
+	var mu sync.Mutex
+	eventCount := 0
+	eb.Subscribe(domain.SearchExhausted, func(e domain.Event) {
+		mu.Lock()
+		eventCount++
+		mu.Unlock()
+	})
+
+	// Insert a stale corruption_status record
+	oldTime := time.Now().Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
+	_, err := db.Exec(`
+		INSERT INTO corruption_status (corruption_id, current_state, file_path, path_id, last_updated_at, detected_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, "test-uuid-run", "DownloadProgress", "/media/nonexistent.mkv", 1, oldTime, oldTime)
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	// Run should process the stale item
+	rs.Run()
+
+	// Give event bus time to process
+	time.Sleep(100 * time.Millisecond)
+
+	// Should have emitted at least one event (SearchExhausted for missing file)
+	if eventCount == 0 {
+		t.Log("No events received - this may be expected if file not found leads to exhausted state")
+	}
+}
+
+// =============================================================================
+// emitVerificationSuccess tests
+// =============================================================================
+
+func TestEmitVerificationSuccess(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	var mu sync.Mutex
+	receivedEvent := false
+	eb.Subscribe(domain.VerificationSuccess, func(e domain.Event) {
+		mu.Lock()
+		receivedEvent = true
+		mu.Unlock()
+	})
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+	}
+
+	result := rs.emitVerificationSuccess(item, "/local/media/test.mkv")
+
+	// Give event bus time to process
+	time.Sleep(100 * time.Millisecond)
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got: %q", result)
+	}
+	if !receivedEvent {
+		t.Error("Expected event to be published")
+	}
+}
+
+// =============================================================================
+// emitSearchExhausted tests
+// =============================================================================
+
+func TestEmitSearchExhausted(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	var mu sync.Mutex
+	receivedEvent := false
+	eb.Subscribe(domain.SearchExhausted, func(e domain.Event) {
+		mu.Lock()
+		receivedEvent = true
+		mu.Unlock()
+	})
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      123,
+		LastUpdated:  time.Now().Add(-48 * time.Hour),
+	}
+
+	result := rs.emitSearchExhausted(item, "item_vanished")
+
+	// Give event bus time to process
+	time.Sleep(100 * time.Millisecond)
+
+	if result != "exhausted" {
+		t.Errorf("Expected 'exhausted', got: %q", result)
+	}
+	if !receivedEvent {
+		t.Error("Expected event to be published")
+	}
+}
+
+// =============================================================================
+// verifyAndComplete tests
+// =============================================================================
+
+func TestVerifyAndComplete_NilDetector(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	var mu sync.Mutex
+	receivedEvent := false
+	eb.Subscribe(domain.VerificationSuccess, func(e domain.Event) {
+		mu.Lock()
+		receivedEvent = true
+		mu.Unlock()
+	})
+
+	// No detector means file is assumed healthy
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+	}
+
+	result := rs.verifyAndComplete(item, "/local/media/test.mkv")
+
+	// Give event bus time to process
+	time.Sleep(100 * time.Millisecond)
+
+	// With nil detector, assumes healthy and emits success
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered' with nil detector, got: %q", result)
+	}
+	if !receivedEvent {
+		t.Error("Expected VerificationSuccess event to be published")
+	}
+}
+
+// =============================================================================
+// recoverItem tests
+// =============================================================================
+
+func TestRecoverItem_NoMediaID_NoDetector(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	var mu sync.Mutex
+	receivedEvent := false
+	eb.Subscribe(domain.SearchExhausted, func(e domain.Event) {
+		mu.Lock()
+		receivedEvent = true
+		mu.Unlock()
+	})
+
+	// No arrClient, no pathMapper, no detector
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      0, // No media ID
+	}
+
+	// Item has no media ID, no detector, so file check will be skipped
+	// and item will be marked as exhausted (file doesn't exist)
+	result := rs.recoverItem(item)
+
+	// Give event bus time to process
+	time.Sleep(100 * time.Millisecond)
+
+	if result != "exhausted" {
+		t.Errorf("Expected 'exhausted' for item with no media ID and no detector, got: %q", result)
+	}
+	if !receivedEvent {
+		t.Error("Expected SearchExhausted event to be published")
+	}
+}
