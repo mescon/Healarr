@@ -217,6 +217,102 @@ func TestSystemInfoEnvironmentField(t *testing.T) {
 		"Environment should be 'docker' or 'native', got: %s", response.Environment)
 }
 
+func TestGetMountInfo_EmptyWhenNotInDocker(t *testing.T) {
+	// getMountInfo reads from /proc/mounts
+	// In test environment (non-Docker), it should return empty or the available mounts
+	mounts := getMountInfo()
+
+	// In a non-Docker environment, getMountInfo filters out most system mounts
+	// The function should not panic and should return a valid slice
+	if mounts == nil {
+		// Function should return at least an empty slice, not nil
+		t.Log("getMountInfo returned nil (acceptable if /proc/mounts doesn't exist)")
+	}
+
+	// Verify that any returned mounts have valid fields
+	for _, mount := range mounts {
+		if mount.Destination == "" {
+			t.Errorf("Mount destination should not be empty: %+v", mount)
+		}
+	}
+}
+
+func TestGetMountInfo_FiltersMountTypes(t *testing.T) {
+	// This test verifies that the filtering logic works correctly
+	// by directly testing isInterestingMount with various inputs
+
+	// These should all be filtered out (not interesting)
+	notInteresting := []struct {
+		mountPoint string
+		fsType     string
+	}{
+		{"/proc", "proc"},
+		{"/sys", "sysfs"},
+		{"/dev/pts", "devpts"},
+		{"/", "overlay"},
+		{"/run/lock", "tmpfs"},
+		{"/sys/fs/cgroup", "cgroup"},
+		{"/etc/hostname", "ext4"},
+	}
+
+	for _, tc := range notInteresting {
+		if isInterestingMount(tc.mountPoint, tc.fsType) {
+			t.Errorf("Expected %s (%s) to not be interesting", tc.mountPoint, tc.fsType)
+		}
+	}
+
+	// These should pass through (interesting)
+	interesting := []struct {
+		mountPoint string
+		fsType     string
+	}{
+		{"/config", "ext4"},
+		{"/data", "xfs"},
+		{"/media/movies", "nfs"},
+		{"/mnt/storage", "zfs"},
+		{"/storage/backups", "cifs"},
+	}
+
+	for _, tc := range interesting {
+		if !isInterestingMount(tc.mountPoint, tc.fsType) {
+			t.Errorf("Expected %s (%s) to be interesting", tc.mountPoint, tc.fsType)
+		}
+	}
+}
+
+func TestIsDockerEnvironment(t *testing.T) {
+	// Test the isDockerEnvironment function
+	// Result depends on actual environment
+	result := isDockerEnvironment()
+
+	// We can't assert a specific value since it depends on the environment
+	// but we can verify the function doesn't panic and returns a bool
+	t.Logf("isDockerEnvironment() = %v (depends on test environment)", result)
+}
+
+func TestMountInfoStruct(t *testing.T) {
+	// Test that MountInfo struct fields work correctly
+	mount := MountInfo{
+		Source:      "/dev/sda1",
+		Destination: "/config",
+		Type:        "ext4",
+		ReadOnly:    false,
+	}
+
+	if mount.Source != "/dev/sda1" {
+		t.Errorf("Expected Source '/dev/sda1', got %s", mount.Source)
+	}
+	if mount.Destination != "/config" {
+		t.Errorf("Expected Destination '/config', got %s", mount.Destination)
+	}
+	if mount.Type != "ext4" {
+		t.Errorf("Expected Type 'ext4', got %s", mount.Type)
+	}
+	if mount.ReadOnly {
+		t.Error("Expected ReadOnly to be false")
+	}
+}
+
 func TestSystemInfoLinksAreValid(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

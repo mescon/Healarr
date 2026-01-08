@@ -29,19 +29,20 @@ import (
 )
 
 type RESTServer struct {
-	router      *gin.Engine
-	httpServer  *http.Server
-	db          *sql.DB
-	eventBus    *eventbus.EventBus
-	scanner     services.Scanner
-	pathMapper  integration.PathMapper
-	arrClient   integration.ArrClient
-	scheduler   services.Scheduler
-	notifier    *notifier.Notifier
-	metrics     *metrics.MetricsService
-	hub         *WebSocketHub
-	startTime   time.Time
-	toolChecker *integration.ToolChecker
+	router         *gin.Engine
+	httpServer     *http.Server
+	db             *sql.DB
+	eventBus       *eventbus.EventBus
+	scanner        services.Scanner
+	pathMapper     integration.PathMapper
+	arrClient      integration.ArrClient
+	scheduler      services.Scheduler
+	notifier       *notifier.Notifier
+	healthNotifier HealthNotifier // Interface for health notifications (enables testing)
+	metrics        *metrics.MetricsService
+	hub            *WebSocketHub
+	startTime      time.Time
+	toolChecker    *integration.ToolChecker
 }
 
 // ServerDeps contains all dependencies required for the REST server
@@ -129,18 +130,19 @@ func NewRESTServer(deps ServerDeps) *RESTServer {
 	toolChecker.CheckAllTools()
 
 	s := &RESTServer{
-		router:      r,
-		db:          deps.DB,
-		eventBus:    deps.EventBus,
-		scanner:     deps.Scanner,
-		pathMapper:  deps.PathMapper,
-		arrClient:   deps.ArrClient,
-		scheduler:   deps.Scheduler,
-		notifier:    deps.Notifier,
-		metrics:     deps.Metrics,
-		hub:         NewWebSocketHub(deps.EventBus),
-		startTime:   time.Now(),
-		toolChecker: toolChecker,
+		router:         r,
+		db:             deps.DB,
+		eventBus:       deps.EventBus,
+		scanner:        deps.Scanner,
+		pathMapper:     deps.PathMapper,
+		arrClient:      deps.ArrClient,
+		scheduler:      deps.Scheduler,
+		notifier:       deps.Notifier,
+		healthNotifier: deps.Notifier, // Uses same notifier via interface for testability
+		metrics:        deps.Metrics,
+		hub:            NewWebSocketHub(deps.EventBus),
+		startTime:      time.Now(),
+		toolChecker:    toolChecker,
 	}
 
 	s.setupRoutes()

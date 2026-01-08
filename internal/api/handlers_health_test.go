@@ -752,6 +752,79 @@ func TestFormatUptime(t *testing.T) {
 	}
 }
 
+func TestSendHealthDegradedNotification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Test that sendHealthDegradedNotification is called when health is degraded
+	health := gin.H{
+		"status": "degraded",
+		"uptime": "1h 30m",
+	}
+	dbHealth := gin.H{
+		"status": "connected",
+	}
+	arrHealth := arrHealthResult{
+		online: 0,
+		total:  2,
+	}
+	pending := 5
+
+	// Create a mock notifier that records calls
+	mockNotifier := &mockNotifierForHealth{
+		sendCalled: make(chan struct{}, 1),
+	}
+
+	s := &RESTServer{
+		healthNotifier: mockNotifier,
+	}
+
+	// Call sendHealthDegradedNotification
+	s.sendHealthDegradedNotification(health, dbHealth, arrHealth, pending)
+
+	// Verify the data passed to the notifier
+	select {
+	case <-mockNotifier.sendCalled:
+		// Verify the data
+		if mockNotifier.lastData["status"] != "degraded" {
+			t.Errorf("Expected status 'degraded', got %v", mockNotifier.lastData["status"])
+		}
+		if mockNotifier.lastData["uptime"] != "1h 30m" {
+			t.Errorf("Expected uptime '1h 30m', got %v", mockNotifier.lastData["uptime"])
+		}
+		if mockNotifier.lastData["arr_online"] != 0 {
+			t.Errorf("Expected arr_online 0, got %v", mockNotifier.lastData["arr_online"])
+		}
+		if mockNotifier.lastData["arr_total"] != 2 {
+			t.Errorf("Expected arr_total 2, got %v", mockNotifier.lastData["arr_total"])
+		}
+		if mockNotifier.lastData["arr_offline"] != 2 {
+			t.Errorf("Expected arr_offline 2, got %v", mockNotifier.lastData["arr_offline"])
+		}
+		if mockNotifier.lastData["database_status"] != "connected" {
+			t.Errorf("Expected database_status 'connected', got %v", mockNotifier.lastData["database_status"])
+		}
+		if mockNotifier.lastData["pending_corruptions"] != 5 {
+			t.Errorf("Expected pending_corruptions 5, got %v", mockNotifier.lastData["pending_corruptions"])
+		}
+	default:
+		t.Error("SendSystemHealthDegraded was not called")
+	}
+}
+
+// mockNotifierForHealth is a minimal mock that implements the required notifier method
+type mockNotifierForHealth struct {
+	sendCalled chan struct{}
+	lastData   map[string]interface{}
+}
+
+func (m *mockNotifierForHealth) SendSystemHealthDegraded(data map[string]interface{}) {
+	m.lastData = data
+	select {
+	case m.sendCalled <- struct{}{}:
+	default:
+	}
+}
+
 func TestCheckDatabaseHealth(t *testing.T) {
 	t.Run("healthy database returns connected status", func(t *testing.T) {
 		db, dbPath, cleanup := setupTestDBForHealth(t)

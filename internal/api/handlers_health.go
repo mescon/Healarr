@@ -16,6 +16,12 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
+// HealthNotifier defines the interface for health-related notifications.
+// This allows for easier testing by enabling mock implementations.
+type HealthNotifier interface {
+	SendSystemHealthDegraded(data map[string]interface{})
+}
+
 // formatUptime returns a human-readable uptime string
 func formatUptime(uptime time.Duration) string {
 	days := int(uptime.Hours()) / 24
@@ -177,7 +183,7 @@ func (s *RESTServer) handleHealth(c *gin.Context) {
 	}
 
 	// Send notification if degraded
-	if status == "degraded" && s.notifier != nil {
+	if status == "degraded" && s.healthNotifier != nil {
 		s.sendHealthDegradedNotification(health, dbHealth, arrHealth, pending)
 	}
 
@@ -186,7 +192,7 @@ func (s *RESTServer) handleHealth(c *gin.Context) {
 
 // sendHealthDegradedNotification sends a notification when health is degraded
 func (s *RESTServer) sendHealthDegradedNotification(health, dbHealth gin.H, arrHealth arrHealthResult, pending int) {
-	s.notifier.SendSystemHealthDegraded(map[string]interface{}{
+	s.healthNotifier.SendSystemHealthDegraded(map[string]interface{}{
 		"status":              health["status"],
 		"uptime":              health["uptime"],
 		"arr_online":          arrHealth.online,
