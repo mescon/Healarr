@@ -1802,3 +1802,126 @@ func TestVerifierService_FindFilesForVerification(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// enrichVerificationEventData tests
+// =============================================================================
+
+func TestEnrichVerificationEventData(t *testing.T) {
+	t.Run("nil meta does nothing", func(t *testing.T) {
+		eventData := map[string]interface{}{
+			"existing": "value",
+		}
+		enrichVerificationEventData(eventData, nil)
+
+		if len(eventData) != 1 {
+			t.Errorf("Expected eventData to remain unchanged, got %d keys", len(eventData))
+		}
+		if eventData["existing"] != "value" {
+			t.Error("Existing value should be preserved")
+		}
+	})
+
+	t.Run("empty meta does nothing", func(t *testing.T) {
+		eventData := map[string]interface{}{}
+		meta := &VerificationMeta{}
+		enrichVerificationEventData(eventData, meta)
+
+		// Empty meta should not add any fields
+		if len(eventData) != 0 {
+			t.Errorf("Expected empty eventData, got %d keys: %v", len(eventData), eventData)
+		}
+	})
+
+	t.Run("all fields populated", func(t *testing.T) {
+		eventData := map[string]interface{}{}
+		meta := &VerificationMeta{
+			NewFilePath:    "/new/path.mkv",
+			NewFileSize:    1234567890,
+			Quality:        "1080p",
+			ReleaseGroup:   "SPARKS",
+			Indexer:        "NZBgeek",
+			DownloadClient: "SABnzbd",
+		}
+		enrichVerificationEventData(eventData, meta)
+
+		if eventData["new_file_path"] != "/new/path.mkv" {
+			t.Errorf("Expected new_file_path '/new/path.mkv', got %v", eventData["new_file_path"])
+		}
+		if eventData["new_file_size"] != int64(1234567890) {
+			t.Errorf("Expected new_file_size 1234567890, got %v", eventData["new_file_size"])
+		}
+		if eventData["quality"] != "1080p" {
+			t.Errorf("Expected quality '1080p', got %v", eventData["quality"])
+		}
+		if eventData["release_group"] != "SPARKS" {
+			t.Errorf("Expected release_group 'SPARKS', got %v", eventData["release_group"])
+		}
+		if eventData["indexer"] != "NZBgeek" {
+			t.Errorf("Expected indexer 'NZBgeek', got %v", eventData["indexer"])
+		}
+		if eventData["download_client"] != "SABnzbd" {
+			t.Errorf("Expected download_client 'SABnzbd', got %v", eventData["download_client"])
+		}
+	})
+
+	t.Run("partial fields populated", func(t *testing.T) {
+		eventData := map[string]interface{}{}
+		meta := &VerificationMeta{
+			Quality:      "720p",
+			ReleaseGroup: "RARBG",
+			// Other fields left empty/zero
+		}
+		enrichVerificationEventData(eventData, meta)
+
+		// Should only have the two non-empty fields
+		if len(eventData) != 2 {
+			t.Errorf("Expected 2 keys, got %d: %v", len(eventData), eventData)
+		}
+		if eventData["quality"] != "720p" {
+			t.Errorf("Expected quality '720p', got %v", eventData["quality"])
+		}
+		if eventData["release_group"] != "RARBG" {
+			t.Errorf("Expected release_group 'RARBG', got %v", eventData["release_group"])
+		}
+	})
+
+	t.Run("zero file size not added", func(t *testing.T) {
+		eventData := map[string]interface{}{}
+		meta := &VerificationMeta{
+			NewFilePath: "/path.mkv",
+			NewFileSize: 0, // zero should not be added
+		}
+		enrichVerificationEventData(eventData, meta)
+
+		if _, exists := eventData["new_file_size"]; exists {
+			t.Error("Zero file size should not be added to eventData")
+		}
+		if eventData["new_file_path"] != "/path.mkv" {
+			t.Errorf("Expected new_file_path, got %v", eventData["new_file_path"])
+		}
+	})
+
+	t.Run("preserves existing eventData", func(t *testing.T) {
+		eventData := map[string]interface{}{
+			"file_path":   "/original/path.mkv",
+			"instance_id": 42,
+		}
+		meta := &VerificationMeta{
+			Quality: "4K",
+		}
+		enrichVerificationEventData(eventData, meta)
+
+		// Original values preserved
+		if eventData["file_path"] != "/original/path.mkv" {
+			t.Error("Original file_path should be preserved")
+		}
+		if eventData["instance_id"] != 42 {
+			t.Error("Original instance_id should be preserved")
+		}
+		// New value added
+		if eventData["quality"] != "4K" {
+			t.Error("Quality should be added")
+		}
+	})
+}

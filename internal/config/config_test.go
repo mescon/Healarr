@@ -764,3 +764,278 @@ func TestLoad_CreatesLogDirectory(t *testing.T) {
 		t.Error("Load() should create log directory")
 	}
 }
+
+// =============================================================================
+// Config validation tests
+// =============================================================================
+
+func TestValidateDatabasePath(t *testing.T) {
+	tests := []struct {
+		name        string
+		dbPath      string
+		inDocker    bool
+		wantWarning bool
+		wantType    string
+	}{
+		{
+			name:        "empty path returns nil",
+			dbPath:      "",
+			inDocker:    true,
+			wantWarning: false,
+		},
+		{
+			name:        "valid absolute path in docker",
+			dbPath:      "/config/healarr.db",
+			inDocker:    true,
+			wantWarning: false,
+		},
+		{
+			name:        "valid absolute path not in docker",
+			dbPath:      "/data/healarr.db",
+			inDocker:    false,
+			wantWarning: false,
+		},
+		{
+			name:        "template variable with braces",
+			dbPath:      "/config/{DATA}/healarr.db",
+			inDocker:    true,
+			wantWarning: true,
+			wantType:    "template_variable",
+		},
+		{
+			name:        "template variable with closing brace only",
+			dbPath:      "/config/data}/healarr.db",
+			inDocker:    false,
+			wantWarning: true,
+			wantType:    "template_variable",
+		},
+		{
+			name:        "relative path in docker",
+			dbPath:      "data/healarr.db",
+			inDocker:    true,
+			wantWarning: true,
+			wantType:    "relative_path",
+		},
+		{
+			name:        "relative path not in docker is ok",
+			dbPath:      "data/healarr.db",
+			inDocker:    false,
+			wantWarning: false,
+		},
+		{
+			name:        "dot-relative path in docker",
+			dbPath:      "./healarr.db",
+			inDocker:    true,
+			wantWarning: true,
+			wantType:    "relative_path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			warning := validateDatabasePath(tt.dbPath, tt.inDocker)
+
+			if tt.wantWarning {
+				if warning == nil {
+					t.Errorf("expected warning, got nil")
+					return
+				}
+				if warning.Type != tt.wantType {
+					t.Errorf("expected type %q, got %q", tt.wantType, warning.Type)
+				}
+				if warning.Field != "database_path" {
+					t.Errorf("expected field 'database_path', got %q", warning.Field)
+				}
+				if warning.Current != tt.dbPath {
+					t.Errorf("expected current %q, got %q", tt.dbPath, warning.Current)
+				}
+			} else {
+				if warning != nil {
+					t.Errorf("expected no warning, got %+v", warning)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateDataDir(t *testing.T) {
+	tests := []struct {
+		name        string
+		dataDir     string
+		inDocker    bool
+		wantWarning bool
+		wantType    string
+	}{
+		{
+			name:        "empty path returns nil",
+			dataDir:     "",
+			inDocker:    true,
+			wantWarning: false,
+		},
+		{
+			name:        "any path not in docker returns nil",
+			dataDir:     "relative/path",
+			inDocker:    false,
+			wantWarning: false,
+		},
+		{
+			name:        "valid absolute path in docker",
+			dataDir:     "/config",
+			inDocker:    true,
+			wantWarning: false,
+		},
+		{
+			name:        "template variable in docker",
+			dataDir:     "/config/{DATA}",
+			inDocker:    true,
+			wantWarning: true,
+			wantType:    "template_variable",
+		},
+		{
+			name:        "relative path in docker",
+			dataDir:     "config/data",
+			inDocker:    true,
+			wantWarning: true,
+			wantType:    "relative_path",
+		},
+		{
+			name:        "dot-relative path in docker",
+			dataDir:     "./data",
+			inDocker:    true,
+			wantWarning: true,
+			wantType:    "relative_path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			warning := validateDataDir(tt.dataDir, tt.inDocker)
+
+			if tt.wantWarning {
+				if warning == nil {
+					t.Errorf("expected warning, got nil")
+					return
+				}
+				if warning.Type != tt.wantType {
+					t.Errorf("expected type %q, got %q", tt.wantType, warning.Type)
+				}
+				if warning.Field != "data_dir" {
+					t.Errorf("expected field 'data_dir', got %q", warning.Field)
+				}
+				if warning.Current != tt.dataDir {
+					t.Errorf("expected current %q, got %q", tt.dataDir, warning.Current)
+				}
+			} else {
+				if warning != nil {
+					t.Errorf("expected no warning, got %+v", warning)
+				}
+			}
+		})
+	}
+}
+
+func TestGetWarnings(t *testing.T) {
+	// Initially, warnings should be empty or nil
+	// Reset by calling ValidateAndWarn with a clean config
+	tmpDir := t.TempDir()
+	SetForTesting(&Config{
+		DatabasePath: tmpDir + "/healarr.db",
+		DataDir:      tmpDir,
+	})
+
+	// ValidateAndWarn resets warnings, so call it first
+	ValidateAndWarn()
+
+	warnings := GetWarnings()
+	// With valid absolute paths, there should be no warnings
+	// (unless we're detected as running in Docker, in which case paths are still valid)
+	for _, w := range warnings {
+		t.Logf("Warning: %+v", w)
+	}
+}
+
+func TestValidateAndWarn_NilConfig(t *testing.T) {
+	// Set config to nil
+	cfg = nil
+
+	warnings := ValidateAndWarn()
+
+	if warnings != nil {
+		t.Errorf("expected nil warnings for nil config, got %v", warnings)
+	}
+}
+
+func TestValidateAndWarn_ResetsWarnings(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// First, set a config that would generate warnings if in Docker
+	// But use absolute paths so no warnings are generated regardless
+	SetForTesting(&Config{
+		DatabasePath: tmpDir + "/healarr.db",
+		DataDir:      tmpDir,
+	})
+
+	// Call ValidateAndWarn twice to verify it resets
+	warnings1 := ValidateAndWarn()
+	warnings2 := ValidateAndWarn()
+
+	// Both calls should return the same number of warnings (including zero)
+	// This verifies the reset behavior
+	if len(warnings1) != len(warnings2) {
+		t.Errorf("expected consistent warnings, got %d then %d", len(warnings1), len(warnings2))
+	}
+}
+
+func TestValidateAndWarn_WithTemplateVariables(t *testing.T) {
+	// This test verifies that template variables generate warnings
+	SetForTesting(&Config{
+		DatabasePath: "/config/{DATA}/healarr.db",
+		DataDir:      "/config/{USER}",
+	})
+
+	warnings := ValidateAndWarn()
+
+	// Template variables in database_path are always caught
+	// Template variables in data_dir are only caught when in Docker environment
+	// (because validateDataDir returns early when !inDocker)
+	foundDBWarning := false
+	for _, w := range warnings {
+		if w.Field == "database_path" && w.Type == "template_variable" {
+			foundDBWarning = true
+		}
+	}
+
+	if !foundDBWarning {
+		t.Error("expected warning for database_path template variable")
+	}
+
+	// Note: data_dir template variable warning only appears in Docker environment
+	// due to validateDataDir's early return when !inDocker
+}
+
+func TestConfigWarningStruct(t *testing.T) {
+	// Test that ConfigWarning struct fields work correctly
+	warning := ConfigWarning{
+		Type:        "test_type",
+		Field:       "test_field",
+		Message:     "test message",
+		Current:     "/current/path",
+		Recommended: "/recommended/path",
+	}
+
+	if warning.Type != "test_type" {
+		t.Errorf("expected Type 'test_type', got %q", warning.Type)
+	}
+	if warning.Field != "test_field" {
+		t.Errorf("expected Field 'test_field', got %q", warning.Field)
+	}
+	if warning.Message != "test message" {
+		t.Errorf("expected Message 'test message', got %q", warning.Message)
+	}
+	if warning.Current != "/current/path" {
+		t.Errorf("expected Current '/current/path', got %q", warning.Current)
+	}
+	if warning.Recommended != "/recommended/path" {
+		t.Errorf("expected Recommended '/recommended/path', got %q", warning.Recommended)
+	}
+}

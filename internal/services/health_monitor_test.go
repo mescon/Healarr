@@ -22,6 +22,8 @@ type mockHealthArrClient struct {
 	queueItems     []integration.QueueItemInfo
 	instancesErr   error
 	healthCheckErr error // Error returned by CheckInstanceHealth
+	filePaths      []string
+	filePathsErr   error
 }
 
 // Media operations
@@ -38,7 +40,10 @@ func (m *mockHealthArrClient) GetFilePath(_ int64, _ map[string]interface{}, _ s
 }
 
 func (m *mockHealthArrClient) GetAllFilePaths(_ int64, _ map[string]interface{}, _ string) ([]string, error) {
-	return nil, nil
+	if m.filePathsErr != nil {
+		return nil, m.filePathsErr
+	}
+	return m.filePaths, nil
 }
 
 func (m *mockHealthArrClient) TriggerSearch(_ int64, _ string, _ []int64) error {
@@ -875,5 +880,323 @@ func TestHealthMonitorService_GetHealthStatus_QueryError(t *testing.T) {
 	// Should still have database stats even if stuck query fails
 	if _, exists := status["database"]; !exists {
 		t.Error("GetHealthStatus should include database stats even with query error")
+	}
+}
+
+// =============================================================================
+// publishVerificationSuccess tests
+// =============================================================================
+
+func TestHealthMonitorService_PublishVerificationSuccess(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.VerificationSuccess, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
+
+	item := arrSyncItem{
+		corruptionID: "test-uuid-123",
+		filePath:     "/media/movies/test.mkv",
+		pathID:       1,
+		mediaID:      456,
+	}
+
+	err = h.publishVerificationSuccess(item)
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	// Wait for event
+	select {
+	case e := <-eventReceived:
+		if e.AggregateID != "test-uuid-123" {
+			t.Errorf("Expected AggregateID 'test-uuid-123', got %q", e.AggregateID)
+		}
+		if e.EventType != domain.VerificationSuccess {
+			t.Errorf("Expected EventType VerificationSuccess, got %v", e.EventType)
+		}
+		data := e.EventData
+		if data["file_path"] != "/media/movies/test.mkv" {
+			t.Errorf("Expected file_path, got %v", data["file_path"])
+		}
+		if data["recovery_action"] != "arr_sync" {
+			t.Errorf("Expected recovery_action 'arr_sync', got %v", data["recovery_action"])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected VerificationSuccess event")
+	}
+}
+
+// =============================================================================
+// publishSearchExhausted tests
+// =============================================================================
+
+func TestHealthMonitorService_PublishSearchExhausted(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.SearchExhausted, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
+
+	item := arrSyncItem{
+		corruptionID: "test-uuid-456",
+		filePath:     "/media/tv/show.mkv",
+		pathID:       2,
+		mediaID:      789,
+	}
+
+	err = h.publishSearchExhausted(item)
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	// Wait for event
+	select {
+	case e := <-eventReceived:
+		if e.AggregateID != "test-uuid-456" {
+			t.Errorf("Expected AggregateID 'test-uuid-456', got %q", e.AggregateID)
+		}
+		if e.EventType != domain.SearchExhausted {
+			t.Errorf("Expected EventType SearchExhausted, got %v", e.EventType)
+		}
+		data := e.EventData
+		if data["reason"] != "item_vanished" {
+			t.Errorf("Expected reason 'item_vanished', got %v", data["reason"])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected SearchExhausted event")
+	}
+}
+
+// =============================================================================
+// processSyncItem tests
+// =============================================================================
+
+func TestHealthMonitorService_ProcessSyncItem_FileExists(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan struct{}, 1)
+	eb.Subscribe(domain.VerificationSuccess, func(e domain.Event) {
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
+	})
+
+	client := &mockHealthArrClient{
+		filePaths: []string{"/media/movies/test.mkv"}, // File exists in arr
+	}
+
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
+
+	item := arrSyncItem{
+		corruptionID: "test-uuid",
+		filePath:     "/media/movies/test.mkv",
+		pathID:       1,
+		mediaID:      123,
+	}
+
+	synced, exhausted := h.processSyncItem(item)
+
+	if !synced {
+		t.Error("Expected synced to be true when file exists")
+	}
+	if exhausted {
+		t.Error("Expected exhausted to be false when file exists")
+	}
+
+	select {
+	case <-eventReceived:
+		// Success
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected VerificationSuccess event")
+	}
+}
+
+func TestHealthMonitorService_ProcessSyncItem_NoFileNotInQueue(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan struct{}, 1)
+	eb.Subscribe(domain.SearchExhausted, func(e domain.Event) {
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
+	})
+
+	client := &mockHealthArrClient{
+		filePaths:  nil,                           // No files
+		queueItems: []integration.QueueItemInfo{}, // Empty queue
+	}
+
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
+
+	item := arrSyncItem{
+		corruptionID: "test-uuid",
+		filePath:     "/media/movies/test.mkv",
+		pathID:       1,
+		mediaID:      123,
+	}
+
+	synced, exhausted := h.processSyncItem(item)
+
+	if synced {
+		t.Error("Expected synced to be false when no file")
+	}
+	if !exhausted {
+		t.Error("Expected exhausted to be true when no file and not in queue")
+	}
+
+	select {
+	case <-eventReceived:
+		// Success
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected SearchExhausted event")
+	}
+}
+
+func TestHealthMonitorService_ProcessSyncItem_NoFileButInQueue(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	client := &mockHealthArrClient{
+		filePaths: nil, // No files
+		queueItems: []integration.QueueItemInfo{
+			{Title: "Test Movie", Status: "downloading"},
+		}, // In queue
+	}
+
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
+
+	item := arrSyncItem{
+		corruptionID: "test-uuid",
+		filePath:     "/media/movies/test.mkv",
+		pathID:       1,
+		mediaID:      123,
+	}
+
+	synced, exhausted := h.processSyncItem(item)
+
+	// Item is in queue, so should return false, false (still waiting)
+	if synced {
+		t.Error("Expected synced to be false when in queue")
+	}
+	if exhausted {
+		t.Error("Expected exhausted to be false when item is in queue")
+	}
+}
+
+func TestHealthMonitorService_ProcessSyncItem_FileCheckError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	client := &mockHealthArrClient{
+		filePathsErr: errors.New("API error"),
+	}
+
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
+
+	item := arrSyncItem{
+		corruptionID: "test-uuid",
+		filePath:     "/media/movies/test.mkv",
+		pathID:       1,
+		mediaID:      123,
+	}
+
+	synced, exhausted := h.processSyncItem(item)
+
+	// Error should result in false, false
+	if synced {
+		t.Error("Expected synced to be false on error")
+	}
+	if exhausted {
+		t.Error("Expected exhausted to be false on error")
+	}
+}
+
+func TestHealthMonitorService_ProcessSyncItem_QueueCheckError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	client := &mockHealthArrClient{
+		filePaths: nil, // No files
+		queueErr:  errors.New("queue API error"),
+	}
+
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
+
+	item := arrSyncItem{
+		corruptionID: "test-uuid",
+		filePath:     "/media/movies/test.mkv",
+		pathID:       1,
+		mediaID:      123,
+	}
+
+	synced, exhausted := h.processSyncItem(item)
+
+	// Error should result in false, false
+	if synced {
+		t.Error("Expected synced to be false on queue error")
+	}
+	if exhausted {
+		t.Error("Expected exhausted to be false on queue error")
 	}
 }

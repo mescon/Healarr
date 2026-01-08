@@ -2,6 +2,7 @@ package services
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
+	"github.com/mescon/Healarr/internal/testutil"
 )
 
 func init() {
@@ -627,5 +629,501 @@ func TestRecoverItem_NoMediaID_NoDetector(t *testing.T) {
 		// Event received as expected
 	case <-time.After(500 * time.Millisecond):
 		t.Error("Expected SearchExhausted event to be published")
+	}
+}
+
+// =============================================================================
+// isInArrQueue additional tests
+// =============================================================================
+
+func TestIsInArrQueue_ItemInQueue(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockArr := &testutil.MockArrClient{
+		GetQueueForPathFunc: func(arrPath string) ([]integration.QueueItemInfo, error) {
+			return []integration.QueueItemInfo{
+				{Title: "Test Movie", Status: "downloading"},
+			}, nil
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, mockArr, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      123,
+	}
+
+	inQueue, err := rs.isInArrQueue(item)
+
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if !inQueue {
+		t.Error("Expected inQueue to be true when items exist in queue")
+	}
+}
+
+func TestIsInArrQueue_EmptyQueue(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockArr := &testutil.MockArrClient{
+		GetQueueForPathFunc: func(arrPath string) ([]integration.QueueItemInfo, error) {
+			return []integration.QueueItemInfo{}, nil
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, mockArr, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      123,
+	}
+
+	inQueue, err := rs.isInArrQueue(item)
+
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if inQueue {
+		t.Error("Expected inQueue to be false when queue is empty")
+	}
+}
+
+func TestIsInArrQueue_QueueWithEmptyTitle(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockArr := &testutil.MockArrClient{
+		GetQueueForPathFunc: func(arrPath string) ([]integration.QueueItemInfo, error) {
+			// Queue item exists but has empty title
+			return []integration.QueueItemInfo{
+				{Title: "", Status: "downloading"},
+			}, nil
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, mockArr, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      123,
+	}
+
+	// Empty title items should not be considered "in queue"
+	inQueue, err := rs.isInArrQueue(item)
+
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if inQueue {
+		t.Error("Expected inQueue to be false when queue item has empty title")
+	}
+}
+
+func TestIsInArrQueue_APIError(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	expectedErr := errors.New("API error")
+	mockArr := &testutil.MockArrClient{
+		GetQueueForPathFunc: func(arrPath string) ([]integration.QueueItemInfo, error) {
+			return nil, expectedErr
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, mockArr, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      123,
+	}
+
+	inQueue, err := rs.isInArrQueue(item)
+
+	if err != expectedErr {
+		t.Errorf("Expected error %v, got %v", expectedErr, err)
+	}
+	if inQueue {
+		t.Error("Expected inQueue to be false on error")
+	}
+}
+
+// =============================================================================
+// checkArrHasFile additional tests
+// =============================================================================
+
+func TestCheckArrHasFile_FilesFound(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockArr := &testutil.MockArrClient{
+		GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+			return []string{"/media/movies/Test/test.mkv", "/media/movies/Test/test.srt"}, nil
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, mockArr, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      123,
+	}
+
+	hasFile, filePath, err := rs.checkArrHasFile(item)
+
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if !hasFile {
+		t.Error("Expected hasFile to be true")
+	}
+	if filePath != "/media/movies/Test/test.mkv" {
+		t.Errorf("Expected first file path, got %q", filePath)
+	}
+}
+
+func TestCheckArrHasFile_NoFiles(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockArr := &testutil.MockArrClient{
+		GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+			return []string{}, nil
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, mockArr, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      123,
+	}
+
+	hasFile, filePath, err := rs.checkArrHasFile(item)
+
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if hasFile {
+		t.Error("Expected hasFile to be false")
+	}
+	if filePath != "" {
+		t.Errorf("Expected empty file path, got %q", filePath)
+	}
+}
+
+func TestCheckArrHasFile_APIError(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	expectedErr := errors.New("API error")
+	mockArr := &testutil.MockArrClient{
+		GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+			return nil, expectedErr
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, mockArr, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      123,
+	}
+
+	hasFile, filePath, err := rs.checkArrHasFile(item)
+
+	if err != expectedErr {
+		t.Errorf("Expected error %v, got %v", expectedErr, err)
+	}
+	if hasFile {
+		t.Error("Expected hasFile to be false on error")
+	}
+	if filePath != "" {
+		t.Errorf("Expected empty file path on error, got %q", filePath)
+	}
+}
+
+// =============================================================================
+// checkArrStatus additional tests
+// =============================================================================
+
+func TestCheckArrStatus_ItemInQueue(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockArr := &testutil.MockArrClient{
+		GetQueueForPathFunc: func(arrPath string) ([]integration.QueueItemInfo, error) {
+			return []integration.QueueItemInfo{
+				{Title: "Test Movie", Status: "downloading"},
+			}, nil
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, mockArr, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      123,
+	}
+
+	result := rs.checkArrStatus(item)
+
+	if result != "skipped" {
+		t.Errorf("Expected 'skipped' when item is in queue, got %q", result)
+	}
+}
+
+func TestCheckArrStatus_FileFoundVerified(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Track event
+	eventReceived := make(chan struct{}, 1)
+	eb.Subscribe(domain.VerificationSuccess, func(e domain.Event) {
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
+	})
+
+	mockArr := &testutil.MockArrClient{
+		GetQueueForPathFunc: func(arrPath string) ([]integration.QueueItemInfo, error) {
+			return []integration.QueueItemInfo{}, nil // Empty queue
+		},
+		GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+			return []string{"/media/movies/Test/test.mkv"}, nil // File found
+		},
+	}
+
+	// Mock detector that returns healthy
+	mockDetector := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, mockArr, nil, mockDetector, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      123,
+	}
+
+	result := rs.checkArrStatus(item)
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered' when file found and healthy, got %q", result)
+	}
+
+	// Wait for event
+	select {
+	case <-eventReceived:
+		// Event received as expected
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected VerificationSuccess event")
+	}
+}
+
+// =============================================================================
+// verifyAndComplete additional tests
+// =============================================================================
+
+func TestVerifyAndComplete_HealthyFile(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan struct{}, 1)
+	eb.Subscribe(domain.VerificationSuccess, func(e domain.Event) {
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
+	})
+
+	mockDetector := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return true, nil // Healthy
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, mockDetector, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+	}
+
+	result := rs.verifyAndComplete(item, "/local/media/test.mkv")
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered' for healthy file, got %q", result)
+	}
+
+	select {
+	case <-eventReceived:
+		// Success
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected VerificationSuccess event")
+	}
+}
+
+func TestVerifyAndComplete_CorruptFile(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan struct{}, 1)
+	eb.Subscribe(domain.SearchExhausted, func(e domain.Event) {
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
+	})
+
+	mockDetector := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return false, &integration.HealthCheckError{Message: "video stream corrupt"}
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, mockDetector, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+	}
+
+	result := rs.verifyAndComplete(item, "/local/media/test.mkv")
+
+	if result != "exhausted" {
+		t.Errorf("Expected 'exhausted' for corrupt file, got %q", result)
+	}
+
+	select {
+	case <-eventReceived:
+		// Success
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected SearchExhausted event")
+	}
+}
+
+func TestVerifyAndComplete_WithPathMapper(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan struct{}, 1)
+	eb.Subscribe(domain.VerificationSuccess, func(e domain.Event) {
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
+	})
+
+	// Path mapper that converts arr path to local path
+	mockPM := &testutil.MockPathMapper{
+		ToLocalPathFunc: func(arrPath string) (string, error) {
+			return "/local" + arrPath, nil
+		},
+	}
+
+	mockDetector := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			// Verify the path was mapped
+			if path != "/local/media/test.mkv" {
+				t.Errorf("Expected mapped path /local/media/test.mkv, got %s", path)
+			}
+			return true, nil
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, nil, mockPM, mockDetector, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+	}
+
+	result := rs.verifyAndComplete(item, "/media/test.mkv")
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got %q", result)
+	}
+
+	select {
+	case <-eventReceived:
+		// Success
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected VerificationSuccess event")
 	}
 }

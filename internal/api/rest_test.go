@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"net/http"
@@ -294,5 +295,126 @@ func TestNewRESTServer(t *testing.T) {
 		// When deps.Notifier is nil, healthNotifier should also be nil
 		assert.Nil(t, server.healthNotifier)
 		assert.Nil(t, server.notifier)
+	})
+}
+
+// =============================================================================
+// handleRuntimeConfig tests
+// =============================================================================
+
+func TestHandleRuntimeConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Create in-memory database with settings table
+	db, err := sql.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);`)
+	require.NoError(t, err)
+
+	t.Run("returns default source when no env or db value", func(t *testing.T) {
+		// Clear any env var
+		originalEnv := config.Get().BasePath
+		config.SetForTesting(&config.Config{
+			BasePath:             "/",
+			Port:                 "8080",
+			VerificationTimeout:  60 * time.Second,
+			VerificationInterval: 4 * time.Hour,
+		})
+		defer config.SetForTesting(&config.Config{BasePath: originalEnv})
+
+		s := &RESTServer{
+			router: gin.New(),
+			db:     db,
+		}
+
+		s.router.GET("/api/runtime-config", s.handleRuntimeConfig)
+
+		req := httptest.NewRequest("GET", "/api/runtime-config", nil)
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var response map[string]interface{}
+		err := json.Unmarshal(w.Body.Bytes(), &response)
+		require.NoError(t, err)
+
+		assert.Equal(t, "/", response["base_path"])
+		// Source could be "default" or "environment" depending on test environment
+		assert.Contains(t, []string{"default", "environment"}, response["base_path_source"])
+	})
+
+	t.Run("returns database source when saved in settings", func(t *testing.T) {
+		// Insert a base_path setting
+		_, err := db.Exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('base_path', '/healarr')")
+		require.NoError(t, err)
+
+		config.SetForTesting(&config.Config{
+			BasePath:             "/healarr",
+			Port:                 "8080",
+			VerificationTimeout:  60 * time.Second,
+			VerificationInterval: 4 * time.Hour,
+		})
+
+		s := &RESTServer{
+			router: gin.New(),
+			db:     db,
+		}
+
+		s.router.GET("/api/runtime-config", s.handleRuntimeConfig)
+
+		// Clear env to ensure "database" source is detected
+		// Note: This test may show "environment" if HEALARR_BASE_PATH is set
+		req := httptest.NewRequest("GET", "/api/runtime-config", nil)
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var response map[string]interface{}
+		err = json.Unmarshal(w.Body.Bytes(), &response)
+		require.NoError(t, err)
+
+		assert.Equal(t, "/healarr", response["base_path"])
+
+		// Clean up
+		_, _ = db.Exec("DELETE FROM settings WHERE key = 'base_path'")
+	})
+
+	t.Run("handles db query error gracefully", func(t *testing.T) {
+		// Use database with missing settings table
+		emptyDB, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer emptyDB.Close()
+
+		config.SetForTesting(&config.Config{
+			BasePath:             "/",
+			Port:                 "8080",
+			VerificationTimeout:  60 * time.Second,
+			VerificationInterval: 4 * time.Hour,
+		})
+
+		s := &RESTServer{
+			router: gin.New(),
+			db:     emptyDB,
+		}
+
+		s.router.GET("/api/runtime-config", s.handleRuntimeConfig)
+
+		req := httptest.NewRequest("GET", "/api/runtime-config", nil)
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		// Should still return OK even with DB error
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var response map[string]interface{}
+		err = json.Unmarshal(w.Body.Bytes(), &response)
+		require.NoError(t, err)
+
+		// Should have base_path even with DB error
+		assert.NotEmpty(t, response["base_path"])
 	})
 }

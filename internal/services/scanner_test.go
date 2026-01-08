@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -3550,4 +3551,54 @@ func TestScannerService_QueueForRescan_DBError(t *testing.T) {
 
 	// Should not panic
 	scanner.queueForRescan("/media/movies/test.mkv", 1, "corrupt", "test error")
+}
+
+// =============================================================================
+// handleWalkError tests
+// =============================================================================
+
+func TestScannerService_HandleWalkError(t *testing.T) {
+	scanner := &ScannerService{}
+
+	t.Run("permission error returns nil", func(t *testing.T) {
+		// Permission errors should be swallowed (return nil)
+		err := scanner.handleWalkError("/some/path", os.ErrPermission)
+		if err != nil {
+			t.Errorf("Expected nil for permission error, got %v", err)
+		}
+	})
+
+	t.Run("PathError with permission denied returns nil", func(t *testing.T) {
+		// Test with PathError wrapping permission error (like filepath.WalkDir returns)
+		pathErr := &os.PathError{Op: "open", Path: "/some/path", Err: os.ErrPermission}
+		err := scanner.handleWalkError("/some/path", pathErr)
+		if err != nil {
+			t.Errorf("Expected nil for PathError with permission denied, got %v", err)
+		}
+	})
+
+	t.Run("other error is propagated", func(t *testing.T) {
+		// Other errors should be returned as-is
+		otherErr := fmt.Errorf("some other error")
+		err := scanner.handleWalkError("/some/path", otherErr)
+		if err != otherErr {
+			t.Errorf("Expected error to be propagated, got %v", err)
+		}
+	})
+
+	t.Run("not exist error is propagated", func(t *testing.T) {
+		// ErrNotExist should be returned (different from permission)
+		err := scanner.handleWalkError("/some/path", os.ErrNotExist)
+		if err != os.ErrNotExist {
+			t.Errorf("Expected ErrNotExist to be propagated, got %v", err)
+		}
+	})
+
+	t.Run("nil error returns nil", func(t *testing.T) {
+		// nil error should return nil
+		err := scanner.handleWalkError("/some/path", nil)
+		if err != nil {
+			t.Errorf("Expected nil for nil error, got %v", err)
+		}
+	})
 }
