@@ -231,7 +231,7 @@ func (c *HTTPArrClient) getInstanceForPath(arrPath string) (*ArrInstance, error)
 		var i ArrInstance
 		var rootPath string
 		var encryptedKey string
-		if err := rows.Scan(&i.ID, &i.Name, &i.Type, &i.URL, &encryptedKey, &rootPath); err != nil {
+		if rows.Scan(&i.ID, &i.Name, &i.Type, &i.URL, &encryptedKey, &rootPath) != nil {
 			continue
 		}
 
@@ -1043,7 +1043,7 @@ func (c *HTTPArrClient) getAllInstancesInternal() ([]*ArrInstance, error) {
 	for rows.Next() {
 		var i ArrInstance
 		var encryptedKey string
-		if err := rows.Scan(&i.ID, &i.Name, &i.Type, &i.URL, &encryptedKey); err != nil {
+		if rows.Scan(&i.ID, &i.Name, &i.Type, &i.URL, &encryptedKey) != nil {
 			continue
 		}
 		decryptedKey, err := crypto.Decrypt(encryptedKey)

@@ -69,7 +69,7 @@ func (s *RESTServer) getScanPaths(c *gin.Context) {
 		var detectionArgs sql.NullString
 		var maxRetries int
 		var verificationTimeoutHours sql.NullInt64
-		if err := rows.Scan(&id, &localPath, &arrPath, &arrInstanceID, &enabled, &autoRemediate, &detectionMethod, &detectionArgs, &detectionMode, &maxRetries, &verificationTimeoutHours); err != nil {
+		if rows.Scan(&id, &localPath, &arrPath, &arrInstanceID, &enabled, &autoRemediate, &detectionMethod, &detectionArgs, &detectionMode, &maxRetries, &verificationTimeoutHours) != nil {
 			continue
 		}
 		path := gin.H{

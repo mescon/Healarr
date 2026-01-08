@@ -21,7 +21,7 @@ func (s *RESTServer) triggerScan(c *gin.Context) {
 
 	// Look up path
 	var localPath string
-	if err := s.db.QueryRow("SELECT local_path FROM scan_paths WHERE id = ?", req.PathID).Scan(&localPath); err != nil {
+	if s.db.QueryRow("SELECT local_path FROM scan_paths WHERE id = ?", req.PathID).Scan(&localPath) != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Path not found"})
 		return
 	}
@@ -94,7 +94,7 @@ func (s *RESTServer) getScans(c *gin.Context) {
 		var completedAt sql.NullString
 		var filesScanned, corruptionsFound int
 
-		if err := rows.Scan(&id, &path, &status, &filesScanned, &corruptionsFound, &startedAt, &completedAt); err != nil {
+		if rows.Scan(&id, &path, &status, &filesScanned, &corruptionsFound, &startedAt, &completedAt) != nil {
 			continue
 		}
 
@@ -128,7 +128,7 @@ func (s *RESTServer) getActiveScans(c *gin.Context) {
 
 func (s *RESTServer) cancelScan(c *gin.Context) {
 	scanID := c.Param("scan_id")
-	if err := s.scanner.CancelScan(scanID); err != nil {
+	if s.scanner.CancelScan(scanID) != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": ErrMsgScanNotFound})
 		return
 	}
@@ -158,7 +158,7 @@ func (s *RESTServer) pauseAllScans(c *gin.Context) {
 	paused := 0
 	for _, scan := range activeScans {
 		if scan.Status == "running" {
-			if err := s.scanner.PauseScan(scan.ID); err == nil {
+			if s.scanner.PauseScan(scan.ID) == nil {
 				paused++
 			}
 		}
@@ -171,7 +171,7 @@ func (s *RESTServer) resumeAllScans(c *gin.Context) {
 	resumed := 0
 	for _, scan := range activeScans {
 		if scan.Status == "paused" {
-			if err := s.scanner.ResumeScan(scan.ID); err == nil {
+			if s.scanner.ResumeScan(scan.ID) == nil {
 				resumed++
 			}
 		}
@@ -184,7 +184,7 @@ func (s *RESTServer) cancelAllScans(c *gin.Context) {
 	cancelled := 0
 	for _, scan := range activeScans {
 		if scan.Status == "running" || scan.Status == "paused" {
-			if err := s.scanner.CancelScan(scan.ID); err == nil {
+			if s.scanner.CancelScan(scan.ID) == nil {
 				cancelled++
 			}
 		}
@@ -348,7 +348,7 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 		var corruptionType, errorDetails sql.NullString
 		var fileSize sql.NullInt64
 
-		if err := rows.Scan(&id, &filePath, &status, &corruptionType, &errorDetails, &fileSize, &scannedAt); err != nil {
+		if rows.Scan(&id, &filePath, &status, &corruptionType, &errorDetails, &fileSize, &scannedAt) != nil {
 			continue
 		}
 

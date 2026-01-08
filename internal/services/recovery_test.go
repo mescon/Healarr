@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // SQLite driver for in-memory test databases
 
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/domain"

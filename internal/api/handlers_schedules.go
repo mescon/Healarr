@@ -24,7 +24,7 @@ func (s *RESTServer) getSchedules(c *gin.Context) {
 		var id, scanPathID int
 		var localPath, cronExpr string
 		var enabled bool
-		if err := rows.Scan(&id, &scanPathID, &localPath, &cronExpr, &enabled); err != nil {
+		if rows.Scan(&id, &scanPathID, &localPath, &cronExpr, &enabled) != nil {
 			continue
 		}
 		schedules = append(schedules, gin.H{

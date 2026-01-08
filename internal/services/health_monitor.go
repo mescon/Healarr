@@ -148,7 +148,7 @@ func (h *HealthMonitorService) checkStuckRemediations() {
 		var corruptionID, filePath sql.NullString
 		var lastEventTime sql.NullString
 
-		if err := rows.Scan(&corruptionID, &filePath, &lastEventTime); err != nil {
+		if rows.Scan(&corruptionID, &filePath, &lastEventTime) != nil {
 			continue
 		}
 
@@ -214,7 +214,7 @@ func (h *HealthMonitorService) checkRepeatedFailures() {
 		var filePath sql.NullString
 		var failureCount int
 
-		if err := rows.Scan(&filePath, &failureCount); err != nil {
+		if rows.Scan(&filePath, &failureCount) != nil {
 			continue
 		}
 

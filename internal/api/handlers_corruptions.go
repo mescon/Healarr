@@ -347,7 +347,7 @@ func (s *RESTServer) getRemediations(c *gin.Context) {
 	remediations := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var id, filePath, completedAt string
-		if err := rows.Scan(&id, &filePath, &completedAt); err != nil {
+		if rows.Scan(&id, &filePath, &completedAt) != nil {
 			continue
 		}
 		remediations = append(remediations, map[string]interface{}{
@@ -387,7 +387,7 @@ func (s *RESTServer) getCorruptionHistory(c *gin.Context) {
 	for rows.Next() {
 		var eventType, createdAt string
 		var eventData []byte // event_data is JSON stored as text/blob
-		if err := rows.Scan(&eventType, &eventData, &createdAt); err != nil {
+		if rows.Scan(&eventType, &eventData, &createdAt) != nil {
 			continue
 		}
 

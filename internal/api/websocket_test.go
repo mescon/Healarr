@@ -232,7 +232,7 @@ func TestWebSocketHub_Broadcast(t *testing.T) {
 	received := make(chan map[string]interface{}, 1)
 	go func() {
 		var msg map[string]interface{}
-		if err := ws.ReadJSON(&msg); err == nil {
+		if ws.ReadJSON(&msg) == nil {
 			received <- msg
 		}
 	}()
@@ -372,7 +372,7 @@ func TestWebSocketHub_EventBroadcast(t *testing.T) {
 	go func() {
 		for {
 			var msg map[string]interface{}
-			if err := ws.ReadJSON(&msg); err != nil {
+			if ws.ReadJSON(&msg) != nil {
 				return
 			}
 			received <- msg

@@ -1445,7 +1445,7 @@ func (s *ScannerService) refreshScanPathCache() error {
 	cache := make([]scanPathConfig, 0, 10)
 	for rows.Next() {
 		var cfg scanPathConfig
-		if err := rows.Scan(&cfg.LocalPath, &cfg.AutoRemediate, &cfg.DryRun); err != nil {
+		if rows.Scan(&cfg.LocalPath, &cfg.AutoRemediate, &cfg.DryRun) != nil {
 			continue
 		}
 		cache = append(cache, cfg)
@@ -1620,7 +1620,7 @@ func (s *ScannerService) LoadActiveCorruptionsForPath(rootPath string) map[strin
 
 	for rows.Next() {
 		var filePath string
-		if err := rows.Scan(&filePath); err != nil {
+		if rows.Scan(&filePath) != nil {
 			continue
 		}
 		result[filePath] = true

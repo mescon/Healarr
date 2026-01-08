@@ -308,7 +308,7 @@ func TestGet_PanicsWhenNotLoaded(t *testing.T) {
 	defer func() { cfg = original }()
 
 	defer func() {
-		if r := recover(); r == nil {
+		if recover() == nil {
 			t.Error("Get() should panic when config is not loaded")
 		}
 	}()

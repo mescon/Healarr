@@ -110,7 +110,7 @@ func (s *RESTServer) handleRecentLogs(c *gin.Context) {
 		lines = append(lines, scanner.Text())
 	}
 
-	if err := scanner.Err(); err != nil {
+	if scanner.Err() != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan log file"})
 		return
 	}

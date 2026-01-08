@@ -1079,7 +1079,7 @@ func (n *Notifier) GetAllConfigs() ([]*NotificationConfig, error) {
 			continue
 		}
 		cfg.Config = json.RawMessage(decryptedConfig)
-		if err := json.Unmarshal([]byte(eventsJSON), &cfg.Events); err != nil {
+		if json.Unmarshal([]byte(eventsJSON), &cfg.Events) != nil {
 			cfg.Events = []string{}
 		}
 		configs = append(configs, &cfg)
@@ -1117,7 +1117,7 @@ func (n *Notifier) GetConfig(id int64) (*NotificationConfig, error) {
 		return nil, fmt.Errorf("failed to decrypt config: %w", err)
 	}
 	cfg.Config = json.RawMessage(decryptedConfig)
-	if err := json.Unmarshal([]byte(eventsJSON), &cfg.Events); err != nil {
+	if json.Unmarshal([]byte(eventsJSON), &cfg.Events) != nil {
 		cfg.Events = []string{}
 	}
 

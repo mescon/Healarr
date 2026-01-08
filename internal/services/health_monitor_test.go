@@ -90,7 +90,7 @@ func (m *mockHealthArrClient) FindQueueItemsByMediaIDForPath(_ string, _ int64) 
 	return nil, nil
 }
 
-func (m *mockHealthArrClient) GetDownloadStatusForPath(_ string, _ string) (status string, progress float64, errMsg string, err error) {
+func (m *mockHealthArrClient) GetDownloadStatusForPath(_, _ string) (status string, progress float64, errMsg string, err error) {
 	return "", 0, "", nil
 }
 

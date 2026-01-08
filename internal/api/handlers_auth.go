@@ -16,7 +16,7 @@ func (s *RESTServer) handleAuthSetup(c *gin.Context) {
 
 	// Check if password already exists
 	var exists bool
-	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key = 'password_hash')").Scan(&exists); err != nil {
+	if s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key = 'password_hash')").Scan(&exists) != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": ErrMsgDatabaseError})
 		return
 	}
@@ -130,7 +130,7 @@ func (s *RESTServer) handleAuthStatus(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	var count int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM settings WHERE key = 'password_hash'").Scan(&count); err != nil {
+	if s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM settings WHERE key = 'password_hash'").Scan(&count) != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": ErrMsgDatabaseError})
 		return
 	}
@@ -142,7 +142,7 @@ func (s *RESTServer) getAPIKey(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	var encryptedKey string
-	if err := s.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'api_key'").Scan(&encryptedKey); err != nil {
+	if s.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'api_key'").Scan(&encryptedKey) != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve API key"})
 		return
 	}
@@ -204,7 +204,7 @@ func (s *RESTServer) changePassword(c *gin.Context) {
 
 	// Verify current password
 	var hash string
-	if err := s.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'password_hash'").Scan(&hash); err != nil {
+	if s.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'password_hash'").Scan(&hash) != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": ErrMsgDatabaseError})
 		return
 	}

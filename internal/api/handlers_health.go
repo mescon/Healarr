@@ -62,7 +62,7 @@ func (s *RESTServer) checkArrInstancesHealth(ctx context.Context) arrHealthResul
 
 	for rows.Next() {
 		var url, encryptedKey string
-		if err := rows.Scan(&url, &encryptedKey); err != nil {
+		if rows.Scan(&url, &encryptedKey) != nil {
 			continue
 		}
 		decryptedKey, err := crypto.Decrypt(encryptedKey)

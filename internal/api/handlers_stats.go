@@ -124,7 +124,7 @@ func (s *RESTServer) getStatsHistory(c *gin.Context) {
 	for rows.Next() {
 		var date string
 		var count int
-		if err := rows.Scan(&date, &count); err != nil {
+		if rows.Scan(&date, &count) != nil {
 			continue
 		}
 		stats = append(stats, map[string]interface{}{
@@ -153,7 +153,7 @@ func (s *RESTServer) getStatsTypes(c *gin.Context) {
 	for rows.Next() {
 		var corruptionType sql.NullString
 		var count int
-		if err := rows.Scan(&corruptionType, &count); err != nil {
+		if rows.Scan(&corruptionType, &count) != nil {
 			continue
 		}
 
