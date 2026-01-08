@@ -114,8 +114,7 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	// Security: whereClause contains only fixed strings with ? placeholders, user values are in args
 	var total int
 	countQuery := "SELECT COUNT(*) " + baseQuery + whereClause // NOSONAR - uses parameterized query with args
-	err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
-	if err != nil {
+	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -332,8 +331,7 @@ func (s *RESTServer) getRemediations(c *gin.Context) {
 
 	// Get total count
 	var total int
-	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM corruption_status WHERE current_state = ?", string(domain.VerificationSuccess)).Scan(&total)
-	if err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM corruption_status WHERE current_state = ?", string(domain.VerificationSuccess)).Scan(&total); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
