@@ -2615,3 +2615,39 @@ func TestGetFileName(t *testing.T) {
 		})
 	}
 }
+
+func TestNotifier_PublishNotificationEvent(t *testing.T) {
+	testDB := newTestDB(t)
+	defer testDB.Close()
+
+	eb := eventbus.NewEventBus(testDB.DB)
+	n := &Notifier{
+		db:       testDB.DB,
+		eb:       eb,
+		configs:  make(map[int64]*NotificationConfig),
+		lastSent: make(map[int64]time.Time),
+	}
+
+	t.Run("does nothing with empty aggregateID", func(t *testing.T) {
+		// Should not panic or insert anything
+		n.publishNotificationEvent("", domain.NotificationSent, "Discord", "CorruptionDetected", "")
+		// Success = no panic (early return when aggregateID is empty)
+	})
+
+	t.Run("calls publish with NotificationSent event", func(t *testing.T) {
+		// Verifies the function doesn't error/panic when called with valid data
+		// The actual persistence is tested in eventbus tests
+		n.publishNotificationEvent("corruption-789", domain.NotificationSent, "Discord", "CorruptionDetected", "")
+		// Success = no panic
+	})
+
+	t.Run("calls publish with NotificationFailed event", func(t *testing.T) {
+		n.publishNotificationEvent("corruption-456", domain.NotificationFailed, "Telegram", "VerificationSuccess", "connection refused")
+		// Success = no panic
+	})
+
+	t.Run("handles empty error message", func(t *testing.T) {
+		n.publishNotificationEvent("corruption-111", domain.NotificationFailed, "Slack", "DownloadStarted", "")
+		// Success = no panic
+	})
+}
