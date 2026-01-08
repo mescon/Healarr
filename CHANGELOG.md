@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.21] - 2026-01-08
+
+### Security
+- **SSRF Protection**: Added URL validation for *arr instance endpoints
+  - Restricts URL schemes to `http` and `https` only
+  - Blocks dangerous protocols (`file://`, `gopher://`, `ldap://`, `javascript:`, `data:`)
+  - Validates host presence in URLs
+- **Path Traversal Protection**: Enhanced directory browser security
+  - Sanitizes paths using `filepath.Clean`
+  - Blocks `..` sequences and null bytes
+  - Validates paths remain within allowed directories
+- **Backup Cleanup Hardening**: Added path validation in database backup cleanup
+  - Uses `filepath.Base` to ensure safe filenames
+  - Defense-in-depth against directory traversal
+- **Open Redirect Prevention**: Added base path validation in frontend
+  - Blocks protocol-relative URLs (`//evil.com`)
+  - Blocks absolute URLs with protocols
+  - Blocks control characters in paths
+
+### Added
+- **Security Test Suites**: Comprehensive tests for all security protections
+  - SSRF scheme blocking tests (7 schemes)
+  - Path traversal pattern tests (5 patterns)
+  - Integration tests for security endpoints
+
 ## [1.1.20] - 2026-01-06
 
 ### Added

@@ -17,6 +17,11 @@ import (
 // errInvalidURLScheme is returned when a URL has an invalid scheme.
 var errInvalidURLScheme = errors.New("only http and https schemes are allowed")
 
+// formatInvalidURLError formats an error message for invalid URL responses.
+func formatInvalidURLError(err error) string {
+	return fmt.Sprintf("Invalid URL: %v", err)
+}
+
 // validateArrURL validates that a URL is safe to use for *arr API requests.
 // It ensures:
 // 1. The URL is parseable
@@ -99,7 +104,7 @@ func (s *RESTServer) createArrInstance(c *gin.Context) {
 
 	// Security: Validate URL to prevent SSRF attacks
 	if err := validateArrURL(req.URL); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid URL: %v", err)})
+		c.JSON(http.StatusBadRequest, gin.H{"error": formatInvalidURLError(err)})
 		return
 	}
 
@@ -146,7 +151,7 @@ func (s *RESTServer) updateArrInstance(c *gin.Context) {
 
 	// Security: Validate URL to prevent SSRF attacks
 	if err := validateArrURL(req.URL); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid URL: %v", err)})
+		c.JSON(http.StatusBadRequest, gin.H{"error": formatInvalidURLError(err)})
 		return
 	}
 
@@ -181,7 +186,7 @@ func (s *RESTServer) testArrConnection(c *gin.Context) {
 	if err := validateArrURL(req.URL); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error":   fmt.Sprintf("Invalid URL: %v", err),
+			"error":   formatInvalidURLError(err),
 		})
 		return
 	}
