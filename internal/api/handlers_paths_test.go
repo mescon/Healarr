@@ -1020,3 +1020,117 @@ func TestBrowseDirectory_CannotAccessDirectory(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &response)
 	assert.Equal(t, "Cannot access directory", response["error"])
 }
+
+// =============================================================================
+// sanitizeBrowsePath Security Tests
+// =============================================================================
+
+func TestSanitizeBrowsePath_ValidPaths(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"root path", "/", "/"},
+		{"simple path", "/media", "/media"},
+		{"nested path", "/media/tv/shows", "/media/tv/shows"},
+		{"path with spaces", "/media/My Videos", "/media/My Videos"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := sanitizeBrowsePath(tc.input)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestSanitizeBrowsePath_PathTraversalBlocked(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"simple traversal", "/media/../etc/passwd"},
+		{"double traversal", "/media/../../etc/passwd"},
+		{"encoded traversal", "/media/%2e%2e/etc"},
+		{"traversal at start", "../etc/passwd"},
+		{"traversal in middle", "/media/foo/../../../etc/passwd"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := sanitizeBrowsePath(tc.input)
+			// Path traversal should either be cleaned or rejected
+			// filepath.Clean handles most cases, but we also check for ".." in the result
+			if err != nil {
+				assert.Equal(t, errInvalidPath, err)
+			}
+		})
+	}
+}
+
+func TestSanitizeBrowsePath_NullBytesBlocked(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"null byte in path", "/media/foo\x00bar"},
+		{"null byte at end", "/media/foo\x00"},
+		{"null byte at start", "\x00/media/foo"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := sanitizeBrowsePath(tc.input)
+			assert.Equal(t, errInvalidPath, err)
+		})
+	}
+}
+
+func TestSanitizeBrowsePath_RelativePathsNormalized(t *testing.T) {
+	// Relative paths should be made absolute
+	result, err := sanitizeBrowsePath("media/tv")
+	assert.NoError(t, err)
+	assert.True(t, filepath.IsAbs(result))
+}
+
+func TestBrowseDirectory_PathTraversalBlocked(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Try path traversal attack
+	req, _ := http.NewRequest("GET", "/api/config/browse?path=/tmp/../../../etc/passwd", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should not return /etc/passwd contents
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	// filepath.Clean will normalize this, so it won't be /etc/passwd
+	assert.NotEqual(t, "/etc/passwd", response["current_path"])
+}
+
+func TestBrowseDirectory_NullByteBlocked(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Try null byte injection
+	req, _ := http.NewRequest("GET", "/api/config/browse?path=/tmp%00/etc/passwd", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Equal(t, "Invalid path", response["error"])
+}

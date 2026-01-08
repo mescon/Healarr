@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,39 @@ import (
 )
 
 const errMsgReloadPathMappings = "Failed to reload path mappings: %v"
+
+// errInvalidPath is returned when a path fails security validation.
+var errInvalidPath = errors.New("invalid path")
+
+// sanitizeBrowsePath validates and sanitizes a path for directory browsing.
+// It prevents path traversal attacks by ensuring the path:
+// 1. Is cleaned of any relative path components
+// 2. Does not contain path traversal sequences after cleaning
+// 3. Is an absolute path
+// 4. Contains only valid path characters
+func sanitizeBrowsePath(requestedPath string) (string, error) {
+	// Clean the path to resolve any . or .. components
+	cleanPath := filepath.Clean(requestedPath)
+
+	// Ensure the path is absolute
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = "/" + cleanPath
+		cleanPath = filepath.Clean(cleanPath)
+	}
+
+	// Security: Reject if path still contains traversal sequences
+	// This handles edge cases that filepath.Clean might not catch
+	if strings.Contains(cleanPath, "..") {
+		return "", errInvalidPath
+	}
+
+	// Security: Reject null bytes which can be used to bypass checks
+	if strings.ContainsRune(cleanPath, 0) {
+		return "", errInvalidPath
+	}
+
+	return cleanPath, nil
+}
 
 func (s *RESTServer) getScanPaths(c *gin.Context) {
 	rows, err := s.db.Query("SELECT id, local_path, arr_path, arr_instance_id, enabled, auto_remediate, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours FROM scan_paths")
@@ -207,19 +241,24 @@ func (s *RESTServer) deleteScanPath(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// browseDirectory returns directory contents for the file browser
+// browseDirectory returns directory contents for the file browser.
+// This endpoint is protected by authentication and is used by admins to configure scan paths.
 func (s *RESTServer) browseDirectory(c *gin.Context) {
 	requestedPath := c.Query("path")
 	if requestedPath == "" {
 		requestedPath = "/"
 	}
 
-	// Clean and validate the path
-	cleanPath := filepath.Clean(requestedPath)
-
-	// Security: ensure path is absolute and doesn't contain traversal
-	if !filepath.IsAbs(cleanPath) {
-		cleanPath = "/" + cleanPath
+	// Security: Sanitize and validate the path to prevent path traversal
+	cleanPath, err := sanitizeBrowsePath(requestedPath)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"current_path": "/",
+			"parent_path":  nil,
+			"entries":      []gin.H{},
+			"error":        "Invalid path",
+		})
+		return
 	}
 
 	// Check if path exists and is a directory

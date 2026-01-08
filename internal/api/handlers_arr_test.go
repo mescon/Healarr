@@ -968,3 +968,179 @@ func TestGetArrRootFolders_Unauthorized(t *testing.T) {
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
+
+// =============================================================================
+// validateArrURL Security Tests (SSRF Prevention)
+// =============================================================================
+
+func TestValidateArrURL_ValidURLs(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"http localhost", "http://localhost:8989"},
+		{"http ip", "http://192.168.1.1:8989"},
+		{"https hostname", "https://sonarr.example.com"},
+		{"https with path", "https://media.example.com/sonarr"},
+		{"http with port", "http://sonarr.local:8989"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateArrURL(tc.url)
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestValidateArrURL_BlocksSSRFSchemes(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"file scheme", "file:///etc/passwd"},
+		{"gopher scheme", "gopher://localhost:70/_Hello"},
+		{"dict scheme", "dict://localhost:11111/info"},
+		{"ftp scheme", "ftp://localhost/file"},
+		{"ldap scheme", "ldap://localhost:389"},
+		{"javascript scheme", "javascript:alert(1)"},
+		{"data scheme", "data:text/plain,hello"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateArrURL(tc.url)
+			assert.Error(t, err)
+			assert.Equal(t, errInvalidURLScheme, err)
+		})
+	}
+}
+
+func TestValidateArrURL_BlocksEmptyHost(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"empty host", "http:///api"},
+		{"no host https", "https:///secret"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateArrURL(tc.url)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "host")
+		})
+	}
+}
+
+func TestValidateArrURL_BlocksInvalidURLs(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"completely invalid", "not-a-url"},
+		{"missing scheme", "localhost:8989"},
+		{"malformed url", "http://[invalid"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateArrURL(tc.url)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestCreateArrInstance_SSRFBlocked(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupArrTestServer(t, db)
+	defer serverCleanup()
+
+	// Try to create an instance with file:// URL (SSRF attempt)
+	body := bytes.NewBufferString(`{
+		"name": "Malicious",
+		"type": "sonarr",
+		"url": "file:///etc/passwd",
+		"api_key": "api-key-123",
+		"enabled": true
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/arr", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Contains(t, response["error"], "Invalid URL")
+}
+
+func TestUpdateArrInstance_SSRFBlocked(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupArrTestServer(t, db)
+	defer serverCleanup()
+
+	// Create a valid instance first
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	result, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Test", "sonarr", "http://localhost:8989", encryptedKey)
+	id, _ := result.LastInsertId()
+
+	// Try to update with a gopher:// URL (SSRF attempt)
+	body := bytes.NewBufferString(`{
+		"name": "Updated",
+		"type": "sonarr",
+		"url": "gopher://localhost:70/_test",
+		"api_key": "api-key-123",
+		"enabled": true
+	}`)
+
+	req, _ := http.NewRequest("PUT", "/api/config/arr/"+string(rune(id+'0')), body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Contains(t, response["error"], "Invalid URL")
+}
+
+func TestTestArrConnection_SSRFBlocked(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupArrTestServer(t, db)
+	defer serverCleanup()
+
+	// Try to test with a file:// URL (SSRF attempt)
+	body := bytes.NewBufferString(`{
+		"url": "file:///etc/passwd",
+		"api_key": "test-api-key"
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/arr/test", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Invalid URL should return 400 Bad Request (not 200 with success=false)
+	// because the URL validation fails before any connection attempt
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Equal(t, false, response["success"])
+	assert.Contains(t, response["error"], "Invalid URL")
+}

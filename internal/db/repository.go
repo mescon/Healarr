@@ -682,11 +682,19 @@ func (r *Repository) cleanupOldBackups(backupDir string, keep int) {
 
 	// Remove old backups
 	for i := keep; i < len(backups); i++ {
-		path := filepath.Join(backupDir, backups[i].name)
+		// Security: Use filepath.Base to ensure we only use the filename portion,
+		// preventing any potential path traversal even though os.ReadDir
+		// should only return base names. Defense-in-depth approach.
+		safeName := filepath.Base(backups[i].name)
+		if safeName == "." || safeName == ".." || safeName != backups[i].name {
+			logger.Warnf("Skipping suspicious backup filename: %s", backups[i].name)
+			continue
+		}
+		path := filepath.Join(backupDir, safeName)
 		if err := os.Remove(path); err != nil {
 			logger.Errorf("Failed to remove old backup %s: %v", path, err)
 		} else {
-			logger.Infof("Removed old backup: %s", backups[i].name)
+			logger.Infof("Removed old backup: %s", safeName)
 		}
 	}
 }

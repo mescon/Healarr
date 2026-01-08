@@ -15,6 +15,49 @@ declare global {
 let cachedBasePath: string | null = null;
 
 /**
+ * Validates and sanitizes a base path to prevent open redirect attacks.
+ * Ensures the path:
+ * 1. Starts with a single "/" (relative path)
+ * 2. Does not start with "//" (protocol-relative URL)
+ * 3. Does not contain ":" in the first 10 chars (prevents javascript:, http:, etc.)
+ * 4. Does not contain newlines or null bytes
+ * @returns Sanitized path or empty string if invalid
+ */
+function sanitizeBasePath(path: string): string {
+  // Empty or "/" is valid
+  if (!path || path === '/') {
+    return path || '';
+  }
+
+  // Security: Reject protocol-relative URLs (//evil.com)
+  if (path.startsWith('//')) {
+    console.warn('Rejected invalid base path (protocol-relative):', path);
+    return '';
+  }
+
+  // Security: Reject absolute URLs with protocols (http:, javascript:, etc.)
+  // Check first 10 chars to catch common protocols
+  const protocolCheck = path.substring(0, 10).toLowerCase();
+  if (protocolCheck.includes(':')) {
+    console.warn('Rejected invalid base path (contains protocol):', path);
+    return '';
+  }
+
+  // Security: Reject paths with newlines or null bytes (injection attacks)
+  if (path.includes('\n') || path.includes('\r') || path.includes('\0')) {
+    console.warn('Rejected invalid base path (contains control characters)');
+    return '';
+  }
+
+  // Must start with /
+  if (!path.startsWith('/')) {
+    return '/' + path;
+  }
+
+  return path;
+}
+
+/**
  * Detects the base path from server-injected value or current URL.
  * Priority:
  * 1. Server-injected window.__HEALARR_BASE_PATH__ (most reliable)
@@ -27,15 +70,18 @@ export function detectBasePath(): string {
 
   // First, check for server-injected base path (most reliable method)
   if (typeof window.__HEALARR_BASE_PATH__ === 'string') {
-    cachedBasePath = window.__HEALARR_BASE_PATH__;
+    let basePath = window.__HEALARR_BASE_PATH__;
     // Normalize: remove trailing slash if present (but keep "/" as is)
-    if (cachedBasePath.length > 1 && cachedBasePath.endsWith('/')) {
-      cachedBasePath = cachedBasePath.slice(0, -1);
+    if (basePath.length > 1 && basePath.endsWith('/')) {
+      basePath = basePath.slice(0, -1);
     }
+    // Security: Validate the base path to prevent open redirect attacks
+    cachedBasePath = sanitizeBasePath(basePath);
     return cachedBasePath;
   }
 
   // Fallback: Try to detect from the current URL
+  // Note: window.location.pathname is already validated by the browser
   const pathname = window.location.pathname;
 
   // Check if we're at a known SPA route
@@ -45,14 +91,16 @@ export function detectBasePath(): string {
     const idx = pathname.indexOf(route);
     if (idx > 0) {
       // Found a SPA route with something before it - that's our base path
-      cachedBasePath = pathname.substring(0, idx);
+      // Security: Still sanitize for defense in depth
+      cachedBasePath = sanitizeBasePath(pathname.substring(0, idx));
       return cachedBasePath;
     }
   }
 
   // Check if pathname ends with index.html
   if (pathname.endsWith('/index.html')) {
-    cachedBasePath = pathname.replace('/index.html', '');
+    // Security: Sanitize the extracted base path
+    cachedBasePath = sanitizeBasePath(pathname.replace('/index.html', ''));
     return cachedBasePath;
   }
 

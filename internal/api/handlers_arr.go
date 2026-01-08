@@ -1,8 +1,11 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -10,6 +13,34 @@ import (
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
 )
+
+// errInvalidURLScheme is returned when a URL has an invalid scheme.
+var errInvalidURLScheme = errors.New("only http and https schemes are allowed")
+
+// validateArrURL validates that a URL is safe to use for *arr API requests.
+// It ensures:
+// 1. The URL is parseable
+// 2. The scheme is http or https (prevents file://, gopher://, etc.)
+// 3. The host is not empty
+func validateArrURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Only allow http and https schemes
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return errInvalidURLScheme
+	}
+
+	// Ensure host is present
+	if parsed.Host == "" {
+		return errors.New("URL must include a host")
+	}
+
+	return nil
+}
 
 func (s *RESTServer) getArrInstances(c *gin.Context) {
 	rows, err := s.db.Query("SELECT id, name, type, url, api_key, enabled FROM arr_instances")
@@ -66,6 +97,12 @@ func (s *RESTServer) createArrInstance(c *gin.Context) {
 		return
 	}
 
+	// Security: Validate URL to prevent SSRF attacks
+	if err := validateArrURL(req.URL); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid URL: %v", err)})
+		return
+	}
+
 	// Encrypt API key before storage
 	encryptedKey, err := crypto.Encrypt(req.APIKey)
 	if err != nil {
@@ -107,6 +144,12 @@ func (s *RESTServer) updateArrInstance(c *gin.Context) {
 		return
 	}
 
+	// Security: Validate URL to prevent SSRF attacks
+	if err := validateArrURL(req.URL); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid URL: %v", err)})
+		return
+	}
+
 	// Encrypt API key before storage
 	encryptedKey, err := crypto.Encrypt(req.APIKey)
 	if err != nil {
@@ -134,6 +177,15 @@ func (s *RESTServer) testArrConnection(c *gin.Context) {
 		return
 	}
 
+	// Security: Validate URL to prevent SSRF attacks
+	if err := validateArrURL(req.URL); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Invalid URL: %v", err),
+		})
+		return
+	}
+
 	// Create client with short timeout
 	client := &http.Client{
 		Timeout: 5 * time.Second,
@@ -149,7 +201,7 @@ func (s *RESTServer) testArrConnection(c *gin.Context) {
 	targetURL := fmt.Sprintf("%s/api/v3/system/status?apikey=%s", baseURL, req.APIKey)
 	logger.Debugf("Testing connection to: %s/api/v3/system/status", baseURL)
 
-	resp, err := client.Get(targetURL)
+	resp, err := client.Get(targetURL) // #nosec G107 -- URL is validated above
 	if err != nil {
 		logger.Debugf("Connection test failed: %v", err)
 		c.JSON(http.StatusOK, gin.H{
