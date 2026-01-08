@@ -1925,3 +1925,33 @@ func TestEnrichVerificationEventData(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// Polling progress helper tests
+// =============================================================================
+
+func TestVerifierService_ShouldLogPollingProgress(t *testing.T) {
+	v := &VerifierService{}
+
+	tests := []struct {
+		name     string
+		attempt  int
+		interval time.Duration
+		want     bool
+	}{
+		{"first attempt", 0, time.Minute, false},
+		{"attempt 5 short interval", 5, time.Minute, false},
+		{"attempt 10 short interval", 10, time.Minute, true},
+		{"attempt 20 short interval", 20, time.Minute, true},
+		{"attempt 5 long interval (1h)", 5, time.Hour, true},
+		{"attempt 1 long interval (2h)", 1, 2 * time.Hour, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := v.shouldLogPollingProgress(tt.attempt, tt.interval); got != tt.want {
+				t.Errorf("shouldLogPollingProgress(%d, %v) = %v, want %v", tt.attempt, tt.interval, got, tt.want)
+			}
+		})
+	}
+}

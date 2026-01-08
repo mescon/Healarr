@@ -418,3 +418,87 @@ func TestHandleRuntimeConfig(t *testing.T) {
 		assert.NotEmpty(t, response["base_path"])
 	})
 }
+
+// =============================================================================
+// Token extraction helper tests
+// =============================================================================
+
+func TestRESTServer_ExtractAPIToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := &RESTServer{}
+
+	tests := []struct {
+		name      string
+		setupReq  func(req *http.Request)
+		wantToken string
+	}{
+		{
+			"X-API-Key header",
+			func(req *http.Request) {
+				req.Header.Set("X-API-Key", "test-api-key")
+			},
+			"test-api-key",
+		},
+		{
+			"Authorization Bearer header",
+			func(req *http.Request) {
+				req.Header.Set("Authorization", "Bearer bearer-token")
+			},
+			"bearer-token",
+		},
+		{
+			"Authorization without Bearer",
+			func(req *http.Request) {
+				req.Header.Set("Authorization", "basic-auth-token")
+			},
+			"basic-auth-token",
+		},
+		{
+			"token query param",
+			func(req *http.Request) {
+				q := req.URL.Query()
+				q.Set("token", "query-token")
+				req.URL.RawQuery = q.Encode()
+			},
+			"query-token",
+		},
+		{
+			"apikey query param",
+			func(req *http.Request) {
+				q := req.URL.Query()
+				q.Set("apikey", "api-key-param")
+				req.URL.RawQuery = q.Encode()
+			},
+			"api-key-param",
+		},
+		{
+			"no token provided",
+			func(req *http.Request) {},
+			"",
+		},
+		{
+			"X-API-Key takes precedence over query",
+			func(req *http.Request) {
+				req.Header.Set("X-API-Key", "header-key")
+				q := req.URL.Query()
+				q.Set("token", "query-key")
+				req.URL.RawQuery = q.Encode()
+			},
+			"header-key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/test", nil)
+			tt.setupReq(req)
+
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = req
+
+			got := s.extractAPIToken(c)
+			assert.Equal(t, tt.wantToken, got)
+		})
+	}
+}
