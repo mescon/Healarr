@@ -177,8 +177,17 @@ export interface LogEntry {
     message: string;
 }
 
-export const getRecentLogs = async (): Promise<LogEntry[]> => {
-    const { data } = await api.get<LogEntry[]>('/logs/recent');
+export interface LogsResponse {
+    entries: LogEntry[];
+    total_lines: number;
+    has_more: boolean;
+    offset: number;
+}
+
+export const getRecentLogs = async (limit = 100, offset = 0): Promise<LogsResponse> => {
+    const { data } = await api.get<LogsResponse>('/logs/recent', {
+        params: { limit, offset }
+    });
     return data;
 };
 

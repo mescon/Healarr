@@ -1,11 +1,13 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useWebSocket } from '../contexts/WebSocketProvider';
 import { useConnection } from '../contexts/ConnectionContext';
 import { getRecentLogs, downloadLogs, type LogEntry } from '../lib/api';
 import clsx from 'clsx';
 import { format } from 'date-fns';
-import { Terminal, Pause, Play, Trash2, Download } from 'lucide-react';
+import { Terminal, Pause, Play, Trash2, Download, Loader2 } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
+
+const LOGS_PER_PAGE = 100;
 
 const Logs = () => {
     const { lastMessage, isConnected: wsConnected, reconnect: wsReconnect } = useWebSocket();
@@ -13,15 +15,73 @@ const Logs = () => {
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [isPaused, setIsPaused] = useState(false);
     const [filter, setFilter] = useState<'ALL' | 'INFO' | 'ERROR' | 'DEBUG'>('ALL');
+    const [hasMore, setHasMore] = useState(false);
+    const [currentOffset, setCurrentOffset] = useState(0);
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
+    const [initialLoadDone, setInitialLoadDone] = useState(false);
     const bottomRef = useRef<HTMLDivElement>(null);
+    const topRef = useRef<HTMLDivElement>(null);
+    const scrollContainerRef = useRef<HTMLDivElement>(null);
     const toast = useToast();
     const prevBackendConnected = useRef(backendConnected);
     const prevWsConnected = useRef(wsConnected);
 
+    // Load older logs when user scrolls to top
+    const loadMoreLogs = useCallback(async () => {
+        if (isLoadingMore || !hasMore) return;
+
+        setIsLoadingMore(true);
+        const scrollContainer = scrollContainerRef.current;
+        const previousScrollHeight = scrollContainer?.scrollHeight || 0;
+
+        try {
+            const newOffset = currentOffset + logs.length;
+            const response = await getRecentLogs(LOGS_PER_PAGE, newOffset);
+
+            if (response.entries && response.entries.length > 0) {
+                // Prepend older logs
+                setLogs(prev => [...response.entries, ...prev]);
+                setHasMore(response.has_more);
+                setCurrentOffset(newOffset);
+
+                // Maintain scroll position after prepending
+                requestAnimationFrame(() => {
+                    if (scrollContainer) {
+                        const newScrollHeight = scrollContainer.scrollHeight;
+                        scrollContainer.scrollTop = newScrollHeight - previousScrollHeight;
+                    }
+                });
+            }
+        } catch (error) {
+            console.error('Failed to load more logs:', error);
+        } finally {
+            setIsLoadingMore(false);
+        }
+    }, [isLoadingMore, hasMore, currentOffset, logs.length]);
+
+    // Intersection observer for infinite scroll
+    useEffect(() => {
+        if (!initialLoadDone) return;
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                if (entries[0].isIntersecting && hasMore && !isLoadingMore) {
+                    loadMoreLogs();
+                }
+            },
+            { threshold: 0.1 }
+        );
+
+        if (topRef.current) {
+            observer.observe(topRef.current);
+        }
+
+        return () => observer.disconnect();
+    }, [initialLoadDone, hasMore, isLoadingMore, loadMoreLogs]);
+
     // When backend comes back online, trigger WebSocket reconnect
     useEffect(() => {
         if (backendConnected && !prevBackendConnected.current) {
-            // Backend just came back online, reconnect WebSocket
             wsReconnect();
         }
         prevBackendConnected.current = backendConnected;
@@ -30,12 +90,13 @@ const Logs = () => {
     // When WebSocket reconnects, re-fetch recent logs to fill any gaps
     useEffect(() => {
         if (wsConnected && !prevWsConnected.current) {
-            // WebSocket just reconnected, fetch recent logs
             const fetchLogs = async () => {
                 try {
-                    const recentLogs = await getRecentLogs();
-                    if (Array.isArray(recentLogs)) {
-                        setLogs(recentLogs);
+                    const response = await getRecentLogs(LOGS_PER_PAGE, 0);
+                    if (response.entries) {
+                        setLogs(response.entries);
+                        setHasMore(response.has_more);
+                        setCurrentOffset(0);
                     }
                 } catch (error) {
                     console.error('Failed to fetch recent logs after reconnect:', error);
@@ -46,42 +107,49 @@ const Logs = () => {
         prevWsConnected.current = wsConnected;
     }, [wsConnected]);
 
-
-    // Fetch recent logs on mount
+    // Fetch recent logs on mount and scroll to bottom
     useEffect(() => {
         const fetchLogs = async () => {
             try {
-                const recentLogs = await getRecentLogs();
-                // Ensure we always set an array
-                if (Array.isArray(recentLogs)) {
-                    setLogs(recentLogs);
+                const response = await getRecentLogs(LOGS_PER_PAGE, 0);
+                if (response.entries) {
+                    setLogs(response.entries);
+                    setHasMore(response.has_more);
+                    setCurrentOffset(0);
                 } else {
-                    console.error('Recent logs is not an array:', recentLogs);
                     setLogs([]);
                 }
+                setInitialLoadDone(true);
+
+                // Scroll to bottom after initial load
+                requestAnimationFrame(() => {
+                    bottomRef.current?.scrollIntoView();
+                });
             } catch (error) {
                 console.error('Failed to fetch recent logs:', error);
-                setLogs([]); // Ensure logs is always an array
+                setLogs([]);
+                setInitialLoadDone(true);
             }
         };
         fetchLogs();
     }, []);
 
+    // Handle new logs from WebSocket
     useEffect(() => {
         if (lastMessage && typeof lastMessage === 'object' && 'type' in lastMessage && !isPaused) {
             const msg = lastMessage as { type: string; data: LogEntry };
             if (msg.type === 'log') {
-                // eslint-disable-next-line react-hooks/set-state-in-effect
-                setLogs(prev => [...prev, msg.data].slice(-1000)); // Keep last 1000 logs
+                setLogs(prev => [...prev, msg.data].slice(-1000));
             }
         }
     }, [lastMessage, isPaused]);
 
+    // Auto-scroll to bottom for new logs when not paused
     useEffect(() => {
-        if (!isPaused && bottomRef.current) {
+        if (!isPaused && bottomRef.current && initialLoadDone) {
             bottomRef.current.scrollIntoView({ behavior: 'smooth' });
         }
-    }, [logs, isPaused]);
+    }, [logs.length, isPaused, initialLoadDone]);
 
     const formatLogTime = (timestamp: string) => {
         try {
@@ -162,7 +230,11 @@ const Logs = () => {
                         <Download className="w-5 h-5" />
                     </button>
                     <button
-                        onClick={() => setLogs([])}
+                        onClick={() => {
+                            setLogs([]);
+                            setHasMore(false);
+                            setCurrentOffset(0);
+                        }}
                         className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 text-slate-600 dark:text-slate-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
                         title="Clear Logs"
                     >
@@ -183,14 +255,35 @@ const Logs = () => {
                     </div>
                 )}
 
-                <div className="flex-1 overflow-y-auto p-4 space-y-1 scrollbar-thin scrollbar-thumb-slate-300 dark:scrollbar-thumb-slate-800 scrollbar-track-transparent">
+                <div
+                    ref={scrollContainerRef}
+                    className="flex-1 overflow-y-auto p-4 space-y-1 scrollbar-thin scrollbar-thumb-slate-300 dark:scrollbar-thumb-slate-800 scrollbar-track-transparent"
+                >
+                    {/* Top sentinel for infinite scroll */}
+                    <div ref={topRef} className="h-1" />
+
+                    {/* Loading indicator at top */}
+                    {isLoadingMore && (
+                        <div className="flex items-center justify-center py-2 text-slate-500">
+                            <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                            <span className="text-xs">Loading older logs...</span>
+                        </div>
+                    )}
+
+                    {/* "Load more" hint */}
+                    {hasMore && !isLoadingMore && (
+                        <div className="text-center py-1 text-xs text-slate-500 dark:text-slate-600">
+                            ↑ Scroll up for older logs
+                        </div>
+                    )}
+
                     {filteredLogs.length === 0 ? (
                         <div className="h-full flex items-center justify-center text-slate-400 dark:text-slate-600 italic">
                             Waiting for logs...
                         </div>
                     ) : (
                         filteredLogs.map((log, idx) => (
-                            <div key={idx} className="flex gap-3 hover:bg-slate-200/50 dark:hover:bg-white/5 p-0.5 rounded -mx-2 px-2">
+                            <div key={`${log.timestamp}-${idx}`} className="flex gap-3 hover:bg-slate-200/50 dark:hover:bg-white/5 p-0.5 rounded -mx-2 px-2">
                                 <span className="text-slate-500 shrink-0 select-none w-32">
                                     {formatLogTime(log.timestamp)}
                                 </span>

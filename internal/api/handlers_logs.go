@@ -69,15 +69,22 @@ func (s *RESTServer) handleDownloadLogs(c *gin.Context) {
 }
 
 func (s *RESTServer) handleRecentLogs(c *gin.Context) {
-	// Read the last N log entries from the log file
+	// Read log entries with pagination support
+	// Query params:
+	//   limit: number of entries to return (default 100, max 500)
+	//   offset: number of entries to skip from the end (for pagination)
 	cfg := config.Get()
 	logFile := filepath.Join(cfg.LogDir, "healarr.log")
 
 	file, err := os.Open(logFile)
 	if err != nil {
-		// If log file doesn't exist yet, return empty array
+		// If log file doesn't exist yet, return empty response
 		if os.IsNotExist(err) {
-			c.JSON(http.StatusOK, []map[string]interface{}{})
+			c.JSON(http.StatusOK, gin.H{
+				"entries":     []map[string]interface{}{},
+				"total_lines": 0,
+				"has_more":    false,
+			})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read log file"})
@@ -85,7 +92,17 @@ func (s *RESTServer) handleRecentLogs(c *gin.Context) {
 	}
 	defer file.Close()
 
-	// Read all lines into memory (we'll keep last 100)
+	// Parse query parameters using the parseInt helper from pagination.go
+	limit := parseInt(c.DefaultQuery("limit", "100"), 100)
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	offset := parseInt(c.DefaultQuery("offset", "0"), 0)
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Read all lines into memory
 	var lines []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -97,22 +114,34 @@ func (s *RESTServer) handleRecentLogs(c *gin.Context) {
 		return
 	}
 
-	// Get the last 100 lines (or all if less than 100)
-	start := 0
-	if len(lines) > 100 {
-		start = len(lines) - 100
+	totalLines := len(lines)
+
+	// Calculate the range to return (from the end, with offset)
+	// offset=0 means get the latest entries
+	// offset=100 means skip the latest 100 and get older ones
+	end := totalLines - offset
+	if end < 0 {
+		end = 0
 	}
-	recentLines := lines[start:]
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+
+	// Check if there are more (older) logs available
+	hasMore := start > 0
+
+	// Get the slice of lines
+	selectedLines := lines[start:end]
 
 	// Parse each line as a log entry
 	var logEntries []map[string]interface{}
-	for _, line := range recentLines {
+	for _, line := range selectedLines {
 		// Skip empty lines
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 
-		// Try to parse as JSON (from logger package)
 		// Format: timestamp [LEVEL] message
 		// Example: 2025-11-24T19:00:00Z [INFO] Server started
 		parts := strings.SplitN(line, " ", 3)
@@ -129,5 +158,10 @@ func (s *RESTServer) handleRecentLogs(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, logEntries)
+	c.JSON(http.StatusOK, gin.H{
+		"entries":     logEntries,
+		"total_lines": totalLines,
+		"has_more":    hasMore,
+		"offset":      offset,
+	})
 }

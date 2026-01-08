@@ -112,6 +112,14 @@ func setupLogsTestServer(t *testing.T, db *sql.DB) (*gin.Engine, string, func())
 // handleRecentLogs Tests
 // =============================================================================
 
+// logsResponse matches the paginated API response format
+type logsResponse struct {
+	Entries    []map[string]interface{} `json:"entries"`
+	TotalLines int                      `json:"total_lines"`
+	HasMore    bool                     `json:"has_more"`
+	Offset     int                      `json:"offset"`
+}
+
 func TestHandleRecentLogs_NoLogFile(t *testing.T) {
 	db, tmpDir, cleanup := setupLogsTestDB(t)
 	defer cleanup()
@@ -131,10 +139,12 @@ func TestHandleRecentLogs_NoLogFile(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var response []interface{}
+	var response logsResponse
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
-	assert.Empty(t, response)
+	assert.Empty(t, response.Entries)
+	assert.Equal(t, 0, response.TotalLines)
+	assert.False(t, response.HasMore)
 }
 
 func TestHandleRecentLogs_WithLogEntries(t *testing.T) {
@@ -165,19 +175,21 @@ func TestHandleRecentLogs_WithLogEntries(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var response []map[string]interface{}
+	var response logsResponse
 	err = json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
-	assert.Len(t, response, 3)
+	assert.Len(t, response.Entries, 3)
+	assert.Equal(t, 3, response.TotalLines)
+	assert.False(t, response.HasMore)
 
 	// Check first entry
-	assert.Equal(t, "2025-01-15T10:00:00Z", response[0]["timestamp"])
-	assert.Equal(t, "INFO", response[0]["level"])
-	assert.Equal(t, "Server started", response[0]["message"])
+	assert.Equal(t, "2025-01-15T10:00:00Z", response.Entries[0]["timestamp"])
+	assert.Equal(t, "INFO", response.Entries[0]["level"])
+	assert.Equal(t, "Server started", response.Entries[0]["message"])
 
 	// Check last entry
-	assert.Equal(t, "ERROR", response[2]["level"])
-	assert.Equal(t, "Something went wrong", response[2]["message"])
+	assert.Equal(t, "ERROR", response.Entries[2]["level"])
+	assert.Equal(t, "Something went wrong", response.Entries[2]["message"])
 }
 
 func TestHandleRecentLogs_EmptyLines(t *testing.T) {
@@ -209,11 +221,12 @@ func TestHandleRecentLogs_EmptyLines(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var response []map[string]interface{}
+	var response logsResponse
 	err = json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
-	// Empty lines should be skipped
-	assert.Len(t, response, 2)
+	// Empty lines should be skipped, but total_lines includes them
+	assert.Len(t, response.Entries, 2)
+	assert.Equal(t, 4, response.TotalLines) // 4 lines in file including empty
 }
 
 func TestHandleRecentLogs_MoreThan100Lines(t *testing.T) {
@@ -244,11 +257,70 @@ func TestHandleRecentLogs_MoreThan100Lines(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var response []map[string]interface{}
+	var response logsResponse
 	err = json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
-	// Should return only the last 100 lines
-	assert.Len(t, response, 100)
+	// Should return only the last 100 lines (default limit)
+	assert.Len(t, response.Entries, 100)
+	assert.Equal(t, 150, response.TotalLines)
+	assert.True(t, response.HasMore) // There are 50 more (older) lines available
+}
+
+func TestHandleRecentLogs_Pagination(t *testing.T) {
+	db, tmpDir, cleanup := setupLogsTestDB(t)
+	defer cleanup()
+
+	logDir := filepath.Join(tmpDir, "logs")
+	config.SetForTesting(&config.Config{
+		LogDir: logDir,
+	})
+
+	// Create a log file with 20 lines for easy pagination testing
+	logFile := filepath.Join(logDir, "healarr.log")
+	var logContent bytes.Buffer
+	for i := 1; i <= 20; i++ {
+		logContent.WriteString("2025-01-15T10:00:00Z [INFO] Line " + string(rune('0'+i/10)) + string(rune('0'+i%10)) + "\n")
+	}
+	err := os.WriteFile(logFile, logContent.Bytes(), 0644)
+	require.NoError(t, err)
+
+	router, apiKey, serverCleanup := setupLogsTestServer(t, db)
+	defer serverCleanup()
+
+	// Test with limit=10, offset=0 (get newest 10)
+	req, _ := http.NewRequest("GET", "/api/logs/recent?limit=10&offset=0", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response logsResponse
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.Len(t, response.Entries, 10)
+	assert.Equal(t, 20, response.TotalLines)
+	assert.True(t, response.HasMore)
+	// Should contain lines 11-20 (the newest 10)
+	assert.Contains(t, response.Entries[0]["message"], "Line 11")
+	assert.Contains(t, response.Entries[9]["message"], "Line 20")
+
+	// Test with limit=10, offset=10 (get older 10)
+	req2, _ := http.NewRequest("GET", "/api/logs/recent?limit=10&offset=10", nil)
+	req2.Header.Set("X-API-Key", apiKey)
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+
+	assert.Equal(t, http.StatusOK, w2.Code)
+
+	var response2 logsResponse
+	err = json.Unmarshal(w2.Body.Bytes(), &response2)
+	assert.NoError(t, err)
+	assert.Len(t, response2.Entries, 10)
+	assert.False(t, response2.HasMore) // No more older lines
+	// Should contain lines 1-10 (the oldest 10)
+	assert.Contains(t, response2.Entries[0]["message"], "Line 01")
+	assert.Contains(t, response2.Entries[9]["message"], "Line 10")
 }
 
 // =============================================================================
