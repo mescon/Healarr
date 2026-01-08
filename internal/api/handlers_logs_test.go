@@ -145,6 +145,7 @@ func TestHandleRecentLogs_NoLogFile(t *testing.T) {
 	assert.Empty(t, response.Entries)
 	assert.Equal(t, 0, response.TotalLines)
 	assert.False(t, response.HasMore)
+	assert.Equal(t, 0, response.Offset) // Verify offset is included even in empty response
 }
 
 func TestHandleRecentLogs_WithLogEntries(t *testing.T) {

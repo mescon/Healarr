@@ -84,6 +84,7 @@ func (s *RESTServer) handleRecentLogs(c *gin.Context) {
 				"entries":     []map[string]interface{}{},
 				"total_lines": 0,
 				"has_more":    false,
+				"offset":      0,
 			})
 			return
 		}

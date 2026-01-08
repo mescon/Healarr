@@ -35,7 +35,8 @@ const Logs = () => {
         const previousScrollHeight = scrollContainer?.scrollHeight || 0;
 
         try {
-            const newOffset = currentOffset + logs.length;
+            // Use LOGS_PER_PAGE for offset calculation to avoid bugs when logs.length grows
+            const newOffset = currentOffset + LOGS_PER_PAGE;
             const response = await getRecentLogs(LOGS_PER_PAGE, newOffset);
 
             if (response.entries && response.entries.length > 0) {
@@ -57,7 +58,7 @@ const Logs = () => {
         } finally {
             setIsLoadingMore(false);
         }
-    }, [isLoadingMore, hasMore, currentOffset, logs.length]);
+    }, [isLoadingMore, hasMore, currentOffset]);
 
     // Intersection observer for infinite scroll
     useEffect(() => {
