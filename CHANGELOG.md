@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.22] - 2026-01-08
+
+### Changed
+- **Code Quality**: Refactored Go code to use idiomatic if-err pattern
+  - Simplified error handling in auth, corruption, and scan handlers
+  - Improved code readability with inline variable declarations
+- **Error Logging**: Added comprehensive error logging before 500 responses
+  - Database query errors now logged before returning HTTP 500
+
+### Added
+- **Test Coverage**: Added comprehensive tests for RecoveryService
+  - 17 new tests covering recovery.go (previously 0% coverage)
+  - Tests for stale item detection, event emission, and recovery workflows
+
 ## [1.1.21] - 2026-01-08
 
 ### Security
