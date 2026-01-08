@@ -152,25 +152,27 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
         setError('');
 
         try {
+            let restartRequired = false;
+
             // Step 1: Restore database if provided
             if (databaseFile) {
                 const result = await restoreDatabasePublic(databaseFile);
-                if (result.restart_required) {
-                    // If config file also provided, we need to import it after restart
-                    // For now, just reload - config can be imported from settings later
-                    window.location.reload();
-                    return;
-                }
+                restartRequired = !!result.restart_required;
             }
 
-            // Step 2: Import config if provided
+            // Step 2: Import config if provided (always runs, even if restart needed)
             if (configFile) {
                 const text = await configFile.text();
                 const config = JSON.parse(text) as Partial<ConfigExport>;
                 await importConfigPublic(config);
             }
 
-            // Route to appropriate next step
+            // Reload if database restore requires it, otherwise route to next step
+            if (restartRequired) {
+                window.location.reload();
+                return;
+            }
+
             const status = await getSetupStatus();
             routeToNextStep(status);
         } catch (err) {
