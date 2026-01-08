@@ -2,7 +2,6 @@ package services
 
 import (
 	"database/sql"
-	"sync"
 	"testing"
 	"time"
 
@@ -414,13 +413,13 @@ func TestRun_WithStaleItems(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	// Subscribe to events to verify they're emitted
-	var mu sync.Mutex
-	eventCount := 0
+	// Subscribe to events with channel-based synchronization
+	eventReceived := make(chan struct{}, 1)
 	eb.Subscribe(domain.SearchExhausted, func(e domain.Event) {
-		mu.Lock()
-		eventCount++
-		mu.Unlock()
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
 	})
 
 	// Insert a stale corruption_status record
@@ -438,11 +437,11 @@ func TestRun_WithStaleItems(t *testing.T) {
 	// Run should process the stale item
 	rs.Run()
 
-	// Give event bus time to process
-	time.Sleep(100 * time.Millisecond)
-
-	// Should have emitted at least one event (SearchExhausted for missing file)
-	if eventCount == 0 {
+	// Wait for event with timeout
+	select {
+	case <-eventReceived:
+		// Event received as expected
+	case <-time.After(500 * time.Millisecond):
 		t.Log("No events received - this may be expected if file not found leads to exhausted state")
 	}
 }
@@ -458,12 +457,13 @@ func TestEmitVerificationSuccess(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	var mu sync.Mutex
-	receivedEvent := false
+	// Use channel for synchronization
+	eventReceived := make(chan struct{}, 1)
 	eb.Subscribe(domain.VerificationSuccess, func(e domain.Event) {
-		mu.Lock()
-		receivedEvent = true
-		mu.Unlock()
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
 	})
 
 	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
@@ -477,13 +477,15 @@ func TestEmitVerificationSuccess(t *testing.T) {
 
 	result := rs.emitVerificationSuccess(item, "/local/media/test.mkv")
 
-	// Give event bus time to process
-	time.Sleep(100 * time.Millisecond)
-
 	if result != "recovered" {
 		t.Errorf("Expected 'recovered', got: %q", result)
 	}
-	if !receivedEvent {
+
+	// Wait for event with timeout
+	select {
+	case <-eventReceived:
+		// Event received as expected
+	case <-time.After(500 * time.Millisecond):
 		t.Error("Expected event to be published")
 	}
 }
@@ -499,12 +501,13 @@ func TestEmitSearchExhausted(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	var mu sync.Mutex
-	receivedEvent := false
+	// Use channel for synchronization
+	eventReceived := make(chan struct{}, 1)
 	eb.Subscribe(domain.SearchExhausted, func(e domain.Event) {
-		mu.Lock()
-		receivedEvent = true
-		mu.Unlock()
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
 	})
 
 	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
@@ -520,13 +523,15 @@ func TestEmitSearchExhausted(t *testing.T) {
 
 	result := rs.emitSearchExhausted(item, "item_vanished")
 
-	// Give event bus time to process
-	time.Sleep(100 * time.Millisecond)
-
 	if result != "exhausted" {
 		t.Errorf("Expected 'exhausted', got: %q", result)
 	}
-	if !receivedEvent {
+
+	// Wait for event with timeout
+	select {
+	case <-eventReceived:
+		// Event received as expected
+	case <-time.After(500 * time.Millisecond):
 		t.Error("Expected event to be published")
 	}
 }
@@ -542,12 +547,13 @@ func TestVerifyAndComplete_NilDetector(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	var mu sync.Mutex
-	receivedEvent := false
+	// Use channel for synchronization
+	eventReceived := make(chan struct{}, 1)
 	eb.Subscribe(domain.VerificationSuccess, func(e domain.Event) {
-		mu.Lock()
-		receivedEvent = true
-		mu.Unlock()
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
 	})
 
 	// No detector means file is assumed healthy
@@ -562,14 +568,16 @@ func TestVerifyAndComplete_NilDetector(t *testing.T) {
 
 	result := rs.verifyAndComplete(item, "/local/media/test.mkv")
 
-	// Give event bus time to process
-	time.Sleep(100 * time.Millisecond)
-
 	// With nil detector, assumes healthy and emits success
 	if result != "recovered" {
 		t.Errorf("Expected 'recovered' with nil detector, got: %q", result)
 	}
-	if !receivedEvent {
+
+	// Wait for event with timeout
+	select {
+	case <-eventReceived:
+		// Event received as expected
+	case <-time.After(500 * time.Millisecond):
 		t.Error("Expected VerificationSuccess event to be published")
 	}
 }
@@ -585,12 +593,13 @@ func TestRecoverItem_NoMediaID_NoDetector(t *testing.T) {
 	eb := eventbus.NewEventBus(db)
 	defer eb.Shutdown()
 
-	var mu sync.Mutex
-	receivedEvent := false
+	// Use channel for synchronization
+	eventReceived := make(chan struct{}, 1)
 	eb.Subscribe(domain.SearchExhausted, func(e domain.Event) {
-		mu.Lock()
-		receivedEvent = true
-		mu.Unlock()
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
 	})
 
 	// No arrClient, no pathMapper, no detector
@@ -608,13 +617,15 @@ func TestRecoverItem_NoMediaID_NoDetector(t *testing.T) {
 	// and item will be marked as exhausted (file doesn't exist)
 	result := rs.recoverItem(item)
 
-	// Give event bus time to process
-	time.Sleep(100 * time.Millisecond)
-
 	if result != "exhausted" {
 		t.Errorf("Expected 'exhausted' for item with no media ID and no detector, got: %q", result)
 	}
-	if !receivedEvent {
+
+	// Wait for event with timeout
+	select {
+	case <-eventReceived:
+		// Event received as expected
+	case <-time.After(500 * time.Millisecond):
 		t.Error("Expected SearchExhausted event to be published")
 	}
 }
