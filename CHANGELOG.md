@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Database package now at 80%+ coverage
   - Overall test coverage improved to ~84%
 
+### Fixed
+- **Setup Wizard File Upload**: Fixed file selection not working in restore section
+  - Clicking "Click to select .db file" or ".json file" now properly opens file picker
+  - Added hover effects for better visual feedback
+
 ## [1.1.25] - 2026-01-09
 
 ### Added

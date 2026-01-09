@@ -425,13 +425,16 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 >
                     {/* Database backup upload */}
                     <div className="space-y-2">
-                        <label className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                        <span className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2">
                             <Database className="w-4 h-4 text-purple-400" />
                             Database Backup <span className="text-slate-500 text-xs">(optional)</span>
-                        </label>
-                        <div className={`border-2 border-dashed rounded-xl p-4 text-center transition-colors ${
-                            databaseFile ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'border-slate-300 dark:border-slate-600'
-                        }`}>
+                        </span>
+                        <label
+                            htmlFor="database-upload"
+                            className={`block border-2 border-dashed rounded-xl p-4 text-center transition-colors cursor-pointer hover:border-purple-400 ${
+                                databaseFile ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'border-slate-300 dark:border-slate-600'
+                            }`}
+                        >
                             <input
                                 type="file"
                                 accept=".db,.sqlite,.sqlite3"
@@ -439,30 +442,28 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                                 className="hidden"
                                 id="database-upload"
                             />
-                            <label
-                                htmlFor="database-upload"
-                                className="cursor-pointer flex flex-col items-center gap-1"
-                            >
-                                <span className="text-sm text-slate-600 dark:text-slate-400">
-                                    {databaseFile ? (
-                                        <span className="text-purple-600 dark:text-purple-400 font-medium">{databaseFile.name}</span>
-                                    ) : (
-                                        'Click to select .db file'
-                                    )}
-                                </span>
-                            </label>
-                        </div>
+                            <span className="text-sm text-slate-600 dark:text-slate-400">
+                                {databaseFile ? (
+                                    <span className="text-purple-600 dark:text-purple-400 font-medium">{databaseFile.name}</span>
+                                ) : (
+                                    'Click to select .db file'
+                                )}
+                            </span>
+                        </label>
                     </div>
 
                     {/* Config JSON upload */}
                     <div className="space-y-2">
-                        <label className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                        <span className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2">
                             <Upload className="w-4 h-4 text-blue-400" />
                             Configuration JSON <span className="text-slate-500 text-xs">(optional)</span>
-                        </label>
-                        <div className={`border-2 border-dashed rounded-xl p-4 text-center transition-colors ${
-                            configFile ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-300 dark:border-slate-600'
-                        }`}>
+                        </span>
+                        <label
+                            htmlFor="config-upload"
+                            className={`block border-2 border-dashed rounded-xl p-4 text-center transition-colors cursor-pointer hover:border-blue-400 ${
+                                configFile ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-300 dark:border-slate-600'
+                            }`}
+                        >
                             <input
                                 type="file"
                                 accept=".json"
@@ -470,19 +471,14 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                                 className="hidden"
                                 id="config-upload"
                             />
-                            <label
-                                htmlFor="config-upload"
-                                className="cursor-pointer flex flex-col items-center gap-1"
-                            >
-                                <span className="text-sm text-slate-600 dark:text-slate-400">
-                                    {configFile ? (
-                                        <span className="text-blue-600 dark:text-blue-400 font-medium">{configFile.name}</span>
-                                    ) : (
-                                        'Click to select .json file'
-                                    )}
-                                </span>
-                            </label>
-                        </div>
+                            <span className="text-sm text-slate-600 dark:text-slate-400">
+                                {configFile ? (
+                                    <span className="text-blue-600 dark:text-blue-400 font-medium">{configFile.name}</span>
+                                ) : (
+                                    'Click to select .json file'
+                                )}
+                            </span>
+                        </label>
                     </div>
 
                     <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
