@@ -3711,3 +3711,102 @@ func TestScannerService_TestFileAccess(t *testing.T) {
 		}
 	})
 }
+
+func TestClassifyEntry(t *testing.T) {
+	// Create temp directory for test files
+	tmpDir := t.TempDir()
+
+	// Test regular media file
+	t.Run("media file", func(t *testing.T) {
+		mediaFile := filepath.Join(tmpDir, "movie.mkv")
+		if err := os.WriteFile(mediaFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+
+		entries, _ := os.ReadDir(tmpDir)
+		for _, entry := range entries {
+			if entry.Name() == "movie.mkv" {
+				isMedia, isSkipped, isSymlink := classifyEntry(mediaFile, entry)
+				if !isMedia || isSkipped || isSymlink {
+					t.Errorf("classifyEntry(media file) = (%v, %v, %v), want (true, false, false)", isMedia, isSkipped, isSymlink)
+				}
+			}
+		}
+	})
+
+	// Test hidden file
+	t.Run("hidden file", func(t *testing.T) {
+		hiddenFile := filepath.Join(tmpDir, ".hidden.mkv")
+		if err := os.WriteFile(hiddenFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+
+		entries, _ := os.ReadDir(tmpDir)
+		for _, entry := range entries {
+			if entry.Name() == ".hidden.mkv" {
+				isMedia, isSkipped, isSymlink := classifyEntry(hiddenFile, entry)
+				if isMedia || !isSkipped || isSymlink {
+					t.Errorf("classifyEntry(hidden file) = (%v, %v, %v), want (false, true, false)", isMedia, isSkipped, isSymlink)
+				}
+			}
+		}
+	})
+
+	// Test symlink
+	t.Run("symlink", func(t *testing.T) {
+		targetFile := filepath.Join(tmpDir, "target.mkv")
+		if err := os.WriteFile(targetFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("Failed to create target file: %v", err)
+		}
+		linkFile := filepath.Join(tmpDir, "link.mkv")
+		if err := os.Symlink(targetFile, linkFile); err != nil {
+			t.Skipf("Cannot create symlink: %v", err)
+		}
+
+		entries, _ := os.ReadDir(tmpDir)
+		for _, entry := range entries {
+			if entry.Name() == "link.mkv" {
+				isMedia, isSkipped, isSymlink := classifyEntry(linkFile, entry)
+				if isMedia || isSkipped || !isSymlink {
+					t.Errorf("classifyEntry(symlink) = (%v, %v, %v), want (false, false, true)", isMedia, isSkipped, isSymlink)
+				}
+			}
+		}
+	})
+
+	// Test directory
+	t.Run("directory", func(t *testing.T) {
+		subDir := filepath.Join(tmpDir, "subdir")
+		if err := os.Mkdir(subDir, 0755); err != nil {
+			t.Fatalf("Failed to create subdir: %v", err)
+		}
+
+		entries, _ := os.ReadDir(tmpDir)
+		for _, entry := range entries {
+			if entry.Name() == "subdir" {
+				isMedia, isSkipped, isSymlink := classifyEntry(subDir, entry)
+				if isMedia || isSkipped || isSymlink {
+					t.Errorf("classifyEntry(directory) = (%v, %v, %v), want (false, false, false)", isMedia, isSkipped, isSymlink)
+				}
+			}
+		}
+	})
+
+	// Test non-media file
+	t.Run("non-media file", func(t *testing.T) {
+		textFile := filepath.Join(tmpDir, "readme.txt")
+		if err := os.WriteFile(textFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+
+		entries, _ := os.ReadDir(tmpDir)
+		for _, entry := range entries {
+			if entry.Name() == "readme.txt" {
+				isMedia, isSkipped, isSymlink := classifyEntry(textFile, entry)
+				if isMedia || !isSkipped || isSymlink {
+					t.Errorf("classifyEntry(non-media file) = (%v, %v, %v), want (false, true, false)", isMedia, isSkipped, isSymlink)
+				}
+			}
+		}
+	})
+}
