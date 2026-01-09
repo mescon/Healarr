@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import { ShieldCheck, AlertOctagon, Loader2, X, Clock, AlertTriangle, EyeOff, CheckCircle2, FileSearch, TrendingUp, HandMetal } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { ShieldCheck, AlertOctagon, Loader2, X, Clock, AlertTriangle, EyeOff, CheckCircle2, FileSearch, TrendingUp, HandMetal, Play, ChevronDown, ScanSearch, PlayCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { useQuery } from '@tanstack/react-query';
-import { getDashboardStats, getActiveScans, cancelScan, type ScanProgress } from '../lib/api';
+import { getDashboardStats, getActiveScans, cancelScan, getScanPaths, triggerScan, triggerScanAll, type ScanProgress, type ScanPath } from '../lib/api';
 import ActivityChart from '../components/charts/ActivityChart';
 import TypeDistributionChart from '../components/charts/TypeDistributionChart';
 import { useWebSocket } from '../contexts/WebSocketProvider';
@@ -206,6 +206,167 @@ const ActiveScansTable = () => {
     );
 };
 
+// Quick Scan Dropdown Component
+const QuickScanDropdown = () => {
+    const [isOpen, setIsOpen] = useState(false);
+    const [scanningPathId, setScanningPathId] = useState<number | null>(null);
+    const [isScanningAll, setIsScanningAll] = useState(false);
+    const dropdownRef = useRef<HTMLDivElement>(null);
+    const toast = useToast();
+
+    // Fetch scan paths when dropdown opens
+    const { data: paths, isLoading, refetch } = useQuery({
+        queryKey: ['scanPathsQuick'],
+        queryFn: getScanPaths,
+        enabled: false, // Only fetch when opened
+        staleTime: 30000,
+    });
+
+    // Fetch paths when dropdown opens
+    useEffect(() => {
+        if (isOpen) {
+            refetch();
+        }
+    }, [isOpen, refetch]);
+
+    // Close dropdown when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+                setIsOpen(false);
+            }
+        };
+
+        if (isOpen) {
+            document.addEventListener('mousedown', handleClickOutside);
+        }
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [isOpen]);
+
+    const handleTriggerScan = async (pathId: number, pathName: string) => {
+        setScanningPathId(pathId);
+        try {
+            await triggerScan(pathId);
+            toast.success(`Scan started for ${pathName}`);
+            setIsOpen(false);
+        } catch (error) {
+            toast.error(error);
+        } finally {
+            setScanningPathId(null);
+        }
+    };
+
+    const handleScanAll = async () => {
+        setIsScanningAll(true);
+        try {
+            const result = await triggerScanAll();
+            if (result.started > 0) {
+                toast.success(`Started ${result.started} scan${result.started > 1 ? 's' : ''}`);
+            } else {
+                toast.info('No paths available to scan');
+            }
+            setIsOpen(false);
+        } catch (error) {
+            toast.error(error);
+        } finally {
+            setIsScanningAll(false);
+        }
+    };
+
+    const enabledPaths = paths?.filter((p: ScanPath) => p.enabled) || [];
+
+    return (
+        <div className="relative" ref={dropdownRef}>
+            <button
+                onClick={() => setIsOpen(!isOpen)}
+                className={clsx(
+                    "flex items-center gap-2 px-4 py-2 rounded-xl transition-all duration-200",
+                    "bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 hover:border-blue-500/30",
+                    "text-blue-600 dark:text-blue-400 font-medium text-sm",
+                    isOpen && "bg-blue-500/20 border-blue-500/30"
+                )}
+            >
+                <ScanSearch className="w-4 h-4" />
+                <span>Quick Scan</span>
+                <ChevronDown className={clsx("w-4 h-4 transition-transform", isOpen && "rotate-180")} />
+            </button>
+
+            <AnimatePresence>
+                {isOpen && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -10, scale: 0.95 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute right-0 top-full mt-2 w-80 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800 shadow-xl z-50 overflow-hidden"
+                    >
+                        <div className="p-3 border-b border-slate-200 dark:border-slate-700/50">
+                            <h3 className="font-medium text-slate-900 dark:text-white text-sm">Start Scan</h3>
+                            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Select a path to scan or scan all</p>
+                        </div>
+
+                        <div className="max-h-64 overflow-y-auto">
+                            {isLoading ? (
+                                <div className="flex items-center justify-center py-8">
+                                    <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
+                                </div>
+                            ) : enabledPaths.length === 0 ? (
+                                <div className="py-8 text-center text-sm text-slate-500 dark:text-slate-400">
+                                    No scan paths configured
+                                </div>
+                            ) : (
+                                <div className="py-1">
+                                    {enabledPaths.map((path: ScanPath) => (
+                                        <button
+                                            key={path.id}
+                                            onClick={() => handleTriggerScan(path.id, path.local_path)}
+                                            disabled={scanningPathId === path.id}
+                                            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors text-left group"
+                                        >
+                                            <div className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-700 group-hover:bg-blue-500/10 transition-colors">
+                                                {scanningPathId === path.id ? (
+                                                    <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                                                ) : (
+                                                    <Play className="w-4 h-4 text-slate-500 group-hover:text-blue-500 transition-colors" />
+                                                )}
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm text-slate-700 dark:text-slate-200 truncate font-mono" title={path.local_path}>
+                                                    {path.local_path}
+                                                </p>
+                                                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                                                    {path.detection_method || 'ffprobe'} • {path.detection_mode || 'quick'}
+                                                </p>
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        {enabledPaths.length > 0 && (
+                            <div className="p-2 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/50">
+                                <button
+                                    onClick={handleScanAll}
+                                    disabled={isScanningAll}
+                                    className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-blue-500 hover:bg-blue-600 text-white font-medium text-sm transition-colors disabled:opacity-50"
+                                >
+                                    {isScanningAll ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                        <PlayCircle className="w-4 h-4" />
+                                    )}
+                                    <span>Scan All Paths</span>
+                                </button>
+                            </div>
+                        )}
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </div>
+    );
+};
+
 const Dashboard = () => {
     const navigate = useNavigate();
     const { data: stats, isLoading } = useQuery({
@@ -224,22 +385,31 @@ const Dashboard = () => {
         <div className="space-y-6">
             <ConfigWarningBanner />
 
-            <div>
-                <motion.h1
-                    initial={{ opacity: 0, x: -20 }}
+            <div className="flex items-start justify-between">
+                <div>
+                    <motion.h1
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className="text-3xl font-bold text-slate-900 dark:text-white mb-2"
+                    >
+                        System Overview
+                    </motion.h1>
+                    <motion.p
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: 0.1 }}
+                        className="text-slate-600 dark:text-slate-400"
+                    >
+                        Real-time monitoring of media integrity and remediation status.
+                    </motion.p>
+                </div>
+                <motion.div
+                    initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
-                    className="text-3xl font-bold text-slate-900 dark:text-white mb-2"
+                    transition={{ delay: 0.15 }}
                 >
-                    System Overview
-                </motion.h1>
-                <motion.p
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.1 }}
-                    className="text-slate-600 dark:text-slate-400"
-                >
-                    Real-time monitoring of media integrity and remediation status.
-                </motion.p>
+                    <QuickScanDropdown />
+                </motion.div>
             </div>
 
             <ActiveScansTable />

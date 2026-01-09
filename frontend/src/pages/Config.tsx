@@ -15,6 +15,7 @@ import {
     testNotification, getNotificationEvents, getNotificationLog,
     triggerScanAll, exportConfig, importConfig, downloadDatabaseBackup,
     pauseAllScans, resumeAllScans, cancelAllScans, getDetectionPreview,
+    validateScanPath,
     type ArrInstance, type ScanPath, type NotificationConfig, type NotificationLogEntry, type ConfigExport
 } from '../lib/api';
 import clsx from 'clsx';
@@ -54,6 +55,314 @@ const ServerStatus = ({ url, apiKey, isManuallyTesting }: { url: string; apiKey:
         <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-green-500" />
             <span className="text-sm text-green-400">Online</span>
+        </div>
+    );
+};
+
+// Path Validation Status Component
+const PathValidationStatus = ({ pathId }: { pathId: number }) => {
+    const { data, isLoading, refetch, isFetched } = useQuery({
+        queryKey: ['pathValidation', pathId],
+        queryFn: () => validateScanPath(pathId),
+        enabled: false, // Only fetch when clicked
+        staleTime: 30000, // Cache for 30 seconds
+    });
+
+    if (!isFetched) {
+        return (
+            <button
+                onClick={() => refetch()}
+                className="text-slate-400 hover:text-blue-400 transition-colors"
+                title="Check path accessibility"
+            >
+                <Info className="w-4 h-4" />
+            </button>
+        );
+    }
+
+    if (isLoading) {
+        return <div className="w-4 h-4 border-2 border-slate-400/30 border-t-slate-400 rounded-full animate-spin" />;
+    }
+
+    if (!data?.accessible) {
+        return (
+            <div
+                className="flex items-center gap-1 text-red-400 cursor-help"
+                title={data?.error || 'Path not accessible'}
+            >
+                <X className="w-4 h-4" />
+                <span className="text-xs">Error</span>
+            </div>
+        );
+    }
+
+    return (
+        <div
+            className="flex items-center gap-1 text-green-400 cursor-help"
+            title={`${data.file_count.toLocaleString()} media files found${data.sample_files?.length ? '\n\nSamples:\n' + data.sample_files.join('\n') : ''}`}
+        >
+            <Check className="w-4 h-4" />
+            <span className="text-xs">{data.file_count.toLocaleString()}</span>
+        </div>
+    );
+};
+
+// Collapsible Section Component
+interface CollapsibleSectionProps {
+    id: string;
+    icon: React.ElementType;
+    iconColor: string;
+    title: string;
+    subtitle?: string;
+    defaultExpanded?: boolean;
+    children: React.ReactNode;
+    delay?: number;
+}
+
+const CollapsibleSection = ({ id, icon: Icon, iconColor, title, subtitle, defaultExpanded = true, children, delay = 0.1 }: CollapsibleSectionProps) => {
+    const storageKey = `config-section-${id}`;
+
+    // Initialize from localStorage or use default
+    const [isExpanded, setIsExpanded] = useState(() => {
+        const stored = localStorage.getItem(storageKey);
+        if (stored !== null) {
+            return stored === 'true';
+        }
+        return defaultExpanded;
+    });
+
+    // Persist state changes to localStorage
+    const toggleExpanded = () => {
+        const newValue = !isExpanded;
+        setIsExpanded(newValue);
+        localStorage.setItem(storageKey, String(newValue));
+    };
+
+    return (
+        <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay }}
+            className="space-y-4"
+        >
+            <button
+                onClick={toggleExpanded}
+                className="w-full flex items-center justify-between group cursor-pointer"
+            >
+                <div className="flex items-center gap-3">
+                    <Icon className={clsx("w-6 h-6", iconColor)} />
+                    <div className="text-left">
+                        <h2 className="text-2xl font-semibold text-slate-900 dark:text-white">{title}</h2>
+                        {subtitle && <p className="text-sm text-slate-600 dark:text-slate-400">{subtitle}</p>}
+                    </div>
+                </div>
+                <ChevronDown className={clsx(
+                    "w-5 h-5 text-slate-600 dark:text-slate-400 transition-transform duration-200",
+                    isExpanded && "rotate-180"
+                )} />
+            </button>
+
+            <AnimatePresence initial={false}>
+                {isExpanded && (
+                    <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2, ease: "easeInOut" }}
+                        className="overflow-hidden"
+                    >
+                        {children}
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </motion.div>
+    );
+};
+
+// Visual Cron Time Builder Component
+interface CronTimeBuilderProps {
+    value: string;
+    onChange: (cronExpression: string) => void;
+}
+
+const CronTimeBuilder = ({ value, onChange }: CronTimeBuilderProps) => {
+    const [useVisual, setUseVisual] = useState(true);
+    const [hour, setHour] = useState(3);
+    const [minute, setMinute] = useState(0);
+    const [selectedDays, setSelectedDays] = useState<number[]>([]);
+
+    const weekdays = [
+        { value: 0, label: 'Sun' },
+        { value: 1, label: 'Mon' },
+        { value: 2, label: 'Tue' },
+        { value: 3, label: 'Wed' },
+        { value: 4, label: 'Thu' },
+        { value: 5, label: 'Fri' },
+        { value: 6, label: 'Sat' },
+    ];
+
+    // Parse existing cron value when switching to visual mode
+    useEffect(() => {
+        if (value && useVisual) {
+            const parts = value.split(' ');
+            if (parts.length >= 5) {
+                const [min, hr, , , dow] = parts;
+                // Only parse simple numeric values
+                if (/^\d+$/.test(min)) setMinute(parseInt(min, 10));
+                if (/^\d+$/.test(hr)) setHour(parseInt(hr, 10));
+                if (dow !== '*') {
+                    const days = dow.split(',').map(d => parseInt(d, 10)).filter(d => !isNaN(d));
+                    setSelectedDays(days);
+                } else {
+                    setSelectedDays([]);
+                }
+            }
+        }
+    }, [value, useVisual]);
+
+    // Build cron expression from visual selections
+    useEffect(() => {
+        if (useVisual) {
+            const dowPart = selectedDays.length === 0 || selectedDays.length === 7
+                ? '*'
+                : selectedDays.sort((a, b) => a - b).join(',');
+            const expression = `${minute} ${hour} * * ${dowPart}`;
+            if (expression !== value) {
+                onChange(expression);
+            }
+        }
+    }, [hour, minute, selectedDays, useVisual, onChange, value]);
+
+    const toggleDay = (day: number) => {
+        setSelectedDays(prev =>
+            prev.includes(day)
+                ? prev.filter(d => d !== day)
+                : [...prev, day]
+        );
+    };
+
+    // Generate human-readable schedule description
+    const getScheduleDescription = () => {
+        const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+        if (selectedDays.length === 0 || selectedDays.length === 7) {
+            return `Every day at ${timeStr}`;
+        }
+        const dayNames = selectedDays
+            .sort((a, b) => a - b)
+            .map(d => weekdays.find(w => w.value === d)?.label)
+            .join(', ');
+        return `Every ${dayNames} at ${timeStr}`;
+    };
+
+    return (
+        <div className="space-y-4">
+            <div className="flex items-center gap-2 mb-2">
+                <button
+                    type="button"
+                    onClick={() => setUseVisual(true)}
+                    className={clsx(
+                        "px-3 py-1.5 text-xs font-medium rounded-lg transition-colors",
+                        useVisual
+                            ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
+                            : "text-slate-500 hover:text-slate-400"
+                    )}
+                >
+                    Visual
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setUseVisual(false)}
+                    className={clsx(
+                        "px-3 py-1.5 text-xs font-medium rounded-lg transition-colors",
+                        !useVisual
+                            ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
+                            : "text-slate-500 hover:text-slate-400"
+                    )}
+                >
+                    Advanced
+                </button>
+            </div>
+
+            {useVisual ? (
+                <div className="space-y-4">
+                    {/* Time Selection */}
+                    <div className="flex items-center gap-4">
+                        <div className="flex-1">
+                            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Hour</label>
+                            <select
+                                value={hour}
+                                onChange={e => setHour(parseInt(e.target.value, 10))}
+                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500 text-sm"
+                            >
+                                {Array.from({ length: 24 }, (_, i) => (
+                                    <option key={i} value={i}>{i.toString().padStart(2, '0')}:00</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="flex-1">
+                            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Minute</label>
+                            <select
+                                value={minute}
+                                onChange={e => setMinute(parseInt(e.target.value, 10))}
+                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500 text-sm"
+                            >
+                                {[0, 15, 30, 45].map(m => (
+                                    <option key={m} value={m}>:{m.toString().padStart(2, '0')}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+
+                    {/* Day Selection */}
+                    <div>
+                        <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-2">
+                            Days (leave empty for every day)
+                        </label>
+                        <div className="flex flex-wrap gap-2">
+                            {weekdays.map(day => (
+                                <button
+                                    key={day.value}
+                                    type="button"
+                                    onClick={() => toggleDay(day.value)}
+                                    className={clsx(
+                                        "px-3 py-1.5 text-xs font-medium rounded-lg transition-colors border",
+                                        selectedDays.includes(day.value)
+                                            ? "bg-purple-500/20 text-purple-400 border-purple-500/30"
+                                            : "text-slate-500 hover:text-slate-400 border-slate-600 hover:border-slate-500"
+                                    )}
+                                >
+                                    {day.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Schedule Preview */}
+                    <div className="p-3 rounded-lg bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50">
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Schedule Preview</p>
+                        <p className="text-sm font-medium text-slate-900 dark:text-white">{getScheduleDescription()}</p>
+                        <p className="text-xs text-slate-500 font-mono mt-1">Cron: {value}</p>
+                    </div>
+                </div>
+            ) : (
+                <div>
+                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Cron Expression</label>
+                    <input
+                        type="text"
+                        value={value}
+                        onChange={e => onChange(e.target.value)}
+                        placeholder="0 3 * * *"
+                        className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-purple-500"
+                        required
+                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                        Format: Minute Hour Day Month Weekday
+                    </p>
+                    <p className="mt-2 text-xs text-slate-600 dark:text-slate-400">
+                        Need help? Use <a href="https://crontab.guru" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">crontab.guru</a> to generate an expression.
+                    </p>
+                </div>
+            )}
         </div>
     );
 };
@@ -693,17 +1002,14 @@ const Config = () => {
             <QuickActionsSection toast={toast} />
 
             {/* *arr Servers Section */}
-            <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 }}
-                className="space-y-4"
+            <CollapsibleSection
+                id="arr-servers"
+                icon={Server}
+                iconColor="text-blue-400"
+                title="*arr Servers"
+                defaultExpanded={true}
+                delay={0.1}
             >
-                <div className="flex items-center gap-3 mb-6">
-                    <Server className="w-6 h-6 text-blue-400" />
-                    <h2 className="text-2xl font-semibold text-slate-900 dark:text-white">*arr Servers</h2>
-                </div>
-
                 {/* Add *arr Server Form */}
                 <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                     <button
@@ -944,20 +1250,17 @@ const Config = () => {
                         <div className="p-8 text-center text-slate-500 italic">No servers configured</div>
                     )}
                 </div>
-            </motion.div>
+            </CollapsibleSection>
 
             {/* Scan Paths Section */}
-            <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.2 }}
-                className="space-y-4"
+            <CollapsibleSection
+                id="scan-paths"
+                icon={FolderOpen}
+                iconColor="text-green-400"
+                title="Scan Paths"
+                defaultExpanded={true}
+                delay={0.2}
             >
-                <div className="flex items-center gap-3 mb-6">
-                    <FolderOpen className="w-6 h-6 text-green-400" />
-                    <h2 className="text-2xl font-semibold text-slate-900 dark:text-white">Scan Paths</h2>
-                </div>
-
                 {/* Add Scan Path Form */}
                 <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                     <button
@@ -1264,7 +1567,12 @@ const Config = () => {
                                 <tbody className="divide-y divide-slate-800/50">
                                     {scanPaths.map((path) => (
                                         <tr key={path.id} className="hover:bg-slate-100 dark:hover:bg-slate-800/30">
-                                            <td className="px-6 py-4 text-slate-700 dark:text-slate-300 font-mono text-sm">{path.local_path}</td>
+                                            <td className="px-6 py-4">
+                                                <div className="flex items-center gap-3">
+                                                    <span className="text-slate-700 dark:text-slate-300 font-mono text-sm">{path.local_path}</span>
+                                                    <PathValidationStatus pathId={path.id} />
+                                                </div>
+                                            </td>
                                             <td className="px-6 py-4 text-slate-600 dark:text-slate-400 font-mono text-sm">
                                                 {path.arr_path === path.local_path ? (
                                                     <span className="text-slate-500 italic">Same as local</span>
@@ -1344,20 +1652,17 @@ const Config = () => {
                         <div className="p-8 text-center text-slate-500 italic">No scan paths configured</div>
                     )}
                 </div>
-            </motion.div>
+            </CollapsibleSection>
 
             {/* Scheduled Scans Section */}
-            <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.3 }}
-                className="space-y-4"
+            <CollapsibleSection
+                id="scheduled-scans"
+                icon={Clock}
+                iconColor="text-purple-400"
+                title="Scheduled Scans"
+                defaultExpanded={false}
+                delay={0.3}
             >
-                <div className="flex items-center gap-3 mb-6">
-                    <Clock className="w-6 h-6 text-purple-400" />
-                    <h2 className="text-2xl font-semibold text-slate-900 dark:text-white">Scheduled Scans</h2>
-                </div>
-
                 {/* Add Schedule Form */}
                 <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                     <button
@@ -1416,23 +1721,10 @@ const Config = () => {
                                             </div>
 
                                             {schedulePreset === 'custom' && (
-                                                <div>
-                                                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Cron Expression</label>
-                                                    <input
-                                                        type="text"
-                                                        value={newSchedule.cron_expression}
-                                                        onChange={e => setNewSchedule({ ...newSchedule, cron_expression: e.target.value })}
-                                                        placeholder="0 3 * * *"
-                                                        className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-purple-500"
-                                                        required
-                                                    />
-                                                    <p className="mt-1 text-xs text-slate-500">
-                                                        Format: Minute Hour Day Month Weekday
-                                                    </p>
-                                                    <p className="mt-2 text-xs text-slate-600 dark:text-slate-400">
-                                                        Need help? Use <a href="https://crontab.guru" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">crontab.guru</a> to generate an expression.
-                                                    </p>
-                                                </div>
+                                                <CronTimeBuilder
+                                                    value={newSchedule.cron_expression}
+                                                    onChange={(expression) => setNewSchedule({ ...newSchedule, cron_expression: expression })}
+                                                />
                                             )}
                                             {schedulePreset !== 'custom' && (
                                                 <div className="text-xs text-slate-500 font-mono mt-2">
@@ -1512,27 +1804,20 @@ const Config = () => {
                         </div>
                     )}
                 </div>
-            </motion.div>
+            </CollapsibleSection>
 
             {/* Notifications Section */}
-            <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.35 }}
-                className="space-y-4"
+            <CollapsibleSection
+                id="notifications"
+                icon={Bell}
+                iconColor="text-pink-400"
+                title="Notifications"
+                subtitle="Configure alerts for scan events"
+                defaultExpanded={false}
+                delay={0.35}
             >
-                <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2 rounded-lg bg-pink-500/10 border border-pink-500/20">
-                        <Bell className="w-5 h-5 text-pink-400" />
-                    </div>
-                    <div>
-                        <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Notifications</h2>
-                        <p className="text-sm text-slate-600 dark:text-slate-400">Configure alerts for scan events</p>
-                    </div>
-                </div>
-
                 <NotificationsSection />
-            </motion.div>
+            </CollapsibleSection>
 
             {/* Advanced Settings Accordion */}
             <motion.div

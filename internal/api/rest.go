@@ -362,6 +362,7 @@ func (s *RESTServer) setupRoutes() {
 			protected.POST("/config/paths", s.createScanPath)
 			protected.PUT("/config/paths/:id", s.updateScanPath)
 			protected.DELETE("/config/paths/:id", s.deleteScanPath)
+			protected.GET("/config/paths/:id/validate", s.validateScanPath)
 			protected.GET("/config/browse", s.browseDirectory)
 
 			// Notifications

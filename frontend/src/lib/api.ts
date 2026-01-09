@@ -267,6 +267,19 @@ export const deleteScanPath = async (id: number) => {
     await api.delete(`/config/paths/${id}`);
 };
 
+// Path validation response
+export interface PathValidation {
+    accessible: boolean;
+    file_count: number;
+    sample_files: string[];
+    error: string | null;
+}
+
+export const validateScanPath = async (id: number): Promise<PathValidation> => {
+    const response = await api.get(`/config/paths/${id}/validate`);
+    return response.data;
+};
+
 // --- Directory Browser API ---
 export interface DirectoryEntry {
     name: string;
