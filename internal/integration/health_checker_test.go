@@ -1157,3 +1157,105 @@ func TestNewHealthCheckerWithPaths(t *testing.T) {
 		t.Errorf("HandBrakePath = %q, want /custom/handbrake", hc.HandBrakePath)
 	}
 }
+
+func TestCmdHealthChecker_CheckAccessibility_ParentNotDirectory(t *testing.T) {
+	hc := NewHealthChecker()
+	tmpDir := t.TempDir()
+
+	// Create a regular file to use as "parent"
+	parentFile := filepath.Join(tmpDir, "parent_file")
+	if err := os.WriteFile(parentFile, []byte("not a directory"), 0644); err != nil {
+		t.Fatalf("Failed to create parent file: %v", err)
+	}
+
+	// Try to check a path where "parent" is actually a file
+	fakeFilePath := filepath.Join(parentFile, "child.mkv")
+	healthy, checkErr := hc.CheckWithConfig(fakeFilePath, DetectionConfig{Method: DetectionFFprobe})
+
+	if healthy {
+		t.Error("Expected unhealthy when parent is not a directory")
+	}
+	if checkErr == nil {
+		t.Error("Expected error when parent is not a directory")
+	}
+	// This returns either MountLost (if parent is not dir) or PathNotFound (if parent dir stat fails)
+	if checkErr != nil && checkErr.Type != ErrorTypeMountLost && checkErr.Type != ErrorTypePathNotFound {
+		t.Errorf("Expected MountLost or PathNotFound error, got %s", checkErr.Type)
+	}
+}
+
+func TestCmdHealthChecker_CheckAccessibility_EmptyParentDirectory(t *testing.T) {
+	hc := NewHealthChecker()
+	tmpDir := t.TempDir()
+
+	// Create an empty parent directory
+	emptyDir := filepath.Join(tmpDir, "empty_parent")
+	if err := os.MkdirAll(emptyDir, 0755); err != nil {
+		t.Fatalf("Failed to create empty dir: %v", err)
+	}
+
+	// Try to check a non-existent file in the empty directory
+	missingFile := filepath.Join(emptyDir, "missing.mkv")
+	healthy, checkErr := hc.CheckWithConfig(missingFile, DetectionConfig{Method: DetectionFFprobe})
+
+	if healthy {
+		t.Error("Expected unhealthy when file missing in empty parent")
+	}
+	if checkErr == nil {
+		t.Error("Expected error when file missing in empty parent")
+	}
+	// Empty parent with missing file returns MountLost
+	if checkErr != nil && checkErr.Type != ErrorTypeMountLost {
+		t.Errorf("Expected MountLost error for empty parent, got %s", checkErr.Type)
+	}
+}
+
+func TestCmdHealthChecker_CheckAccessibility_FileExistsInPopulatedDir(t *testing.T) {
+	hc := NewHealthChecker()
+	tmpDir := t.TempDir()
+
+	// Create a directory with some files
+	mediaDir := filepath.Join(tmpDir, "media")
+	if err := os.MkdirAll(mediaDir, 0755); err != nil {
+		t.Fatalf("Failed to create media dir: %v", err)
+	}
+
+	// Create a sibling file so the directory is not empty
+	siblingFile := filepath.Join(mediaDir, "sibling.txt")
+	if err := os.WriteFile(siblingFile, []byte("sibling"), 0644); err != nil {
+		t.Fatalf("Failed to create sibling file: %v", err)
+	}
+
+	// Try to check a missing file in the populated directory
+	missingFile := filepath.Join(mediaDir, "missing.mkv")
+	healthy, checkErr := hc.CheckWithConfig(missingFile, DetectionConfig{Method: DetectionFFprobe})
+
+	if healthy {
+		t.Error("Expected unhealthy when file missing")
+	}
+	if checkErr == nil {
+		t.Error("Expected error when file missing")
+	}
+	// Populated parent with missing file returns PathNotFound
+	if checkErr != nil && checkErr.Type != ErrorTypePathNotFound {
+		t.Errorf("Expected PathNotFound error for missing file in populated dir, got %s", checkErr.Type)
+	}
+}
+
+func TestCmdHealthChecker_CheckWithConfig_InvalidPath(t *testing.T) {
+	hc := NewHealthChecker()
+
+	// Test with path containing null byte (invalid)
+	invalidPath := "/tmp/test\x00file.mkv"
+	healthy, checkErr := hc.CheckWithConfig(invalidPath, DetectionConfig{Method: DetectionFFprobe})
+
+	if healthy {
+		t.Error("Expected unhealthy for invalid path")
+	}
+	if checkErr == nil {
+		t.Error("Expected error for invalid path")
+	}
+	if checkErr != nil && checkErr.Type != ErrorTypeInvalidConfig {
+		t.Errorf("Expected InvalidConfig error for invalid path, got %s", checkErr.Type)
+	}
+}

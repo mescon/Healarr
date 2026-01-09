@@ -6260,4 +6260,3 @@ func TestHTTPArrClient_GetSeriesDetails_InvalidJSON(t *testing.T) {
 		t.Error("Expected nil details for invalid JSON")
 	}
 }
-
