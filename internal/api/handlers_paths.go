@@ -418,9 +418,11 @@ var validationMediaExtensions = map[string]bool{
 }
 
 // countMediaFiles walks a directory and counts media files, collecting samples.
-func countMediaFiles(basePath string, maxSamples int) (int, []string) {
+// maxFiles limits the count to prevent slow responses on very large libraries.
+func countMediaFiles(basePath string, maxSamples, maxFiles int) (int, []string, bool) {
 	var fileCount int
 	var sampleFiles []string
+	truncated := false
 
 	_ = filepath.WalkDir(basePath, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -446,10 +448,16 @@ func countMediaFiles(basePath string, maxSamples int) (int, []string) {
 			}
 			sampleFiles = append(sampleFiles, relPath)
 		}
+
+		// Stop early if we've counted enough files (performance optimization)
+		if maxFiles > 0 && fileCount >= maxFiles {
+			truncated = true
+			return filepath.SkipAll
+		}
 		return nil
 	})
 
-	return fileCount, sampleFiles
+	return fileCount, sampleFiles, truncated
 }
 
 // validateScanPath checks if a scan path is accessible and returns file statistics.
@@ -491,13 +499,21 @@ func (s *RESTServer) validateScanPath(c *gin.Context) {
 		return
 	}
 
-	// Count media files and collect samples
-	fileCount, sampleFiles := countMediaFiles(localPath, 5)
+	// Count media files and collect samples (limit to 10000 for performance)
+	fileCount, sampleFiles, truncated := countMediaFiles(localPath, 5, 10000)
 
-	c.JSON(http.StatusOK, pathValidationResult{
+	result := pathValidationResult{
 		Accessible:  true,
 		FileCount:   fileCount,
 		SampleFiles: sampleFiles,
 		Error:       nil,
-	})
+	}
+
+	// Indicate if count was truncated for very large libraries
+	if truncated {
+		truncMsg := "Count limited to 10,000 files for performance"
+		result.Error = &truncMsg
+	}
+
+	c.JSON(http.StatusOK, result)
 }

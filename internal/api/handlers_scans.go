@@ -281,18 +281,28 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 		scan.PathID = int(pathID.Int64)
 	}
 
-	// Get file counts from scan_files table
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'healthy'", scanID).Scan(&scan.HealthyFiles); err != nil {
-		logger.Debugf("Failed to query healthy files count: %v", err)
-	}
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'corrupt'", scanID).Scan(&scan.CorruptFiles); err != nil {
-		logger.Debugf("Failed to query corrupt files count: %v", err)
-	}
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'skipped'", scanID).Scan(&scan.SkippedFiles); err != nil {
-		logger.Debugf("Failed to query skipped files count: %v", err)
-	}
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'inaccessible'", scanID).Scan(&scan.InaccessibleFiles); err != nil {
-		logger.Debugf("Failed to query inaccessible files count: %v", err)
+	// Get file counts from scan_files table using single GROUP BY query (performance optimization)
+	rows, err := s.db.Query("SELECT status, COUNT(*) FROM scan_files WHERE scan_id = ? GROUP BY status", scanID)
+	if err != nil {
+		logger.Debugf("Failed to query file counts: %v", err)
+	} else {
+		defer rows.Close()
+		for rows.Next() {
+			var status string
+			var count int
+			if rows.Scan(&status, &count) == nil {
+				switch status {
+				case "healthy":
+					scan.HealthyFiles = count
+				case "corrupt":
+					scan.CorruptFiles = count
+				case "skipped":
+					scan.SkippedFiles = count
+				case "inaccessible":
+					scan.InaccessibleFiles = count
+				}
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, scan)
