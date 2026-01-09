@@ -2059,3 +2059,158 @@ func TestGetQueueItemStatus(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// Helper function tests - getDurationMetrics
+// =============================================================================
+
+func TestVerifierService_GetDurationMetrics(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	verifier := NewVerifierService(eb, nil, nil, nil, db)
+
+	t.Run("returns zeros when no CorruptionDetected event", func(t *testing.T) {
+		totalDur, downloadDur := verifier.getDurationMetrics("nonexistent-id")
+		if totalDur != 0 || downloadDur != 0 {
+			t.Errorf("Expected (0, 0) for nonexistent corruption, got (%d, %d)", totalDur, downloadDur)
+		}
+	})
+
+	t.Run("returns total duration without download", func(t *testing.T) {
+		corruptionID := "test-duration-1"
+		oneHourAgo := time.Now().Add(-1 * time.Hour)
+
+		// Insert CorruptionDetected event
+		_, err := db.Exec(`
+			INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data, event_version, created_at)
+			VALUES (?, 'corruption', 'CorruptionDetected', '{}', 1, ?)
+		`, corruptionID, oneHourAgo)
+		if err != nil {
+			t.Fatalf("Failed to insert event: %v", err)
+		}
+
+		totalDur, downloadDur := verifier.getDurationMetrics(corruptionID)
+
+		// Should be approximately 3600 seconds (1 hour)
+		if totalDur < 3500 || totalDur > 3700 {
+			t.Errorf("Expected totalDur ~3600, got %d", totalDur)
+		}
+		if downloadDur != 0 {
+			t.Errorf("Expected downloadDur 0 without DownloadProgress, got %d", downloadDur)
+		}
+	})
+
+	t.Run("returns both durations with download progress", func(t *testing.T) {
+		corruptionID := "test-duration-2"
+		twoHoursAgo := time.Now().Add(-2 * time.Hour)
+		oneHourAgo := time.Now().Add(-1 * time.Hour)
+
+		// Insert CorruptionDetected event
+		_, err := db.Exec(`
+			INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data, event_version, created_at)
+			VALUES (?, 'corruption', 'CorruptionDetected', '{}', 1, ?)
+		`, corruptionID, twoHoursAgo)
+		if err != nil {
+			t.Fatalf("Failed to insert CorruptionDetected: %v", err)
+		}
+
+		// Insert DownloadProgress event
+		_, err = db.Exec(`
+			INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data, event_version, created_at)
+			VALUES (?, 'corruption', 'DownloadProgress', '{}', 1, ?)
+		`, corruptionID, oneHourAgo)
+		if err != nil {
+			t.Fatalf("Failed to insert DownloadProgress: %v", err)
+		}
+
+		totalDur, downloadDur := verifier.getDurationMetrics(corruptionID)
+
+		// Total should be ~7200 seconds (2 hours)
+		if totalDur < 7100 || totalDur > 7300 {
+			t.Errorf("Expected totalDur ~7200, got %d", totalDur)
+		}
+		// Download should be ~3600 seconds (1 hour)
+		if downloadDur < 3500 || downloadDur > 3700 {
+			t.Errorf("Expected downloadDur ~3600, got %d", downloadDur)
+		}
+	})
+}
+
+// =============================================================================
+// Helper function tests - buildProgressEventData
+// =============================================================================
+
+func TestBuildProgressEventData(t *testing.T) {
+	t.Run("includes all queue item fields", func(t *testing.T) {
+		item := integration.QueueItemInfo{
+			Progress:            75.5,
+			TimeLeft:            "01:30:00",
+			DownloadID:          "dl-123",
+			Title:               "Test Movie",
+			Protocol:            "usenet",
+			DownloadClient:      "SABnzbd",
+			Indexer:             "NZBgeek",
+			Size:                5000000000,
+			SizeLeft:            1250000000,
+			EstimatedCompletion: "2024-01-01T12:00:00Z",
+			AddedAt:             "2024-01-01T10:00:00Z",
+		}
+
+		result := buildProgressEventData(item, "downloading:downloading", "")
+
+		if result["progress"] != 75.5 {
+			t.Errorf("Expected progress 75.5, got %v", result["progress"])
+		}
+		if result["title"] != "Test Movie" {
+			t.Errorf("Expected title 'Test Movie', got %v", result["title"])
+		}
+		if result["protocol"] != "usenet" {
+			t.Errorf("Expected protocol 'usenet', got %v", result["protocol"])
+		}
+		if result["download_client"] != "SABnzbd" {
+			t.Errorf("Expected download_client 'SABnzbd', got %v", result["download_client"])
+		}
+		if result["size_bytes"] != int64(5000000000) {
+			t.Errorf("Expected size_bytes 5000000000, got %v", result["size_bytes"])
+		}
+	})
+
+	t.Run("includes warning fields when warning message provided", func(t *testing.T) {
+		item := integration.QueueItemInfo{
+			Title: "Test Movie",
+		}
+
+		result := buildProgressEventData(item, "warning:importPending", "Quality cutoff not met")
+
+		if result["warning"] != true {
+			t.Errorf("Expected warning true, got %v", result["warning"])
+		}
+		if result["warning_message"] != "Quality cutoff not met" {
+			t.Errorf("Expected warning_message 'Quality cutoff not met', got %v", result["warning_message"])
+		}
+	})
+
+	t.Run("excludes warning fields when no warning message", func(t *testing.T) {
+		item := integration.QueueItemInfo{
+			Title: "Test Movie",
+		}
+
+		result := buildProgressEventData(item, "downloading:downloading", "")
+
+		if _, exists := result["warning"]; exists {
+			t.Error("Expected no warning field when warningMsg is empty")
+		}
+		if _, exists := result["warning_message"]; exists {
+			t.Error("Expected no warning_message field when warningMsg is empty")
+		}
+	})
+}

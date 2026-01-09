@@ -1201,7 +1201,7 @@ func TestHealthMonitorService_ProcessSyncItem_QueueCheckError(t *testing.T) {
 	}
 }
 
-func TestHealthMonitorService_SyncWithArrState_NilDB(t *testing.T) {
+func TestHealthMonitorService_SyncWithArrState_NilDB(_ *testing.T) {
 	eb := eventbus.NewEventBus(nil)
 	defer eb.Shutdown()
 

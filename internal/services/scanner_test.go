@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mescon/Healarr/internal/config"
+	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/testutil"
@@ -3807,6 +3808,308 @@ func TestClassifyEntry(t *testing.T) {
 					t.Errorf("classifyEntry(non-media file) = (%v, %v, %v), want (false, true, false)", isMedia, isSkipped, isSymlink)
 				}
 			}
+		}
+	})
+}
+
+// =============================================================================
+// HandleHealthCheckResult tests
+// =============================================================================
+
+func TestScannerService_HandleHealthCheckResult(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	scanner := &ScannerService{
+		db:              db,
+		eventBus:        eb,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+	}
+
+	t.Run("recoverable error continues scan", func(t *testing.T) {
+		ctx := context.Background()
+		progress := &ScanProgress{
+			ID:   "test-health-1",
+			Path: "/media/movies",
+		}
+		cfg := scanFilesConfig{
+			ScanDBID: 0,
+		}
+		sfc := &scanFileContext{
+			filePath:          "/media/movies/temp_error.mkv",
+			fileSize:          1024,
+			scanDBID:          0,
+			activeCorruptions: make(map[string]bool),
+		}
+		// Recoverable error (not mount lost)
+		healthErr := &integration.HealthCheckError{
+			Type:    integration.ErrorTypeTimeout,
+			Message: "Temporary timeout",
+		}
+
+		action := scanner.handleHealthCheckResult(ctx, progress, cfg, 0, sfc, healthErr)
+		if action != scanContinue {
+			t.Errorf("Expected scanContinue for recoverable error, got %v", action)
+		}
+	})
+
+	t.Run("mount lost error returns scanReturn", func(t *testing.T) {
+		ctx := context.Background()
+		progress := &ScanProgress{
+			ID:     "test-health-2",
+			Path:   "/media/movies",
+			Status: "scanning",
+		}
+		cfg := scanFilesConfig{
+			ScanDBID: 0,
+		}
+		sfc := &scanFileContext{
+			filePath:          "/media/movies/mount_lost.mkv",
+			fileSize:          1024,
+			scanDBID:          0,
+			activeCorruptions: make(map[string]bool),
+		}
+		// Mount lost error should abort scan
+		healthErr := &integration.HealthCheckError{
+			Type:    integration.ErrorTypeMountLost,
+			Message: "Filesystem not mounted",
+		}
+
+		action := scanner.handleHealthCheckResult(ctx, progress, cfg, 0, sfc, healthErr)
+		if action != scanReturn {
+			t.Errorf("Expected scanReturn for mount lost error, got %v", action)
+		}
+		if progress.Status != "aborted" {
+			t.Errorf("Expected status 'aborted', got %q", progress.Status)
+		}
+	})
+
+	t.Run("true corruption continues scan", func(t *testing.T) {
+		ctx := context.Background()
+		progress := &ScanProgress{
+			ID:              "test-health-3",
+			Path:            "/media/movies",
+			corruptionCount: 0,
+		}
+		cfg := scanFilesConfig{
+			ScanDBID: 0,
+		}
+		sfc := &scanFileContext{
+			filePath:          "/media/movies/corrupt.mkv",
+			fileSize:          1024,
+			scanDBID:          0,
+			activeCorruptions: make(map[string]bool),
+		}
+		// True corruption error (not recoverable)
+		healthErr := &integration.HealthCheckError{
+			Type:    integration.ErrorTypeCorruptHeader,
+			Message: "File header is corrupt",
+		}
+
+		action := scanner.handleHealthCheckResult(ctx, progress, cfg, 0, sfc, healthErr)
+		if action != scanContinue {
+			t.Errorf("Expected scanContinue for true corruption, got %v", action)
+		}
+		if progress.corruptionCount != 1 {
+			t.Errorf("Expected corruptionCount 1, got %d", progress.corruptionCount)
+		}
+	})
+
+	t.Run("marks file processed with database record", func(t *testing.T) {
+		// Create a scan record
+		result, err := db.Exec(`
+			INSERT INTO scans (path, path_id, status, total_files, files_scanned, corruptions_found)
+			VALUES ('/media/test', 1, 'running', 100, 50, 0)
+		`)
+		if err != nil {
+			t.Fatalf("Failed to create scan: %v", err)
+		}
+		scanDBID, _ := result.LastInsertId()
+
+		ctx := context.Background()
+		progress := &ScanProgress{
+			ID:        "test-health-4",
+			Path:      "/media/test",
+			FilesDone: 50,
+		}
+		cfg := scanFilesConfig{
+			ScanDBID: scanDBID,
+		}
+		sfc := &scanFileContext{
+			filePath:          "/media/test/file.mkv",
+			fileSize:          1024,
+			scanDBID:          scanDBID,
+			activeCorruptions: make(map[string]bool),
+		}
+		healthErr := &integration.HealthCheckError{
+			Type:    integration.ErrorTypeCorruptStream,
+			Message: "Video stream corrupt",
+		}
+
+		// Process at index 10 to trigger database save (every 10 files)
+		action := scanner.handleHealthCheckResult(ctx, progress, cfg, 10, sfc, healthErr)
+		if action != scanContinue {
+			t.Errorf("Expected scanContinue, got %v", action)
+		}
+		if progress.FilesDone != 51 {
+			t.Errorf("Expected FilesDone 51, got %d", progress.FilesDone)
+		}
+	})
+}
+
+// =============================================================================
+// EmitProgress tests
+// =============================================================================
+
+func TestScannerService_EmitProgress_Variations(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	scanner := &ScannerService{
+		db:       db,
+		eventBus: eb,
+	}
+
+	t.Run("emits progress with all fields", func(t *testing.T) {
+		eventReceived := make(chan domain.Event, 1)
+		eb.Subscribe("ScanProgress", func(e domain.Event) {
+			select {
+			case eventReceived <- e:
+			default:
+			}
+		})
+
+		progress := &ScanProgress{
+			ID:          "test-emit-1",
+			Type:        "path",
+			Path:        "/media/movies",
+			TotalFiles:  100,
+			FilesDone:   50,
+			CurrentFile: "/media/movies/current.mkv",
+			Status:      "scanning",
+			StartTime:   time.Now().Format(time.RFC3339),
+			ScanDBID:    123,
+		}
+
+		scanner.emitProgress(progress)
+
+		select {
+		case e := <-eventReceived:
+			if e.AggregateID != "test-emit-1" {
+				t.Errorf("Expected aggregate ID 'test-emit-1', got %q", e.AggregateID)
+			}
+			data := e.EventData
+			if data["total_files"] != 100 {
+				t.Errorf("Expected total_files 100, got %v", data["total_files"])
+			}
+			if data["files_done"] != 50 {
+				t.Errorf("Expected files_done 50, got %v", data["files_done"])
+			}
+			if data["scan_db_id"] != int64(123) {
+				t.Errorf("Expected scan_db_id 123, got %v", data["scan_db_id"])
+			}
+		case <-time.After(500 * time.Millisecond):
+			t.Error("Expected ScanProgress event")
+		}
+	})
+
+	t.Run("emits progress with zero values", func(t *testing.T) {
+		progress := &ScanProgress{
+			ID:     "test-emit-2",
+			Status: "starting",
+		}
+
+		// Should not panic with zero values
+		scanner.emitProgress(progress)
+	})
+}
+
+// =============================================================================
+// MarkFileProcessed tests
+// =============================================================================
+
+func TestScannerService_MarkFileProcessed(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	scanner := &ScannerService{
+		db:       db,
+		eventBus: eb,
+	}
+
+	t.Run("increments FilesDone", func(t *testing.T) {
+		progress := &ScanProgress{
+			FilesDone: 10,
+		}
+
+		scanner.markFileProcessed(progress, 5, 0)
+
+		if progress.FilesDone != 11 {
+			t.Errorf("Expected FilesDone 11, got %d", progress.FilesDone)
+		}
+	})
+
+	t.Run("saves to database every 10 files", func(t *testing.T) {
+		result, err := db.Exec(`
+			INSERT INTO scans (path, path_id, status, total_files, files_scanned, current_file_index)
+			VALUES ('/media/test', 1, 'running', 100, 0, 0)
+		`)
+		if err != nil {
+			t.Fatalf("Failed to create scan: %v", err)
+		}
+		scanDBID, _ := result.LastInsertId()
+
+		progress := &ScanProgress{
+			FilesDone: 19,
+		}
+
+		// Index 20 should trigger save (20 % 10 == 0)
+		scanner.markFileProcessed(progress, 20, scanDBID)
+
+		// Verify database was updated
+		var currentIndex, filesScanned int
+		err = db.QueryRow(`SELECT current_file_index, files_scanned FROM scans WHERE id = ?`, scanDBID).Scan(&currentIndex, &filesScanned)
+		if err != nil {
+			t.Fatalf("Failed to query scan: %v", err)
+		}
+		if currentIndex != 20 {
+			t.Errorf("Expected current_file_index 20, got %d", currentIndex)
+		}
+		if filesScanned != 20 {
+			t.Errorf("Expected files_scanned 20, got %d", filesScanned)
+		}
+	})
+
+	t.Run("skips database save when scanDBID is 0", func(t *testing.T) {
+		progress := &ScanProgress{
+			FilesDone: 9,
+		}
+
+		// Should not panic with scanDBID 0
+		scanner.markFileProcessed(progress, 10, 0)
+
+		if progress.FilesDone != 10 {
+			t.Errorf("Expected FilesDone 10, got %d", progress.FilesDone)
 		}
 	})
 }
