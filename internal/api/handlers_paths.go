@@ -461,7 +461,7 @@ func countMediaFiles(basePath string, maxSamples, maxFiles int) (int, []string, 
 }
 
 // validateScanPath checks if a scan path is accessible and returns file statistics.
-// GET /api/scan-paths/:id/validate
+// GET /config/paths/:id/validate
 func (s *RESTServer) validateScanPath(c *gin.Context) {
 	id := c.Param("id")
 
