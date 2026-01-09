@@ -3467,3 +3467,189 @@ func TestGetMigrationFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestRepository_RecreateViews_LegacyPath(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Drop the corruption_summary table to force legacy path
+	_, err := repo.DB.Exec("DROP TABLE IF EXISTS corruption_summary")
+	if err != nil {
+		t.Fatalf("Failed to drop corruption_summary: %v", err)
+	}
+
+	// Also drop views that depend on it
+	for _, view := range []string{"corruption_status", "dashboard_stats"} {
+		_, err = repo.DB.Exec("DROP VIEW IF EXISTS " + view) //nolint:gosec // hardcoded view names
+		if err != nil {
+			t.Fatalf("Failed to drop view %s: %v", view, err)
+		}
+	}
+
+	// Now recreateViews should use the legacy path
+	err = repo.recreateViews()
+	if err != nil {
+		t.Errorf("recreateViews (legacy path) should succeed: %v", err)
+	}
+
+	// Verify views were created
+	for _, view := range []string{"corruption_status", "dashboard_stats"} {
+		var name string
+		err := repo.DB.QueryRow(
+			"SELECT name FROM sqlite_master WHERE type='view' AND name=?",
+			view,
+		).Scan(&name)
+		if err != nil {
+			t.Errorf("View %s should exist after legacy recreateViews: %v", view, err)
+		}
+	}
+}
+
+func TestRepository_CreateViewsLegacy_Direct(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Drop all views first
+	for _, view := range []string{"corruption_status", "dashboard_stats"} {
+		_, err := repo.DB.Exec("DROP VIEW IF EXISTS " + view) //nolint:gosec // hardcoded view names
+		if err != nil {
+			t.Fatalf("Failed to drop view %s: %v", view, err)
+		}
+	}
+
+	// Call createViewsLegacy directly
+	err := repo.createViewsLegacy()
+	if err != nil {
+		t.Errorf("createViewsLegacy should succeed: %v", err)
+	}
+
+	// Verify views were created and are queryable
+	var count int
+	err = repo.DB.QueryRow("SELECT COUNT(*) FROM corruption_status").Scan(&count)
+	if err != nil {
+		t.Errorf("corruption_status view should be queryable: %v", err)
+	}
+
+	err = repo.DB.QueryRow("SELECT active_corruptions FROM dashboard_stats").Scan(&count)
+	if err != nil {
+		t.Errorf("dashboard_stats view should be queryable: %v", err)
+	}
+}
+
+func TestRepository_CreateViewsLegacy_WithEventData(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Insert test event data
+	_, err := repo.DB.Exec(`
+		INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data, created_at)
+		VALUES
+		('corruption-1', 'corruption', 'CorruptionDetected', '{"file_path": "/test/file.mkv", "path_id": 1, "corruption_type": "audio_stream_error"}', datetime('now')),
+		('corruption-1', 'corruption', 'SearchCompleted', '{}', datetime('now'))
+	`)
+	if err != nil {
+		t.Fatalf("Failed to insert test events: %v", err)
+	}
+
+	// Drop views and corruption_summary to force legacy path
+	_, _ = repo.DB.Exec("DROP TABLE IF EXISTS corruption_summary")
+	for _, view := range []string{"corruption_status", "dashboard_stats"} {
+		_, _ = repo.DB.Exec("DROP VIEW IF EXISTS " + view) //nolint:gosec
+	}
+
+	// Call createViewsLegacy
+	err = repo.createViewsLegacy()
+	if err != nil {
+		t.Errorf("createViewsLegacy should succeed: %v", err)
+	}
+
+	// Verify the corruption shows up in the view
+	var corruptionID, filePath string
+	err = repo.DB.QueryRow("SELECT corruption_id, file_path FROM corruption_status LIMIT 1").Scan(&corruptionID, &filePath)
+	if err != nil {
+		t.Errorf("Should find corruption in legacy view: %v", err)
+	}
+	if corruptionID != "corruption-1" {
+		t.Errorf("Expected corruption_id 'corruption-1', got %q", corruptionID)
+	}
+	if filePath != "/test/file.mkv" {
+		t.Errorf("Expected file_path '/test/file.mkv', got %q", filePath)
+	}
+}
+
+func TestRepository_ExecuteMaintenanceCommand_Success(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// executeMaintenanceCommand logs success, we just verify it doesn't panic
+	repo.executeMaintenanceCommand("test operation", "SELECT 1", true)
+	repo.executeMaintenanceCommand("test operation with warn=false", "SELECT 1", false)
+}
+
+func TestRepository_ExecuteMaintenanceCommand_Error(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Invalid SQL should log error but not panic
+	repo.executeMaintenanceCommand("invalid operation", "INVALID SQL SYNTAX", true)
+	repo.executeMaintenanceCommand("invalid operation with warn=false", "INVALID SQL SYNTAX", false)
+}
+
+func TestRepository_ExecutePruneOperation_Success(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Insert some test data to prune
+	_, err := repo.DB.Exec(`
+		INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data, created_at)
+		VALUES ('test-1', 'corruption', 'CorruptionDetected', '{}', datetime('now', '-100 days'))
+	`)
+	if err != nil {
+		t.Fatalf("Failed to insert test event: %v", err)
+	}
+
+	// Execute prune operation
+	op := pruneOperation{
+		name:   "test prune",
+		query:  "DELETE FROM events WHERE created_at < datetime('now', '-50 days')",
+		args:   nil,
+		format: "Pruned %d test events",
+	}
+	repo.executePruneOperation(op)
+
+	// Verify event was deleted
+	var count int
+	repo.DB.QueryRow("SELECT COUNT(*) FROM events WHERE aggregate_id = 'test-1'").Scan(&count)
+	if count != 0 {
+		t.Errorf("Expected event to be pruned, but count = %d", count)
+	}
+}
+
+func TestRepository_ExecutePruneOperation_Error(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Invalid SQL should log error but not panic
+	op := pruneOperation{
+		name:   "invalid prune",
+		query:  "DELETE FROM nonexistent_table",
+		args:   nil,
+		format: "Pruned %d items",
+	}
+	repo.executePruneOperation(op)
+}
+
+func TestRepository_ExecutePruneOperation_NoRowsAffected(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Delete from empty condition - no rows affected
+	op := pruneOperation{
+		name:   "empty prune",
+		query:  "DELETE FROM events WHERE aggregate_id = 'nonexistent'",
+		args:   nil,
+		format: "Pruned %d items",
+	}
+	repo.executePruneOperation(op)
+	// Should complete without logging (no rows affected)
+}

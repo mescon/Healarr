@@ -5516,3 +5516,427 @@ func TestNormalizedPathLength(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// CheckInstanceHealth tests
+// =============================================================================
+
+func TestHTTPArrClient_CheckInstanceHealth_Success(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// Create mock server that returns healthy status
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/system/status" && r.Method == "GET" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"version": "4.0.0",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	// Insert test instance
+	_, err := db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key) VALUES (1, 'TestArr', 'radarr', ?, 'test-key')`, server.URL)
+	if err != nil {
+		t.Fatalf("Failed to insert test instance: %v", err)
+	}
+
+	err = client.CheckInstanceHealth(1)
+	if err != nil {
+		t.Errorf("CheckInstanceHealth() error = %v, want nil", err)
+	}
+}
+
+func TestHTTPArrClient_CheckInstanceHealth_Unhealthy(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// Create mock server that returns error
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	// Insert test instance
+	_, err := db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key) VALUES (1, 'TestArr', 'radarr', ?, 'test-key')`, server.URL)
+	if err != nil {
+		t.Fatalf("Failed to insert test instance: %v", err)
+	}
+
+	err = client.CheckInstanceHealth(1)
+	if err == nil {
+		t.Error("CheckInstanceHealth() expected error for unhealthy instance")
+	}
+}
+
+func TestHTTPArrClient_CheckInstanceHealth_InstanceNotFound(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	err := client.CheckInstanceHealth(999)
+	if err == nil {
+		t.Error("CheckInstanceHealth() expected error for non-existent instance")
+	}
+}
+
+// =============================================================================
+// GetRootFolders tests
+// =============================================================================
+
+func TestHTTPArrClient_GetRootFolders_Success(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// Create mock server that returns root folders
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/rootfolder" && r.Method == "GET" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]RootFolder{
+				{ID: 1, Path: "/movies", FreeSpace: 1000000, TotalSpace: 2000000},
+				{ID: 2, Path: "/movies4k", FreeSpace: 500000, TotalSpace: 1000000},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	// Insert test instance
+	_, err := db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key) VALUES (1, 'TestArr', 'radarr', ?, 'test-key')`, server.URL)
+	if err != nil {
+		t.Fatalf("Failed to insert test instance: %v", err)
+	}
+
+	folders, err := client.GetRootFolders(1)
+	if err != nil {
+		t.Fatalf("GetRootFolders() error = %v", err)
+	}
+
+	if len(folders) != 2 {
+		t.Errorf("GetRootFolders() returned %d folders, want 2", len(folders))
+	}
+
+	if folders[0].Path != "/movies" {
+		t.Errorf("GetRootFolders()[0].Path = %q, want /movies", folders[0].Path)
+	}
+}
+
+func TestHTTPArrClient_GetRootFolders_InstanceNotFound(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	_, err := client.GetRootFolders(999)
+	if err == nil {
+		t.Error("GetRootFolders() expected error for non-existent instance")
+	}
+}
+
+func TestHTTPArrClient_GetRootFolders_APIError(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// Create mock server that returns error
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	// Insert test instance
+	_, err := db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key) VALUES (1, 'TestArr', 'radarr', ?, 'test-key')`, server.URL)
+	if err != nil {
+		t.Fatalf("Failed to insert test instance: %v", err)
+	}
+
+	_, err = client.GetRootFolders(1)
+	if err == nil {
+		t.Error("GetRootFolders() expected error for API failure")
+	}
+}
+
+// =============================================================================
+// GetMediaDetails tests
+// =============================================================================
+
+func TestHTTPArrClient_GetMediaDetails_Radarr(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// Create mock server for Radarr
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/movie/123" && r.Method == "GET" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    123,
+				"title": "The Matrix",
+				"year":  1999,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	// Insert test instance and scan path
+	_, err := db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key) VALUES (1, 'TestRadarr', 'radarr', ?, 'test-key')`, server.URL)
+	if err != nil {
+		t.Fatalf("Failed to insert test instance: %v", err)
+	}
+	_, err = db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id) VALUES (1, '/local/movies', '/movies', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	details, err := client.GetMediaDetails(123, "/movies/The Matrix (1999)/movie.mkv")
+	if err != nil {
+		t.Fatalf("GetMediaDetails() error = %v", err)
+	}
+
+	if details == nil {
+		t.Fatal("GetMediaDetails() returned nil")
+	}
+
+	if details.Title != "The Matrix" {
+		t.Errorf("GetMediaDetails().Title = %q, want 'The Matrix'", details.Title)
+	}
+
+	if details.Year != 1999 {
+		t.Errorf("GetMediaDetails().Year = %d, want 1999", details.Year)
+	}
+
+	if details.MediaType != "movie" {
+		t.Errorf("GetMediaDetails().MediaType = %q, want 'movie'", details.MediaType)
+	}
+}
+
+func TestHTTPArrClient_GetMediaDetails_Sonarr(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// Create mock server for Sonarr
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/series/456":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    456,
+				"title": "Breaking Bad",
+				"year":  2008,
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	// Insert test instance and scan path
+	_, err := db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key) VALUES (1, 'TestSonarr', 'sonarr', ?, 'test-key')`, server.URL)
+	if err != nil {
+		t.Fatalf("Failed to insert test instance: %v", err)
+	}
+	_, err = db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id) VALUES (1, '/local/tv', '/tv', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	details, err := client.GetMediaDetails(456, "/tv/Breaking Bad/Season 01/episode.mkv")
+	if err != nil {
+		t.Fatalf("GetMediaDetails() error = %v", err)
+	}
+
+	if details == nil {
+		t.Fatal("GetMediaDetails() returned nil")
+	}
+
+	if details.Title != "Breaking Bad" {
+		t.Errorf("GetMediaDetails().Title = %q, want 'Breaking Bad'", details.Title)
+	}
+
+	if details.MediaType != "series" {
+		t.Errorf("GetMediaDetails().MediaType = %q, want 'series'", details.MediaType)
+	}
+}
+
+func TestHTTPArrClient_GetMediaDetails_NotFound(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// Create mock server that returns 404
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	// Insert test instance and scan path
+	_, err := db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key) VALUES (1, 'TestRadarr', 'radarr', ?, 'test-key')`, server.URL)
+	if err != nil {
+		t.Fatalf("Failed to insert test instance: %v", err)
+	}
+	_, err = db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id) VALUES (1, '/local/movies', '/movies', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	// Should return nil without error when media not found
+	details, err := client.GetMediaDetails(999, "/movies/Unknown/movie.mkv")
+	if err != nil {
+		t.Fatalf("GetMediaDetails() error = %v, expected nil error for not found", err)
+	}
+
+	if details != nil {
+		t.Errorf("GetMediaDetails() = %+v, want nil for not found", details)
+	}
+}
+
+func TestHTTPArrClient_GetMediaDetails_NoMatchingPath(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// No scan paths configured, so no instance will match
+	details, err := client.GetMediaDetails(123, "/unknown/path/movie.mkv")
+	if err != nil {
+		t.Fatalf("GetMediaDetails() error = %v", err)
+	}
+
+	// Should return nil when no instance matches path
+	if details != nil {
+		t.Errorf("GetMediaDetails() = %+v, want nil when no path matches", details)
+	}
+}
+
+// =============================================================================
+// GetEpisodeDetails tests
+// =============================================================================
+
+func TestHTTPArrClient_GetEpisodeDetails_Success(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// Create mock server for Sonarr episode details
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/episode/789" && r.Method == "GET" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":            789,
+				"title":         "Pilot",
+				"seasonNumber":  1,
+				"episodeNumber": 1,
+				"seriesId":      456,
+				"series": map[string]interface{}{
+					"title": "Breaking Bad",
+					"year":  2008,
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	// Insert test instance and scan path
+	_, err := db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key) VALUES (1, 'TestSonarr', 'sonarr', ?, 'test-key')`, server.URL)
+	if err != nil {
+		t.Fatalf("Failed to insert test instance: %v", err)
+	}
+	_, err = db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id) VALUES (1, '/local/tv', '/tv', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	episode, err := client.GetEpisodeDetails(789, "/tv/Breaking Bad/Season 01/episode.mkv")
+	if err != nil {
+		t.Fatalf("GetEpisodeDetails() error = %v", err)
+	}
+
+	if episode == nil {
+		t.Fatal("GetEpisodeDetails() returned nil")
+	}
+
+	if episode.EpisodeTitle != "Pilot" {
+		t.Errorf("GetEpisodeDetails().EpisodeTitle = %q, want 'Pilot'", episode.EpisodeTitle)
+	}
+
+	if episode.Title != "Breaking Bad" {
+		t.Errorf("GetEpisodeDetails().Title = %q, want 'Breaking Bad'", episode.Title)
+	}
+}
+
+func TestHTTPArrClient_GetEpisodeDetails_NoMatchingPath(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// No scan paths configured, so no instance will match
+	episode, err := client.GetEpisodeDetails(789, "/unknown/path/episode.mkv")
+	if err != nil {
+		t.Fatalf("GetEpisodeDetails() error = %v", err)
+	}
+
+	// Should return nil when no instance matches path
+	if episode != nil {
+		t.Errorf("GetEpisodeDetails() = %+v, want nil when no path matches", episode)
+	}
+}
+
+func TestHTTPArrClient_GetEpisodeDetails_NotFound(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// Create mock server that returns 404
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	// Insert test instance and scan path
+	_, err := db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key) VALUES (1, 'TestSonarr', 'sonarr', ?, 'test-key')`, server.URL)
+	if err != nil {
+		t.Fatalf("Failed to insert test instance: %v", err)
+	}
+	_, err = db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id) VALUES (1, '/local/tv', '/tv', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	episode, err := client.GetEpisodeDetails(999, "/tv/Show/Season 01/episode.mkv")
+	if err != nil {
+		t.Fatalf("GetEpisodeDetails() error = %v, expected nil for not found", err)
+	}
+
+	if episode != nil {
+		t.Errorf("GetEpisodeDetails() = %+v, want nil for not found", episode)
+	}
+}
+
+func TestHTTPArrClient_GetEpisodeDetails_NonSonarrInstance(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// Create mock server for Radarr (should be skipped for episode details)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("Radarr server should not be called for episode details")
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	// Insert Radarr instance and scan path
+	_, err := db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key) VALUES (1, 'TestRadarr', 'radarr', ?, 'test-key')`, server.URL)
+	if err != nil {
+		t.Fatalf("Failed to insert test instance: %v", err)
+	}
+	_, err = db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id) VALUES (1, '/local/movies', '/movies', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	// Should return nil for Radarr instance (episodes are Sonarr-only)
+	episode, err := client.GetEpisodeDetails(789, "/movies/The Matrix (1999)/movie.mkv")
+	if err != nil {
+		t.Fatalf("GetEpisodeDetails() error = %v", err)
+	}
+
+	if episode != nil {
+		t.Errorf("GetEpisodeDetails() = %+v, want nil for non-Sonarr instance", episode)
+	}
+}

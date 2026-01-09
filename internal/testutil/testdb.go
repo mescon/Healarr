@@ -182,7 +182,26 @@ func initializeSchema(db *sql.DB) error {
 		return fmt.Errorf("failed to create arr_instances table: %w", err)
 	}
 
-	// Create corruption_status view (used by MonitorService)
+	// Create corruption_summary table (migration 004) - used by some tests
+	_, err = db.Exec(`
+		CREATE TABLE corruption_summary (
+			corruption_id TEXT PRIMARY KEY,
+			file_path TEXT NOT NULL,
+			path_id INTEGER,
+			current_state TEXT NOT NULL,
+			retry_count INTEGER DEFAULT 0,
+			corruption_type TEXT,
+			last_error TEXT,
+			detected_at TIMESTAMP NOT NULL,
+			last_updated_at TIMESTAMP NOT NULL
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create corruption_summary table: %w", err)
+	}
+
+	// Create corruption_status view (reads from events table for legacy compatibility)
+	// Most existing tests insert events and expect the view to reflect those changes
 	_, err = db.Exec(`
 		CREATE VIEW corruption_status AS
 		SELECT
@@ -201,6 +220,8 @@ func initializeSchema(db *sql.DB) error {
 			 WHERE e7.aggregate_id = e.aggregate_id
 			 AND e7.event_type = 'CorruptionDetected'
 			 LIMIT 1) as path_id,
+			(SELECT last_error FROM corruption_summary cs WHERE cs.corruption_id = e.aggregate_id LIMIT 1) as last_error,
+			(SELECT corruption_type FROM corruption_summary cs WHERE cs.corruption_id = e.aggregate_id LIMIT 1) as corruption_type,
 			MIN(created_at) as detected_at,
 			MAX(created_at) as last_updated_at
 		FROM events e
