@@ -15,7 +15,9 @@ import {
     ExternalLink,
     Eye,
     EyeOff,
+    FolderOpen,
 } from 'lucide-react';
+import FileBrowser from './ui/FileBrowser';
 import type { RootFolder, ConfigExport } from '../lib/api';
 import api, {
     getSetupStatus,
@@ -80,6 +82,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
     });
     const [rootFolders, setRootFolders] = useState<RootFolder[]>([]);
     const [loadingRootFolders, setLoadingRootFolders] = useState(false);
+    const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
 
     // Import/restore - support both config JSON and database backup
     const [configFile, setConfigFile] = useState<File | null>(null);
@@ -755,13 +758,24 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                     <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
                         Local Path (where files are on this server)
                     </label>
-                    <input
-                        type="text"
-                        value={pathData.local_path}
-                        onChange={(e) => setPathData(prev => ({ ...prev, local_path: e.target.value }))}
-                        className="w-full px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-green-500/50 focus:border-green-500 font-mono"
-                        placeholder="/data/media/tv"
-                    />
+                    <div className="flex gap-2">
+                        <input
+                            type="text"
+                            value={pathData.local_path}
+                            onChange={(e) => setPathData(prev => ({ ...prev, local_path: e.target.value }))}
+                            className="flex-1 px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-green-500/50 focus:border-green-500 font-mono"
+                            placeholder="/data/media/tv"
+                        />
+                        <button
+                            type="button"
+                            onClick={() => setFileBrowserOpen(true)}
+                            className="px-4 py-3 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 border border-slate-300 dark:border-slate-600 rounded-xl text-slate-700 dark:text-slate-300 transition-colors flex items-center gap-2"
+                            title="Browse directories"
+                        >
+                            <FolderOpen className="w-5 h-5" />
+                            <span className="hidden sm:inline">Browse</span>
+                        </button>
+                    </div>
                 </div>
 
                 <div>
@@ -836,6 +850,13 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
             >
                 Skip for now
             </button>
+
+            <FileBrowser
+                isOpen={fileBrowserOpen}
+                onClose={() => setFileBrowserOpen(false)}
+                onSelect={(path) => setPathData(prev => ({ ...prev, local_path: path }))}
+                initialPath={pathData.local_path || '/'}
+            />
         </motion.div>
     );
 

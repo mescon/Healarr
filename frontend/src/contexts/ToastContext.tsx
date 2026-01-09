@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { humanizeError } from '../lib/errors';
 
 interface Toast {
     id: string;
@@ -12,7 +13,7 @@ interface ToastContextType {
     addToast: (toast: Omit<Toast, 'id'>) => void;
     removeToast: (id: string) => void;
     success: (message: string, duration?: number) => void;
-    error: (message: string, duration?: number) => void;
+    error: (message: string | Error | unknown, duration?: number) => void;
     warning: (message: string, duration?: number) => void;
     info: (message: string, duration?: number) => void;
 }
@@ -60,8 +61,8 @@ export const ToastProvider = ({ children }: ToastProviderProps) => {
         addToast({ type: 'success', message, duration });
     }, [addToast]);
 
-    const error = useCallback((message: string, duration?: number) => {
-        addToast({ type: 'error', message, duration });
+    const error = useCallback((message: string | Error | unknown, duration?: number) => {
+        addToast({ type: 'error', message: humanizeError(message), duration });
     }, [addToast]);
 
     const warning = useCallback((message: string, duration?: number) => {

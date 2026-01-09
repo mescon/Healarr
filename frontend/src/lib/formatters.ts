@@ -215,9 +215,9 @@ export function getEventDescription(eventType: string, data?: Record<string, unk
         'RetryScheduled': 'Retry scheduled',
         'DownloadTimeout': 'Download timed out',
         'CorruptionIgnored': 'Marked as ignored',
-        'ImportBlocked': '⚠️ Import blocked in *arr - manual intervention required',
-        'ManuallyRemoved': '⚠️ Removed from *arr queue - manual intervention required',
-        'DownloadIgnored': '⚠️ Download ignored by user - manual intervention required',
+        'ImportBlocked': '⚠️ Import blocked - check *arr Activity → Queue for errors',
+        'ManuallyRemoved': '⚠️ Removed from queue - re-add in *arr or retry here',
+        'DownloadIgnored': '⚠️ Download ignored - unblock in *arr Activity → Queue',
     };
     
     return descriptions[eventType] || eventType.replace(/([A-Z])/g, ' $1').trim();

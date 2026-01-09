@@ -237,8 +237,13 @@ const Corruptions = () => {
                             {manualInterventionCount} item{manualInterventionCount > 1 ? 's' : ''} require{manualInterventionCount === 1 ? 's' : ''} manual intervention
                         </h3>
                         <p className="text-sm text-purple-500/80 dark:text-purple-400/80 mt-1">
-                            These corruptions could not be automatically remediated and need attention in Sonarr/Radarr.
+                            These items are blocked in your *arr application. To resolve:
                         </p>
+                        <ol className="text-sm text-purple-500/80 dark:text-purple-400/80 mt-2 ml-4 list-decimal space-y-1">
+                            <li>Open your *arr app and check <span className="font-medium">Activity → Queue</span></li>
+                            <li>Look for blocked imports, failed downloads, or manually removed items</li>
+                            <li>Resolve the issue in *arr, then click <span className="font-medium">Retry</span> here</li>
+                        </ol>
                     </div>
                     <button
                         onClick={() => handleStatusFilterChange('manual_intervention')}
