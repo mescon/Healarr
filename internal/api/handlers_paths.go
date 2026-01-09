@@ -391,6 +391,67 @@ func (s *RESTServer) updateScanPath(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
+// pathValidationResult holds the results of path validation.
+type pathValidationResult struct {
+	Accessible  bool     `json:"accessible"`
+	FileCount   int      `json:"file_count"`
+	SampleFiles []string `json:"sample_files"`
+	Error       *string  `json:"error"`
+}
+
+// classifyPathError returns a user-friendly error message for path access errors.
+func classifyPathError(err error) string {
+	if os.IsNotExist(err) {
+		return "Path does not exist"
+	}
+	if os.IsPermission(err) {
+		return "Permission denied"
+	}
+	return "Path not accessible"
+}
+
+// validationMediaExtensions defines supported media file extensions for validation.
+var validationMediaExtensions = map[string]bool{
+	".mkv": true, ".mp4": true, ".avi": true, ".mov": true,
+	".wmv": true, ".flv": true, ".webm": true, ".m4v": true,
+	".ts": true, ".m2ts": true, ".mpg": true, ".mpeg": true,
+}
+
+// countMediaFiles walks a directory and counts media files, collecting samples.
+func countMediaFiles(basePath string, maxSamples int) (int, []string) {
+	var fileCount int
+	var sampleFiles []string
+
+	_ = filepath.WalkDir(basePath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // Skip inaccessible directories
+		}
+		if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		ext := strings.ToLower(filepath.Ext(d.Name()))
+		if !validationMediaExtensions[ext] {
+			return nil
+		}
+
+		fileCount++
+		if len(sampleFiles) < maxSamples {
+			relPath, relErr := filepath.Rel(basePath, path)
+			if relErr != nil {
+				relPath = d.Name()
+			}
+			sampleFiles = append(sampleFiles, relPath)
+		}
+		return nil
+	})
+
+	return fileCount, sampleFiles
+}
+
 // validateScanPath checks if a scan path is accessible and returns file statistics.
 // GET /api/scan-paths/:id/validate
 func (s *RESTServer) validateScanPath(c *gin.Context) {
@@ -399,11 +460,11 @@ func (s *RESTServer) validateScanPath(c *gin.Context) {
 	// Get the path from database
 	var localPath string
 	err := s.db.QueryRow("SELECT local_path FROM scan_paths WHERE id = ?", id).Scan(&localPath)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Scan path not found"})
+		return
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Scan path not found"})
-			return
-		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -411,79 +472,32 @@ func (s *RESTServer) validateScanPath(c *gin.Context) {
 	// Check if path exists and is accessible
 	info, err := os.Stat(localPath)
 	if err != nil {
-		errorMsg := "Path not accessible"
-		if os.IsNotExist(err) {
-			errorMsg = "Path does not exist"
-		} else if os.IsPermission(err) {
-			errorMsg = "Permission denied"
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"accessible":   false,
-			"file_count":   0,
-			"sample_files": []string{},
-			"error":        errorMsg,
+		errMsg := classifyPathError(err)
+		c.JSON(http.StatusOK, pathValidationResult{
+			Accessible:  false,
+			SampleFiles: []string{},
+			Error:       &errMsg,
 		})
 		return
 	}
 
 	if !info.IsDir() {
-		c.JSON(http.StatusOK, gin.H{
-			"accessible":   false,
-			"file_count":   0,
-			"sample_files": []string{},
-			"error":        "Path is not a directory",
+		errMsg := "Path is not a directory"
+		c.JSON(http.StatusOK, pathValidationResult{
+			Accessible:  false,
+			SampleFiles: []string{},
+			Error:       &errMsg,
 		})
 		return
 	}
 
 	// Count media files and collect samples
-	mediaExtensions := map[string]bool{
-		".mkv": true, ".mp4": true, ".avi": true, ".mov": true,
-		".wmv": true, ".flv": true, ".webm": true, ".m4v": true,
-		".ts": true, ".m2ts": true, ".mpg": true, ".mpeg": true,
-	}
+	fileCount, sampleFiles := countMediaFiles(localPath, 5)
 
-	var fileCount int
-	var sampleFiles []string
-	const maxSamples = 5
-
-	// Walk directory to count media files (limit depth for performance)
-	err = filepath.WalkDir(localPath, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil // Skip inaccessible directories
-		}
-
-		// Skip hidden directories
-		if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
-			return filepath.SkipDir
-		}
-
-		if !d.IsDir() {
-			ext := strings.ToLower(filepath.Ext(d.Name()))
-			if mediaExtensions[ext] {
-				fileCount++
-				if len(sampleFiles) < maxSamples {
-					// Store relative path for display
-					relPath, relErr := filepath.Rel(localPath, path)
-					if relErr == nil {
-						sampleFiles = append(sampleFiles, relPath)
-					} else {
-						sampleFiles = append(sampleFiles, d.Name())
-					}
-				}
-			}
-		}
-		return nil
-	})
-
-	if err != nil {
-		logger.Warnf("Error walking directory %s: %v", localPath, err)
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"accessible":   true,
-		"file_count":   fileCount,
-		"sample_files": sampleFiles,
-		"error":        nil,
+	c.JSON(http.StatusOK, pathValidationResult{
+		Accessible:  true,
+		FileCount:   fileCount,
+		SampleFiles: sampleFiles,
+		Error:       nil,
 	})
 }
