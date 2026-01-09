@@ -83,6 +83,8 @@ export interface ScanDetails {
     completed_at: string;
     healthy_files: number;
     corrupt_files: number;
+    skipped_files: number;
+    inaccessible_files: number;
 }
 
 export const getScanDetails = async (scanId: number): Promise<ScanDetails> => {
@@ -93,7 +95,7 @@ export const getScanDetails = async (scanId: number): Promise<ScanDetails> => {
 export interface ScanFile {
     id: number;
     file_path: string;
-    status: 'healthy' | 'corrupt' | 'error';
+    status: 'healthy' | 'corrupt' | 'error' | 'skipped' | 'inaccessible';
     corruption_type: string;
     error_details: string;
     file_size: number;

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, FileCheck, FileX, Loader2, Filter, HardDrive, Clock, FolderOpen, AlertCircle, X, RefreshCw, ClockArrowDown, ExternalLink, Radio } from 'lucide-react';
+import { ArrowLeft, FileCheck, FileX, Loader2, Filter, HardDrive, Clock, FolderOpen, AlertCircle, X, RefreshCw, ClockArrowDown, ExternalLink, Radio, SkipForward, ShieldAlert, HelpCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { getScanDetails, getScanFiles, cancelScan, rescanPath, type ScanFile, type ScanProgress } from '../lib/api';
 import DataGrid from '../components/ui/DataGrid';
@@ -142,20 +142,43 @@ const ScanDetails = () => {
     };
 
     const getFileStatusBadge = (file: ScanFile) => {
-        if (file.status === 'healthy') {
-            return (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-emerald-500/20 text-emerald-400">
-                    <FileCheck className="w-3 h-3" />
-                    Healthy
-                </span>
-            );
+        switch (file.status) {
+            case 'healthy':
+                return (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-emerald-500/20 text-emerald-400">
+                        <FileCheck className="w-3 h-3" />
+                        Healthy
+                    </span>
+                );
+            case 'corrupt':
+            case 'error':
+                return (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400">
+                        <FileX className="w-3 h-3" />
+                        Corrupt
+                    </span>
+                );
+            case 'skipped':
+                return (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-400">
+                        <SkipForward className="w-3 h-3" />
+                        Skipped
+                    </span>
+                );
+            case 'inaccessible':
+                return (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-500/20 text-orange-400">
+                        <ShieldAlert className="w-3 h-3" />
+                        Inaccessible
+                    </span>
+                );
+            default:
+                return (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-slate-500/20 text-slate-400">
+                        {file.status}
+                    </span>
+                );
         }
-        return (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400">
-                <FileX className="w-3 h-3" />
-                Corrupt
-            </span>
-        );
     };
 
     if (isLoadingScan) {
@@ -239,7 +262,7 @@ const ScanDetails = () => {
                 </div>
             </div>
 
-            {/* Stats Cards */}
+            {/* Stats Cards - File Counts */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                 <div
                     onClick={() => { setStatusFilter('all'); setPage(1); }}
@@ -308,6 +331,47 @@ const ScanDetails = () => {
                     </div>
                 </div>
 
+                <div
+                    onClick={() => { setStatusFilter('skipped'); setPage(1); }}
+                    className={clsx(
+                        "rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5 cursor-pointer transition-all hover:scale-[1.02]",
+                        statusFilter === 'skipped' && "ring-2 ring-amber-500/50"
+                    )}
+                    title="Files skipped due to recent modification or active processing"
+                >
+                    <div className="flex items-center gap-3">
+                        <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                            <SkipForward className="w-5 h-5 text-amber-400" />
+                        </div>
+                        <div>
+                            <p className="text-2xl font-bold text-slate-900 dark:text-white">{scanDetails.skipped_files}</p>
+                            <p className="text-xs text-slate-600 dark:text-slate-400">Skipped</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div
+                    onClick={() => { setStatusFilter('inaccessible'); setPage(1); }}
+                    className={clsx(
+                        "rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5 cursor-pointer transition-all hover:scale-[1.02]",
+                        statusFilter === 'inaccessible' && "ring-2 ring-orange-500/50"
+                    )}
+                    title="Files that could not be accessed due to permission or mount issues"
+                >
+                    <div className="flex items-center gap-3">
+                        <div className="p-2.5 rounded-xl bg-orange-500/10 border border-orange-500/20">
+                            <ShieldAlert className="w-5 h-5 text-orange-400" />
+                        </div>
+                        <div>
+                            <p className="text-2xl font-bold text-slate-900 dark:text-white">{scanDetails.inaccessible_files}</p>
+                            <p className="text-xs text-slate-600 dark:text-slate-400">Inaccessible</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Stats Cards - Time Info */}
+            <div className="grid grid-cols-2 gap-4">
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5">
                     <div className="flex items-center gap-3">
                         <div className="p-2.5 rounded-xl bg-violet-500/10 border border-violet-500/20">
@@ -324,8 +388,8 @@ const ScanDetails = () => {
 
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-5">
                     <div className="flex items-center gap-3">
-                        <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20">
-                            <ClockArrowDown className="w-5 h-5 text-amber-400" />
+                        <div className="p-2.5 rounded-xl bg-slate-500/10 border border-slate-500/20">
+                            <ClockArrowDown className="w-5 h-5 text-slate-400" />
                         </div>
                         <div>
                             <p className="text-sm font-medium text-slate-900 dark:text-white">
@@ -393,6 +457,8 @@ const ScanDetails = () => {
                                 <option value="all" className="bg-slate-100 dark:bg-slate-800">All Files</option>
                                 <option value="healthy" className="bg-slate-100 dark:bg-slate-800">Healthy Only</option>
                                 <option value="corrupt" className="bg-slate-100 dark:bg-slate-800">Corrupt Only</option>
+                                <option value="skipped" className="bg-slate-100 dark:bg-slate-800">Skipped Only</option>
+                                <option value="inaccessible" className="bg-slate-100 dark:bg-slate-800">Inaccessible Only</option>
                             </select>
                         </div>
                     )}
@@ -437,12 +503,40 @@ const ScanDetails = () => {
                                             <span className="text-xs text-slate-500 truncate" title={row.file_path}>
                                                 {row.file_path}
                                             </span>
-                                            {row.status === 'corrupt' && row.error_details && (
+                                            {/* Corrupt file details */}
+                                            {(row.status === 'corrupt' || row.status === 'error') && row.error_details && (
                                                 <div className="mt-1 text-xs text-red-400 bg-red-500/10 p-1.5 rounded border border-red-500/20">
                                                     {row.corruption_type && (
                                                         <span className="font-medium">{row.corruption_type}: </span>
                                                     )}
                                                     <span className="line-clamp-2">{row.error_details}</span>
+                                                </div>
+                                            )}
+                                            {/* Skipped file details */}
+                                            {row.status === 'skipped' && (
+                                                <div className="mt-1 text-xs text-amber-400 bg-amber-500/10 p-1.5 rounded border border-amber-500/20 flex items-start gap-1.5">
+                                                    <HelpCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                                                    <div>
+                                                        {row.corruption_type && (
+                                                            <span className="font-medium">{row.corruption_type === 'RecentlyModified' ? 'Recently Modified' :
+                                                                row.corruption_type === 'SizeChanging' ? 'Size Changing' :
+                                                                row.corruption_type === 'AlreadyProcessing' ? 'Already Processing' :
+                                                                row.corruption_type}: </span>
+                                                        )}
+                                                        <span className="line-clamp-2">{row.error_details || 'File skipped - will be checked on next scan'}</span>
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {/* Inaccessible file details */}
+                                            {row.status === 'inaccessible' && (
+                                                <div className="mt-1 text-xs text-orange-400 bg-orange-500/10 p-1.5 rounded border border-orange-500/20 flex items-start gap-1.5">
+                                                    <ShieldAlert className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                                                    <div>
+                                                        {row.corruption_type && (
+                                                            <span className="font-medium">{row.corruption_type}: </span>
+                                                        )}
+                                                        <span className="line-clamp-2">{row.error_details || 'File could not be accessed'}</span>
+                                                    </div>
                                                 </div>
                                             )}
                                         </div>

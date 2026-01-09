@@ -246,16 +246,18 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 	scanID := c.Param("scan_id")
 
 	var scan struct {
-		ID               int    `json:"id"`
-		Path             string `json:"path"`
-		PathID           int    `json:"path_id"`
-		Status           string `json:"status"`
-		FilesScanned     int    `json:"files_scanned"`
-		CorruptionsFound int    `json:"corruptions_found"`
-		StartedAt        string `json:"started_at"`
-		CompletedAt      string `json:"completed_at"`
-		HealthyFiles     int    `json:"healthy_files"`
-		CorruptFiles     int    `json:"corrupt_files"`
+		ID                int    `json:"id"`
+		Path              string `json:"path"`
+		PathID            int    `json:"path_id"`
+		Status            string `json:"status"`
+		FilesScanned      int    `json:"files_scanned"`
+		CorruptionsFound  int    `json:"corruptions_found"`
+		StartedAt         string `json:"started_at"`
+		CompletedAt       string `json:"completed_at"`
+		HealthyFiles      int    `json:"healthy_files"`
+		CorruptFiles      int    `json:"corrupt_files"`
+		SkippedFiles      int    `json:"skipped_files"`
+		InaccessibleFiles int    `json:"inaccessible_files"`
 	}
 
 	var completedAt sql.NullString
@@ -285,6 +287,12 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 	}
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'corrupt'", scanID).Scan(&scan.CorruptFiles); err != nil {
 		logger.Debugf("Failed to query corrupt files count: %v", err)
+	}
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'skipped'", scanID).Scan(&scan.SkippedFiles); err != nil {
+		logger.Debugf("Failed to query skipped files count: %v", err)
+	}
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'inaccessible'", scanID).Scan(&scan.InaccessibleFiles); err != nil {
+		logger.Debugf("Failed to query inaccessible files count: %v", err)
 	}
 
 	c.JSON(http.StatusOK, scan)
