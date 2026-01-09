@@ -88,6 +88,7 @@ func setupPathsTestServer(t *testing.T, db *sql.DB) (*gin.Engine, string, func()
 		protected.POST("/config/paths", s.createScanPath)
 		protected.PUT("/config/paths/:id", s.updateScanPath)
 		protected.DELETE("/config/paths/:id", s.deleteScanPath)
+		protected.GET("/config/paths/:id/validate", s.validateScanPath)
 		protected.GET("/config/browse", s.browseDirectory)
 		protected.GET("/config/detection-preview", s.getDetectionPreview)
 	}
@@ -1278,4 +1279,183 @@ func TestCountMediaFiles_NestedDirectories(t *testing.T) {
 	for _, sample := range samples {
 		assert.Contains(t, sample, "Season")
 	}
+}
+
+// =============================================================================
+// validateScanPath Tests
+// =============================================================================
+
+func TestValidateScanPath_Success(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Create a temp directory with some media files
+	tmpDir, err := os.MkdirTemp("", "healarr-validate-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Create some media files
+	f, err := os.Create(filepath.Join(tmpDir, "video.mkv"))
+	require.NoError(t, err)
+	f.Close()
+	f, err = os.Create(filepath.Join(tmpDir, "video2.mp4"))
+	require.NoError(t, err)
+	f.Close()
+
+	// Create arr instance for foreign key reference
+	_, err = db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Test Sonarr", "sonarr", "http://localhost:8989", "test-key")
+	require.NoError(t, err)
+
+	// Add scan path to database
+	result, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path, arr_instance_id, enabled) VALUES (?, ?, 1, ?)",
+		tmpDir, tmpDir, true)
+	require.NoError(t, err)
+	id, _ := result.LastInsertId()
+
+	req, _ := http.NewRequest("GET", fmt.Sprintf("/api/config/paths/%d/validate", id), nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.True(t, response["accessible"].(bool))
+	assert.Equal(t, float64(2), response["file_count"])
+	assert.Nil(t, response["error"])
+	assert.NotEmpty(t, response["sample_files"])
+}
+
+func TestValidateScanPath_NotFound(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Request validate for non-existent ID
+	req, _ := http.NewRequest("GET", "/api/config/paths/9999/validate", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestValidateScanPath_PathNotAccessible(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Create arr instance for foreign key reference
+	_, err := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Test Sonarr", "sonarr", "http://localhost:8989", "test-key")
+	require.NoError(t, err)
+
+	// Add scan path that doesn't exist
+	result, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path, arr_instance_id, enabled) VALUES (?, ?, 1, ?)",
+		"/nonexistent/path/that/does/not/exist", "/nonexistent/path", true)
+	require.NoError(t, err)
+	id, _ := result.LastInsertId()
+
+	req, _ := http.NewRequest("GET", fmt.Sprintf("/api/config/paths/%d/validate", id), nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code) // Returns 200 with accessible=false
+
+	var response map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.False(t, response["accessible"].(bool))
+	assert.NotNil(t, response["error"])
+}
+
+func TestValidateScanPath_NotADirectory(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Create a temp file (not a directory)
+	tmpFile, err := os.CreateTemp("", "healarr-validate-file-*")
+	require.NoError(t, err)
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	// Create arr instance for foreign key reference
+	_, err = db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Test Sonarr", "sonarr", "http://localhost:8989", "test-key")
+	require.NoError(t, err)
+
+	// Add scan path pointing to a file
+	result, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path, arr_instance_id, enabled) VALUES (?, ?, 1, ?)",
+		tmpFile.Name(), tmpFile.Name(), true)
+	require.NoError(t, err)
+	id, _ := result.LastInsertId()
+
+	req, _ := http.NewRequest("GET", fmt.Sprintf("/api/config/paths/%d/validate", id), nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.False(t, response["accessible"].(bool))
+	assert.Contains(t, response["error"], "not a directory")
+}
+
+func TestValidateScanPath_EmptyDirectory(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	// Create an empty temp directory
+	tmpDir, err := os.MkdirTemp("", "healarr-validate-empty-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Create arr instance for foreign key reference
+	_, err = db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Test Sonarr", "sonarr", "http://localhost:8989", "test-key")
+	require.NoError(t, err)
+
+	// Add scan path to database
+	result, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path, arr_instance_id, enabled) VALUES (?, ?, 1, ?)",
+		tmpDir, tmpDir, true)
+	require.NoError(t, err)
+	id, _ := result.LastInsertId()
+
+	req, _ := http.NewRequest("GET", fmt.Sprintf("/api/config/paths/%d/validate", id), nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.True(t, response["accessible"].(bool))
+	assert.Equal(t, float64(0), response["file_count"])
+	assert.Nil(t, response["error"])
 }

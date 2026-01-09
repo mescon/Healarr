@@ -235,3 +235,93 @@ func TestParseInt(t *testing.T) {
 		}
 	}
 }
+
+func TestSafeOrderByClause_ValidColumn(t *testing.T) {
+	allowedColumns := map[string]string{
+		"name":       "display_name",
+		"created_at": "created_at",
+		"status":     "status",
+	}
+
+	result := SafeOrderByClause("name", "asc", allowedColumns, "id", "desc")
+	expected := "ORDER BY display_name ASC"
+	if result != expected {
+		t.Errorf("SafeOrderByClause = %q, want %q", result, expected)
+	}
+}
+
+func TestSafeOrderByClause_InvalidColumn(t *testing.T) {
+	allowedColumns := map[string]string{
+		"name":       "display_name",
+		"created_at": "created_at",
+	}
+
+	// Invalid column should fall back to default
+	result := SafeOrderByClause("invalid_column", "asc", allowedColumns, "id", "desc")
+	expected := "ORDER BY id ASC"
+	if result != expected {
+		t.Errorf("SafeOrderByClause = %q, want %q", result, expected)
+	}
+}
+
+func TestSafeOrderByClause_InvalidSortOrder(t *testing.T) {
+	allowedColumns := map[string]string{
+		"name": "display_name",
+	}
+
+	// Invalid order should fall back to default order
+	result := SafeOrderByClause("name", "invalid", allowedColumns, "id", "desc")
+	expected := "ORDER BY display_name DESC"
+	if result != expected {
+		t.Errorf("SafeOrderByClause = %q, want %q", result, expected)
+	}
+}
+
+func TestSafeOrderByClause_InvalidColumnAndOrder(t *testing.T) {
+	allowedColumns := map[string]string{
+		"name": "display_name",
+	}
+
+	// Both invalid should use both defaults
+	result := SafeOrderByClause("invalid", "invalid", allowedColumns, "id", "asc")
+	expected := "ORDER BY id ASC"
+	if result != expected {
+		t.Errorf("SafeOrderByClause = %q, want %q", result, expected)
+	}
+}
+
+func TestSafeOrderByClause_CaseInsensitiveOrder(t *testing.T) {
+	allowedColumns := map[string]string{
+		"name": "display_name",
+	}
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"ASC", "ORDER BY display_name ASC"},
+		{"asc", "ORDER BY display_name ASC"},
+		{"Asc", "ORDER BY display_name ASC"},
+		{"DESC", "ORDER BY display_name DESC"},
+		{"desc", "ORDER BY display_name DESC"},
+		{"Desc", "ORDER BY display_name DESC"},
+	}
+
+	for _, tt := range tests {
+		result := SafeOrderByClause("name", tt.input, allowedColumns, "id", "desc")
+		if result != tt.expected {
+			t.Errorf("SafeOrderByClause with order %q = %q, want %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestSafeOrderByClause_EmptyAllowedColumns(t *testing.T) {
+	allowedColumns := map[string]string{}
+
+	// With no allowed columns, should always use default
+	result := SafeOrderByClause("name", "asc", allowedColumns, "id", "desc")
+	expected := "ORDER BY id ASC"
+	if result != expected {
+		t.Errorf("SafeOrderByClause = %q, want %q", result, expected)
+	}
+}
