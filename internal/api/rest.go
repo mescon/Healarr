@@ -350,6 +350,7 @@ func (s *RESTServer) setupRoutes() {
 			// Config - Server settings
 			protected.PUT("/config/settings", s.updateSettings)
 			protected.POST("/config/restart", s.restartServer)
+			protected.POST("/setup/reset", s.handleSetupReset)
 
 			// Config
 			protected.GET("/config/arr", s.getArrInstances)

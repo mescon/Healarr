@@ -28,12 +28,17 @@ func formatInvalidURLError(err error) string {
 // 2. The scheme is http or https (prevents file://, gopher://, etc.)
 // 3. The host is not empty
 func validateArrURL(rawURL string) error {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+	// Check if URL has a scheme - provide a clear error message if not
+	if !strings.HasPrefix(strings.ToLower(rawURL), "http://") && !strings.HasPrefix(strings.ToLower(rawURL), "https://") {
+		return errors.New("URL must start with http:// or https://")
 	}
 
-	// Only allow http and https schemes
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL format: %w", err)
+	}
+
+	// Only allow http and https schemes (redundant check but keeps defense in depth)
 	scheme := strings.ToLower(parsed.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return errInvalidURLScheme
@@ -89,6 +94,48 @@ func (s *RESTServer) getArrInstances(c *gin.Context) {
 	c.JSON(http.StatusOK, instances)
 }
 
+// generateInstanceName creates a human-friendly name for an *arr instance.
+// Returns "Sonarr" for the first instance, "Sonarr 2" for the second, etc.
+func (s *RESTServer) generateInstanceName(arrType string) string {
+	// Map type to display name
+	baseName := strings.TrimSuffix(strings.TrimSuffix(arrType, "-v2"), "-v3")
+	displayNames := map[string]string{
+		"sonarr":   "Sonarr",
+		"radarr":   "Radarr",
+		"whisparr": "Whisparr",
+	}
+	displayName, ok := displayNames[baseName]
+	if !ok {
+		// Fallback: capitalize first letter
+		if len(baseName) > 0 {
+			displayName = strings.ToUpper(baseName[:1]) + baseName[1:]
+		} else {
+			displayName = "Instance"
+		}
+	}
+
+	// Count existing instances of this base type
+	var count int
+	baseType := arrType
+	if strings.HasPrefix(arrType, "whisparr") {
+		// Count all whisparr variants together
+		err := s.db.QueryRow("SELECT COUNT(*) FROM arr_instances WHERE type LIKE 'whisparr%'").Scan(&count)
+		if err != nil {
+			count = 0
+		}
+	} else {
+		err := s.db.QueryRow("SELECT COUNT(*) FROM arr_instances WHERE type = ?", baseType).Scan(&count)
+		if err != nil {
+			count = 0
+		}
+	}
+
+	if count == 0 {
+		return displayName
+	}
+	return fmt.Sprintf("%s %d", displayName, count+1)
+}
+
 func (s *RESTServer) createArrInstance(c *gin.Context) {
 	var req struct {
 		Name    string `json:"name"`
@@ -108,6 +155,13 @@ func (s *RESTServer) createArrInstance(c *gin.Context) {
 		return
 	}
 
+	// Auto-generate a friendly name if not provided
+	instanceName := strings.TrimSpace(req.Name)
+	if instanceName == "" || strings.Contains(instanceName, "-") && len(instanceName) > 15 {
+		// Generate name if empty or looks like auto-generated timestamp (e.g., "sonarr-1234567890")
+		instanceName = s.generateInstanceName(req.Type)
+	}
+
 	// Encrypt API key before storage
 	encryptedKey, err := crypto.Encrypt(req.APIKey)
 	if err != nil {
@@ -117,7 +171,7 @@ func (s *RESTServer) createArrInstance(c *gin.Context) {
 	}
 
 	_, err = s.db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
-		req.Name, req.Type, req.URL, encryptedKey, req.Enabled)
+		instanceName, req.Type, req.URL, encryptedKey, req.Enabled)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

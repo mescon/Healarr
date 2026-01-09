@@ -32,6 +32,9 @@ const Login = () => {
                 // Determine if we should show the wizard
                 // Show wizard if: needs_setup is true AND onboarding hasn't been dismissed
                 if (setupStat && setupStat.needs_setup && !setupStat.onboarding_dismissed) {
+                    // Clear any stale auth data from previous sessions
+                    // This prevents WebSocket errors with invalid tokens
+                    localStorage.removeItem('healarr_token');
                     setShowWizard(true);
                 } else {
                     // Fall back to old behavior

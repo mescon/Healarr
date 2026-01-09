@@ -16,6 +16,12 @@ import {
     Eye,
     EyeOff,
     FolderOpen,
+    Bell,
+    Send,
+    Info,
+    Webhook,
+    Clock,
+    PlayCircle,
 } from 'lucide-react';
 import FileBrowser from './ui/FileBrowser';
 import type { RootFolder, ConfigExport } from '../lib/api';
@@ -28,6 +34,9 @@ import api, {
     createArrInstance,
     createScanPath,
     getArrRootFolders,
+    createNotification,
+    testNotification,
+    type NotificationConfig,
 } from '../lib/api';
 
 interface SetupWizardProps {
@@ -35,7 +44,7 @@ interface SetupWizardProps {
     onSkip: () => void;
 }
 
-type WizardStep = 'welcome' | 'password' | 'arr' | 'path' | 'complete';
+type WizardStep = 'welcome' | 'password' | 'arr' | 'path' | 'notifications' | 'complete';
 
 interface ArrFormData {
     name: string;
@@ -50,7 +59,7 @@ interface PathFormData {
     arr_instance_id: number | null;
 }
 
-const STEPS: WizardStep[] = ['welcome', 'password', 'arr', 'path', 'complete'];
+const STEPS: WizardStep[] = ['welcome', 'password', 'arr', 'path', 'notifications', 'complete'];
 
 export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
     const [step, setStep] = useState<WizardStep>('welcome');
@@ -84,6 +93,12 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
     const [loadingRootFolders, setLoadingRootFolders] = useState(false);
     const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
 
+    // Notifications step
+    const [notificationProvider, setNotificationProvider] = useState<'discord' | 'slack' | 'telegram' | 'none'>('none');
+    const [notificationConfig, setNotificationConfig] = useState<Record<string, string>>({});
+    const [notificationTested, setNotificationTested] = useState(false);
+    const [notificationTestResult, setNotificationTestResult] = useState<{ success: boolean; message?: string } | null>(null);
+
     // Import/restore - support both config JSON and database backup
     const [configFile, setConfigFile] = useState<File | null>(null);
     const [databaseFile, setDatabaseFile] = useState<File | null>(null);
@@ -103,7 +118,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 } else if (status.has_password && status.has_instances && !status.has_scan_paths) {
                     setStep('path');
                 } else if (status.has_password && status.has_instances && status.has_scan_paths) {
-                    setStep('complete');
+                    setStep('notifications');
                 }
             } catch (err) {
                 console.error('Failed to check setup status:', err);
@@ -145,7 +160,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
         } else if (!status.has_scan_paths) {
             setStep('path');
         } else {
-            setStep('complete');
+            setStep('notifications');
         }
     };
 
@@ -288,7 +303,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 enabled: true,
                 auto_remediate: true,
             });
-            setStep('complete');
+            setStep('notifications');
         } catch (err: unknown) {
             const error = err as { response?: { data?: { error?: string } } };
             setError(error.response?.data?.error || 'Failed to create scan path');
@@ -368,7 +383,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                         setImportMode('fresh');
                         setStep('password');
                     }}
-                    className="flex items-center gap-4 p-4 rounded-xl border-2 border-slate-200 dark:border-slate-700 hover:border-green-500 dark:hover:border-green-500 transition-colors text-left group"
+                    className="flex items-center gap-4 p-4 rounded-xl border-2 border-slate-200 dark:border-slate-700 hover:border-green-500 dark:hover:border-green-500 transition-colors text-left group cursor-pointer"
                 >
                     <div className="p-3 rounded-lg bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 group-hover:bg-green-500 group-hover:text-white transition-colors">
                         <Wand2 className="w-6 h-6" />
@@ -384,7 +399,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
 
                 <button
                     onClick={() => setImportMode('restore')}
-                    className={`flex items-center gap-4 p-4 rounded-xl border-2 transition-colors text-left group ${
+                    className={`flex items-center gap-4 p-4 rounded-xl border-2 transition-colors text-left group cursor-pointer ${
                         importMode === 'restore'
                             ? 'border-green-500 bg-green-50 dark:bg-green-900/20'
                             : 'border-slate-200 dark:border-slate-700 hover:border-green-500 dark:hover:border-green-500'
@@ -477,7 +492,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                     <button
                         onClick={handleRestore}
                         disabled={(!configFile && !databaseFile) || loading}
-                        className="w-full py-3 px-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-green-500/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="w-full py-3 px-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-green-500/20 flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
                     >
                         {loading ? (
                             <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -496,7 +511,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
             <div className="pt-4 border-t border-slate-200 dark:border-slate-700">
                 <button
                     onClick={handleDismiss}
-                    className="w-full text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+                    className="w-full text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
                 >
                     Skip setup for now (power users)
                 </button>
@@ -561,7 +576,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
             <div className="flex gap-3">
                 <button
                     onClick={() => setStep('welcome')}
-                    className="px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center gap-2"
+                    className="px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center gap-2 cursor-pointer"
                 >
                     <ArrowLeft className="w-4 h-4" />
                     Back
@@ -569,7 +584,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 <button
                     onClick={handleSetupPassword}
                     disabled={loading || !password || password !== confirmPassword}
-                    className="flex-1 py-3 px-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-green-500/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="flex-1 py-3 px-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-green-500/20 flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
                 >
                     {loading ? (
                         <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -692,7 +707,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 <button
                     onClick={handleTestArr}
                     disabled={loading || !arrData.url || !arrData.api_key}
-                    className="w-full py-2 px-4 border border-green-500 text-green-500 rounded-xl hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    className="w-full py-2 px-4 border border-green-500 text-green-500 rounded-xl hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                     {loading && !arrTested ? (
                         <div className="w-4 h-4 border-2 border-green-500/30 border-t-green-500 rounded-full animate-spin" />
@@ -706,7 +721,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
             <div className="flex gap-3">
                 <button
                     onClick={() => setStep('password')}
-                    className="px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center gap-2"
+                    className="px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center gap-2 cursor-pointer"
                 >
                     <ArrowLeft className="w-4 h-4" />
                     Back
@@ -714,7 +729,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 <button
                     onClick={handleCreateArr}
                     disabled={loading || !arrTested}
-                    className="flex-1 py-3 px-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-green-500/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="flex-1 py-3 px-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-green-500/20 flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
                 >
                     {loading ? (
                         <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -729,7 +744,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
 
             <button
                 onClick={() => setStep('path')}
-                className="w-full text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+                className="w-full text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
             >
                 Skip for now
             </button>
@@ -823,7 +838,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
             <div className="flex gap-3">
                 <button
                     onClick={() => setStep('arr')}
-                    className="px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center gap-2"
+                    className="px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center gap-2 cursor-pointer"
                 >
                     <ArrowLeft className="w-4 h-4" />
                     Back
@@ -831,7 +846,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 <button
                     onClick={handleCreatePath}
                     disabled={loading || !pathData.local_path || !pathData.arr_path}
-                    className="flex-1 py-3 px-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-green-500/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="flex-1 py-3 px-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-green-500/20 flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
                 >
                     {loading ? (
                         <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -845,8 +860,8 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
             </div>
 
             <button
-                onClick={() => setStep('complete')}
-                className="w-full text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+                onClick={() => setStep('notifications')}
+                className="w-full text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
             >
                 Skip for now
             </button>
@@ -857,6 +872,262 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 onSelect={(path) => setPathData(prev => ({ ...prev, local_path: path }))}
                 initialPath={pathData.local_path || '/'}
             />
+        </motion.div>
+    );
+
+    const handleTestNotification = async () => {
+        if (notificationProvider === 'none') return;
+
+        setLoading(true);
+        setNotificationTestResult(null);
+
+        try {
+            const config: NotificationConfig = {
+                name: `${notificationProvider.charAt(0).toUpperCase() + notificationProvider.slice(1)} Notification`,
+                provider_type: notificationProvider,
+                config: notificationConfig as Record<string, unknown>,
+                events: ['CorruptionDetected'],
+                enabled: true,
+                throttle_seconds: 0,
+            };
+
+            const result = await testNotification(config);
+            setNotificationTestResult(result);
+            if (result.success) {
+                setNotificationTested(true);
+            }
+        } catch (err: unknown) {
+            const error = err as { response?: { data?: { error?: string } } };
+            setNotificationTestResult({
+                success: false,
+                message: error.response?.data?.error || 'Test failed'
+            });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleCreateNotification = async () => {
+        if (notificationProvider === 'none') {
+            setStep('complete');
+            return;
+        }
+
+        setLoading(true);
+        setError('');
+
+        try {
+            await createNotification({
+                name: `${notificationProvider.charAt(0).toUpperCase() + notificationProvider.slice(1)} Notification`,
+                provider_type: notificationProvider,
+                config: notificationConfig as Record<string, unknown>,
+                events: ['CorruptionDetected', 'ScanComplete', 'RemediationComplete'],
+                enabled: true,
+                throttle_seconds: 300,
+            });
+            setStep('complete');
+        } catch (err: unknown) {
+            const error = err as { response?: { data?: { error?: string } } };
+            setError(error.response?.data?.error || 'Failed to create notification');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const renderNotifications = () => (
+        <motion.div
+            key="notifications"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            className="space-y-6"
+        >
+            <div className="text-center mb-6">
+                <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center mb-4">
+                    <Bell className="w-8 h-8 text-white" />
+                </div>
+                <h2 className="text-2xl font-bold text-slate-900 dark:text-white">
+                    Set Up Notifications
+                </h2>
+                <p className="text-slate-600 dark:text-slate-400 mt-2">
+                    Get notified when corrupted files are detected
+                </p>
+            </div>
+
+            {error && (
+                <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center gap-3 text-red-400">
+                    <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                    <span>{error}</span>
+                </div>
+            )}
+
+            <div className="space-y-4">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    Notification Service
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                    {[
+                        { id: 'none' as const, label: 'Skip', icon: X, desc: 'Set up later' },
+                        { id: 'discord' as const, label: 'Discord', icon: Bell, desc: 'Webhook URL' },
+                        { id: 'slack' as const, label: 'Slack', icon: Bell, desc: 'Webhook URL' },
+                        { id: 'telegram' as const, label: 'Telegram', icon: Send, desc: 'Bot Token' },
+                    ].map((option) => (
+                        <button
+                            key={option.id}
+                            onClick={() => {
+                                setNotificationProvider(option.id);
+                                setNotificationConfig({});
+                                setNotificationTested(false);
+                                setNotificationTestResult(null);
+                            }}
+                            className={`p-3 rounded-xl border-2 transition-all text-left cursor-pointer ${
+                                notificationProvider === option.id
+                                    ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20'
+                                    : 'border-slate-200 dark:border-slate-700 hover:border-purple-300 dark:hover:border-purple-700'
+                            }`}
+                        >
+                            <div className="flex items-center gap-2">
+                                <option.icon className={`w-5 h-5 ${notificationProvider === option.id ? 'text-purple-500' : 'text-slate-400'}`} />
+                                <span className={`font-medium ${notificationProvider === option.id ? 'text-purple-700 dark:text-purple-300' : 'text-slate-700 dark:text-slate-300'}`}>
+                                    {option.label}
+                                </span>
+                            </div>
+                            <span className="text-xs text-slate-500 mt-1 block">{option.desc}</span>
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {notificationProvider !== 'none' && (
+                <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    className="space-y-4"
+                >
+                    {notificationProvider === 'discord' && (
+                        <div className="space-y-2">
+                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                                Webhook URL
+                            </label>
+                            <input
+                                type="text"
+                                value={notificationConfig.webhook_url || ''}
+                                onChange={(e) => setNotificationConfig({ ...notificationConfig, webhook_url: e.target.value })}
+                                className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors"
+                                placeholder="https://discord.com/api/webhooks/..."
+                            />
+                            <p className="text-xs text-slate-500">
+                                Create a webhook in Discord: Server Settings → Integrations → Webhooks
+                            </p>
+                        </div>
+                    )}
+
+                    {notificationProvider === 'slack' && (
+                        <div className="space-y-2">
+                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                                Webhook URL
+                            </label>
+                            <input
+                                type="text"
+                                value={notificationConfig.webhook_url || ''}
+                                onChange={(e) => setNotificationConfig({ ...notificationConfig, webhook_url: e.target.value })}
+                                className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors"
+                                placeholder="https://hooks.slack.com/services/..."
+                            />
+                        </div>
+                    )}
+
+                    {notificationProvider === 'telegram' && (
+                        <>
+                            <div className="space-y-2">
+                                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                                    Bot Token
+                                </label>
+                                <input
+                                    type="text"
+                                    value={notificationConfig.bot_token || ''}
+                                    onChange={(e) => setNotificationConfig({ ...notificationConfig, bot_token: e.target.value })}
+                                    className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors"
+                                    placeholder="123456789:ABC..."
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                                    Chat ID
+                                </label>
+                                <input
+                                    type="text"
+                                    value={notificationConfig.chat_id || ''}
+                                    onChange={(e) => setNotificationConfig({ ...notificationConfig, chat_id: e.target.value })}
+                                    className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors"
+                                    placeholder="-1001234567890"
+                                />
+                            </div>
+                        </>
+                    )}
+
+                    {notificationTestResult && (
+                        <div className={`p-3 rounded-xl flex items-center gap-2 ${
+                            notificationTestResult.success
+                                ? 'bg-green-500/10 border border-green-500/20 text-green-400'
+                                : 'bg-red-500/10 border border-red-500/20 text-red-400'
+                        }`}>
+                            {notificationTestResult.success ? (
+                                <CheckCircle2 className="w-5 h-5" />
+                            ) : (
+                                <AlertCircle className="w-5 h-5" />
+                            )}
+                            <span className="text-sm">
+                                {notificationTestResult.success ? 'Test notification sent!' : notificationTestResult.message}
+                            </span>
+                        </div>
+                    )}
+
+                    <button
+                        onClick={handleTestNotification}
+                        disabled={loading || !notificationConfig.webhook_url && !notificationConfig.bot_token}
+                        className="w-full py-2 px-4 border border-purple-500 text-purple-500 rounded-xl hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                        {loading ? (
+                            <div className="w-4 h-4 border-2 border-purple-500/30 border-t-purple-500 rounded-full animate-spin" />
+                        ) : (
+                            <Send className="w-4 h-4" />
+                        )}
+                        Test Notification
+                    </button>
+                </motion.div>
+            )}
+
+            <div className="flex gap-3">
+                <button
+                    onClick={() => setStep('path')}
+                    className="px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center gap-2 cursor-pointer"
+                >
+                    <ArrowLeft className="w-4 h-4" />
+                    Back
+                </button>
+                <button
+                    onClick={handleCreateNotification}
+                    disabled={loading || (notificationProvider !== 'none' && !notificationTested)}
+                    className="flex-1 py-3 px-4 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-purple-500/20 flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                >
+                    {loading ? (
+                        <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : (
+                        <>
+                            <span>{notificationProvider === 'none' ? 'Skip & Continue' : 'Add Notification'}</span>
+                            <ArrowRight className="w-5 h-5" />
+                        </>
+                    )}
+                </button>
+            </div>
+
+            <button
+                onClick={() => setStep('complete')}
+                className="w-full text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
+            >
+                Skip for now
+            </button>
         </motion.div>
     );
 
@@ -900,6 +1171,40 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                         <span>Create scan schedules for automated monitoring</span>
                     </li>
                 </ul>
+            </div>
+
+            {/* Scanning Workflow Help */}
+            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 text-left">
+                <div className="flex items-center gap-2 mb-3">
+                    <Info className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                    <h3 className="font-medium text-slate-900 dark:text-white text-sm">How Scanning Works</h3>
+                </div>
+                <div className="space-y-2 text-sm text-slate-600 dark:text-slate-400">
+                    <div className="flex items-start gap-2">
+                        <Webhook className="w-4 h-4 text-purple-500 mt-0.5 flex-shrink-0" />
+                        <div>
+                            <span className="font-medium text-slate-700 dark:text-slate-300">Webhooks</span>
+                            <span className="text-slate-500 dark:text-slate-400"> — Configure your *arr apps to send webhooks when files are imported. Healarr scans them automatically in real-time.</span>
+                        </div>
+                    </div>
+                    <div className="flex items-start gap-2">
+                        <Clock className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
+                        <div>
+                            <span className="font-medium text-slate-700 dark:text-slate-300">Scheduled Scans</span>
+                            <span className="text-slate-500 dark:text-slate-400"> — Set up cron schedules to periodically scan your entire library for corrupted files.</span>
+                        </div>
+                    </div>
+                    <div className="flex items-start gap-2">
+                        <PlayCircle className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
+                        <div>
+                            <span className="font-medium text-slate-700 dark:text-slate-300">Manual Scans</span>
+                            <span className="text-slate-500 dark:text-slate-400"> — Run on-demand scans from the Dashboard whenever you want.</span>
+                        </div>
+                    </div>
+                </div>
+                <p className="mt-3 text-xs text-slate-500 dark:text-slate-500">
+                    Tip: Use webhooks for new imports and scheduled scans for existing files.
+                </p>
             </div>
 
             <button
@@ -948,6 +1253,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                         {step === 'password' && renderPassword()}
                         {step === 'arr' && renderArr()}
                         {step === 'path' && renderPath()}
+                        {step === 'notifications' && renderNotifications()}
                         {step === 'complete' && renderComplete()}
                     </AnimatePresence>
                 </div>

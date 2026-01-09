@@ -29,6 +29,12 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
     const connectRef = useRef<() => void>(() => { });
 
     const connect = useCallback(() => {
+        // Don't attempt connection on login page
+        // This prevents unnecessary WebSocket errors during setup/login
+        if (window.location.pathname.endsWith('/login')) {
+            return;
+        }
+
         // Get auth token from localStorage
         const token = localStorage.getItem('healarr_token');
 
@@ -61,7 +67,9 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
             setIsConnected(false);
 
             // Reconnect with exponential backoff (max 30 seconds)
-            if (localStorage.getItem('healarr_token')) {
+            // Don't reconnect on login page or if token is missing
+            const isOnLoginPage = window.location.pathname.endsWith('/login');
+            if (!isOnLoginPage && localStorage.getItem('healarr_token')) {
                 const backoff = Math.min(3000 * Math.pow(1.5, retryCountRef.current), 30000);
                 retryCountRef.current++;
                 console.log(`WebSocket reconnecting in ${Math.round(backoff / 1000)}s (attempt ${retryCountRef.current})`);
@@ -133,14 +141,21 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
     }, [queryClient]);
 
     useEffect(() => {
-        connect();
+        // Don't auto-connect on initial mount!
+        // The connection will be triggered ONLY by:
+        // 1. Login component after successful authentication (calls reconnect())
+        // 2. ProtectedRoute after verifying existing token is valid (calls reconnect())
+        //
+        // This prevents WebSocket errors with stale tokens during setup/login.
+        // The timing issue is: WebSocketProvider mounts before React Router redirects
+        // to /login, so checking pathname here doesn't work reliably.
 
         return () => {
             if (wsRef.current) {
                 wsRef.current.close();
             }
         };
-    }, [queryClient, connect]);
+    }, []);
 
     return (
         <WebSocketContext.Provider value={{ isConnected, lastMessage, reconnect: connect }}>

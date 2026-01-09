@@ -280,7 +280,7 @@ const QuickScanDropdown = () => {
             <button
                 onClick={() => setIsOpen(!isOpen)}
                 className={clsx(
-                    "flex items-center gap-2 px-4 py-2 rounded-xl transition-all duration-200",
+                    "flex items-center gap-2 px-4 py-2 rounded-xl transition-all duration-200 cursor-pointer",
                     "bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 hover:border-blue-500/30",
                     "text-blue-600 dark:text-blue-400 font-medium text-sm",
                     isOpen && "bg-blue-500/20 border-blue-500/30"
@@ -321,7 +321,7 @@ const QuickScanDropdown = () => {
                                             key={path.id}
                                             onClick={() => handleTriggerScan(path.id, path.local_path)}
                                             disabled={scanningPathId === path.id}
-                                            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors text-left group"
+                                            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors text-left group cursor-pointer"
                                         >
                                             <div className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-700 group-hover:bg-blue-500/10 transition-colors">
                                                 {scanningPathId === path.id ? (
@@ -349,7 +349,7 @@ const QuickScanDropdown = () => {
                                 <button
                                     onClick={handleScanAll}
                                     disabled={isScanningAll}
-                                    className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-blue-500 hover:bg-blue-600 text-white font-medium text-sm transition-colors disabled:opacity-50"
+                                    className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-blue-500 hover:bg-blue-600 text-white font-medium text-sm transition-colors disabled:opacity-50 cursor-pointer"
                                 >
                                     {isScanningAll ? (
                                         <Loader2 className="w-4 h-4 animate-spin" />

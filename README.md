@@ -1,3 +1,5 @@
+![Healarr Logo](frontend/public/healarr.svg)
+
 # Healarr
 
 **Health Evaluation And Library Auto-Recovery for *aRR**

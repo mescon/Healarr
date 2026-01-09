@@ -1,21 +1,23 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder, Info } from 'lucide-react';
+import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder, Info, Wand2 } from 'lucide-react';
 import FileBrowser from '../components/ui/FileBrowser';
 import { useDateFormat, type DateFormatPreset } from '../lib/useDateFormat';
+import { formatCronExpression } from '../lib/formatters';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
     getArrInstances, createArrInstance, updateArrInstance, deleteArrInstance,
     getScanPaths, createScanPath, updateScanPath, deleteScanPath, triggerScan,
     getAPIKey, regenerateAPIKey, changePassword, testArrConnection,
     getSchedules, addSchedule, updateSchedule, deleteSchedule,
-    getRuntimeConfig, updateSettings, restartServer,
+    getRuntimeConfig, updateSettings, restartServer, resetSetupWizard,
     getNotifications, createNotification, updateNotification, deleteNotification,
     testNotification, getNotificationEvents, getNotificationLog,
     triggerScanAll, exportConfig, importConfig, downloadDatabaseBackup,
     pauseAllScans, resumeAllScans, cancelAllScans, getDetectionPreview,
     validateScanPath,
+    getSystemInfo,
     type ArrInstance, type ScanPath, type NotificationConfig, type NotificationLogEntry, type ConfigExport
 } from '../lib/api';
 import clsx from 'clsx';
@@ -609,6 +611,64 @@ const DataManagementSection = ({ toast, queryClient }: DataManagementSectionProp
     );
 };
 
+// Setup Wizard Reset Section Component (for Advanced accordion)
+interface SetupWizardResetSectionProps {
+    toast: ReturnType<typeof useToast>;
+}
+
+const SetupWizardResetSection = ({ toast }: SetupWizardResetSectionProps) => {
+    const [isResetting, setIsResetting] = useState(false);
+
+    const handleResetWizard = async () => {
+        setIsResetting(true);
+        try {
+            await resetSetupWizard();
+            toast.success('Setup wizard will appear on next page load');
+            // Reload the page to show the wizard
+            setTimeout(() => {
+                window.location.reload();
+            }, 500);
+        } catch (error: unknown) {
+            const err = error as { response?: { data?: { error?: string } }; message?: string };
+            toast.error(`Failed to reset wizard: ${err.response?.data?.error || err.message}`);
+            setIsResetting(false);
+        }
+    };
+
+    return (
+        <div className="space-y-4">
+            <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                    <Wand2 className="w-5 h-5 text-emerald-400" />
+                </div>
+                <div>
+                    <h4 className="text-sm font-semibold text-slate-900 dark:text-white">Setup Wizard</h4>
+                    <p className="text-xs text-slate-500">Restart the guided setup process</p>
+                </div>
+            </div>
+
+            <div className="bg-slate-100 dark:bg-slate-800/30 border border-slate-300 dark:border-slate-700/50 rounded-xl p-4">
+                <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
+                    Re-run the setup wizard to review or modify your configuration.
+                    Your existing settings will be pre-populated, allowing you to make changes or verify your setup.
+                </p>
+                <button
+                    onClick={handleResetWizard}
+                    disabled={isResetting}
+                    className="flex items-center gap-2 px-4 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 rounded-lg transition-colors border border-emerald-500/20 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    {isResetting ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                        <Wand2 className="w-4 h-4" />
+                    )}
+                    Restart Setup Wizard
+                </button>
+            </div>
+        </div>
+    );
+};
+
 const Config = () => {
     const queryClient = useQueryClient();
     const toast = useToast();
@@ -660,6 +720,27 @@ const Config = () => {
         queryKey: ['schedules'],
         queryFn: getSchedules,
     });
+
+    // System info for tool availability
+    const { data: systemInfo } = useQuery({
+        queryKey: ['systemInfo'],
+        queryFn: getSystemInfo,
+        staleTime: 60000, // 1 minute
+    });
+
+    // Helper to scroll to About section (Detection Tools)
+    const scrollToDetectionTools = () => {
+        setIsAboutExpanded(true);
+        setTimeout(() => {
+            aboutSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 100);
+    };
+
+    // Check if a detection tool is available
+    const isToolAvailable = (method: string): boolean => {
+        if (method === 'zero_byte') return true; // Always available (no external tool needed)
+        return systemInfo?.tools?.[method]?.available ?? true; // Default to true if no info
+    };
 
     // --- Mutations ---
     const createArrMutation = useMutation({
@@ -1417,29 +1498,91 @@ const Config = () => {
 
                                         {/* Detection Method */}
                                         <div>
-                                            <label htmlFor="path-detection-method" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
                                                 Detection Method
                                             </label>
-                                            <select
-                                                id="path-detection-method"
-                                                value={newPath.detection_method || 'ffprobe'}
-                                                onChange={e => setNewPath({ ...newPath, detection_method: e.target.value as 'ffprobe' | 'mediainfo' | 'handbrake' | 'zero_byte' })}
-                                                className="w-full px-4 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-                                            >
-                                                <option value="ffprobe">FFprobe - Fast header/stream check (recommended)</option>
-                                                <option value="mediainfo">MediaInfo - Detailed metadata analysis</option>
-                                                <option value="handbrake">HandBrake - Deep stream validation (slow)</option>
-                                                <option value="zero_byte">Zero Byte - Quick file size check only</option>
-                                            </select>
-                                            <p className="mt-2 text-xs text-slate-500">
-                                                <span className="font-semibold">FFprobe:</span> Uses ffmpeg's ffprobe to check container and codec validity. Fast and reliable for most media.
-                                                <br />
-                                                <span className="font-semibold">MediaInfo:</span> Provides comprehensive metadata analysis. Good for detailed inspection.
-                                                <br />
-                                                <span className="font-semibold">HandBrake:</span> Performs deep stream analysis. Thorough but slow, use for suspect files.
-                                                <br />
-                                                <span className="font-semibold">Zero Byte:</span> Only checks if file is empty (0 bytes). Fastest, but least thorough.
-                                            </p>
+                                            <div className="space-y-2">
+                                                {[
+                                                    { value: 'ffprobe', label: 'FFprobe', desc: 'Fast header/stream check', badge: 'recommended' },
+                                                    { value: 'mediainfo', label: 'MediaInfo', desc: 'Detailed metadata analysis', badge: null },
+                                                    { value: 'handbrake', label: 'HandBrake', desc: 'Deep stream validation', badge: 'slow' },
+                                                    { value: 'zero_byte', label: 'Zero Byte', desc: 'Quick file size check only', badge: null },
+                                                ].map((method) => {
+                                                    const available = isToolAvailable(method.value);
+                                                    const isSelected = (newPath.detection_method || 'ffprobe') === method.value;
+                                                    return (
+                                                        <div
+                                                            key={method.value}
+                                                            onClick={() => {
+                                                                if (available) {
+                                                                    setNewPath({ ...newPath, detection_method: method.value as 'ffprobe' | 'mediainfo' | 'handbrake' | 'zero_byte' });
+                                                                } else {
+                                                                    scrollToDetectionTools();
+                                                                }
+                                                            }}
+                                                            className={clsx(
+                                                                "flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all",
+                                                                available && isSelected
+                                                                    ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20"
+                                                                    : available
+                                                                    ? "border-slate-300 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-700"
+                                                                    : "border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 opacity-60"
+                                                            )}
+                                                        >
+                                                            <div className={clsx(
+                                                                "w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0",
+                                                                available && isSelected
+                                                                    ? "border-blue-500"
+                                                                    : "border-slate-400 dark:border-slate-600"
+                                                            )}>
+                                                                {available && isSelected && (
+                                                                    <div className="w-2 h-2 rounded-full bg-blue-500" />
+                                                                )}
+                                                            </div>
+                                                            <div className="flex-1 min-w-0">
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className={clsx(
+                                                                        "font-medium text-sm",
+                                                                        available
+                                                                            ? "text-slate-900 dark:text-white"
+                                                                            : "text-slate-500 dark:text-slate-500 line-through"
+                                                                    )}>
+                                                                        {method.label}
+                                                                    </span>
+                                                                    {method.badge && available && (
+                                                                        <span className={clsx(
+                                                                            "text-xs px-1.5 py-0.5 rounded",
+                                                                            method.badge === 'recommended'
+                                                                                ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400"
+                                                                                : "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400"
+                                                                        )}>
+                                                                            {method.badge}
+                                                                        </span>
+                                                                    )}
+                                                                    {!available && (
+                                                                        <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400">
+                                                                            Not installed
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                                <span className={clsx(
+                                                                    "text-xs",
+                                                                    available
+                                                                        ? "text-slate-500 dark:text-slate-400"
+                                                                        : "text-slate-400 dark:text-slate-600 line-through"
+                                                                )}>
+                                                                    {method.desc}
+                                                                </span>
+                                                            </div>
+                                                            {!available && (
+                                                                <span className="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 whitespace-nowrap">
+                                                                    View installation →
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
                                         </div>
 
                                         {/* Detection Mode */}
@@ -1768,9 +1911,10 @@ const Config = () => {
                                                     {path?.local_path || `Path ID: ${schedule.scan_path_id}`}
                                                     {!path && <span className="text-xs text-red-400">(Path not found)</span>}
                                                 </div>
-                                                <div className="text-sm text-slate-600 dark:text-slate-400 font-mono mt-0.5 flex items-center gap-2">
+                                                <div className="text-sm text-slate-600 dark:text-slate-400 mt-0.5 flex items-center gap-2">
                                                     <Clock className="w-3 h-3" />
-                                                    {schedule.cron_expression}
+                                                    <span>{formatCronExpression(schedule.cron_expression)}</span>
+                                                    <span className="text-xs font-mono text-slate-500">({schedule.cron_expression})</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -1935,6 +2079,9 @@ const Config = () => {
 
                                     {/* Data Management */}
                                     <DataManagementSection toast={toast} queryClient={queryClient} />
+
+                                    {/* Setup Wizard */}
+                                    <SetupWizardResetSection toast={toast} />
                                 </div>
                             </motion.div>
                         )}

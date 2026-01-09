@@ -296,6 +296,87 @@ func TestHandleSetupDismiss_DBError(t *testing.T) {
 }
 
 // =============================================================================
+// handleSetupReset Tests
+// =============================================================================
+
+func TestHandleSetupReset_Success(t *testing.T) {
+	db, _, cleanup := setupSetupTestDB(t)
+	defer cleanup()
+
+	// First dismiss onboarding
+	_, err := db.Exec("INSERT INTO settings (key, value) VALUES ('onboarding_dismissed', 'true')")
+	require.NoError(t, err)
+
+	server := createSetupTestServer(t, db)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/setup/reset", server.handleSetupReset)
+
+	req, _ := http.NewRequest("POST", "/setup/reset", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Contains(t, response["message"], "Setup wizard will appear")
+
+	// Verify it was reset
+	var value string
+	err = db.QueryRow("SELECT value FROM settings WHERE key = 'onboarding_dismissed'").Scan(&value)
+	require.NoError(t, err)
+	assert.Equal(t, "false", value)
+}
+
+func TestHandleSetupReset_WhenNotDismissed(t *testing.T) {
+	db, _, cleanup := setupSetupTestDB(t)
+	defer cleanup()
+
+	// Don't dismiss first - should still work (upsert)
+	server := createSetupTestServer(t, db)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/setup/reset", server.handleSetupReset)
+
+	req, _ := http.NewRequest("POST", "/setup/reset", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Verify the value was inserted
+	var value string
+	err := db.QueryRow("SELECT value FROM settings WHERE key = 'onboarding_dismissed'").Scan(&value)
+	require.NoError(t, err)
+	assert.Equal(t, "false", value)
+}
+
+func TestHandleSetupReset_DBError(t *testing.T) {
+	db, _, cleanup := setupSetupTestDB(t)
+	defer cleanup()
+
+	server := createSetupTestServer(t, db)
+
+	// Drop settings table
+	_, err := db.Exec("DROP TABLE settings")
+	require.NoError(t, err)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/setup/reset", server.handleSetupReset)
+
+	req, _ := http.NewRequest("POST", "/setup/reset", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// =============================================================================
 // handleDatabaseRestore Tests
 // =============================================================================
 

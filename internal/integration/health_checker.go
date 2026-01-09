@@ -677,7 +677,7 @@ func (hc *CmdHealthChecker) GetTimeoutDescription(method DetectionMethod, mode s
 
 	switch method {
 	case DetectionZeroByte:
-		return "instant"
+		return "instant (file metadata only)"
 	case DetectionFFprobe:
 		if mode == ModeThorough {
 			return "10 minutes (ffmpeg decodes entire file)"

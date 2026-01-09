@@ -433,6 +433,11 @@ export const restartServer = async (): Promise<RestartResponse> => {
     return data;
 };
 
+export const resetSetupWizard = async (): Promise<{ message: string }> => {
+    const { data } = await api.post<{ message: string }>('/setup/reset');
+    return data;
+};
+
 // --- Notification API ---
 
 export interface NotificationConfig {

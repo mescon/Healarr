@@ -384,3 +384,72 @@ export function getArrIcon(arrType: string): string {
 
     return `/icons/arr-apps/${typeMap[arrType.toLowerCase()] || 'arr-generic.svg'}`;
 }
+
+/**
+ * Convert a cron expression to a human-readable description.
+ * @example formatCronExpression("0 3 \* \* \*") // "Every day at 03:00"
+ * @example formatCronExpression("0 3 \* \* 0") // "Every Sunday at 03:00"
+ */
+export function formatCronExpression(cron: string): string {
+    if (!cron) return 'Invalid schedule';
+
+    const parts = cron.trim().split(/\s+/);
+    if (parts.length < 5) return cron; // Return raw if not valid cron format
+
+    const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
+
+    const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    // Handle common patterns
+    // Every minute
+    if (minute === '*' && hour === '*') {
+        return 'Every minute';
+    }
+
+    // Every X minutes
+    if (minute.startsWith('*/') && hour === '*') {
+        const interval = minute.substring(2);
+        return `Every ${interval} minutes`;
+    }
+
+    // Every hour at specific minute
+    if (minute !== '*' && /^\d+$/.test(minute) && hour === '*') {
+        return `Every hour at :${minute.padStart(2, '0')}`;
+    }
+
+    // Every X hours
+    if (hour.startsWith('*/')) {
+        const interval = hour.substring(2);
+        return `Every ${interval} hours`;
+    }
+
+    // Specific time patterns
+    if (/^\d+$/.test(minute) && /^\d+$/.test(hour)) {
+        const timeStr = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+
+        // Daily
+        if (dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+            return `Every day at ${timeStr}`;
+        }
+
+        // Specific day(s) of week
+        if (dayOfMonth === '*' && month === '*' && dayOfWeek !== '*') {
+            const days = dayOfWeek.split(',').map(d => {
+                const dayNum = parseInt(d, 10);
+                return isNaN(dayNum) ? d : weekdays[dayNum] || d;
+            });
+            if (days.length === 1) {
+                return `Every ${days[0]} at ${timeStr}`;
+            }
+            return `Every ${days.join(', ')} at ${timeStr}`;
+        }
+
+        // Specific day of month
+        if (dayOfMonth !== '*' && month === '*' && dayOfWeek === '*') {
+            return `Monthly on day ${dayOfMonth} at ${timeStr}`;
+        }
+    }
+
+    // Fallback: return a simplified description
+    return cron;
+}

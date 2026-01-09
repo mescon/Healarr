@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { getAuthStatus } from '../../lib/api';
+import { useWebSocket } from '../../contexts/WebSocketProvider';
 
 interface ProtectedRouteProps {
     children: React.ReactNode;
@@ -11,6 +12,7 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [needsSetup, setNeedsSetup] = useState(false);
     const location = useLocation();
+    const { reconnect } = useWebSocket();
 
     useEffect(() => {
         const checkAuth = async () => {
@@ -40,6 +42,9 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
                     setIsAuthenticated(false);
                 } else {
                     setIsAuthenticated(true);
+                    // Now that we've verified the token is valid, connect WebSocket
+                    // This ensures we don't try to connect with stale tokens
+                    reconnect();
                 }
             } catch {
                 // Token might be invalid
@@ -51,7 +56,7 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
         };
 
         checkAuth();
-    }, [location.pathname]);
+    }, [location.pathname, reconnect]);
 
     if (isChecking) {
         return (

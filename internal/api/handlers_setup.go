@@ -125,6 +125,24 @@ func (s *RESTServer) handleSetupDismiss(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Onboarding dismissed"})
 }
 
+// handleSetupReset resets the onboarding wizard so users can go through it again
+// This endpoint is authenticated - only logged-in users can reset the wizard
+func (s *RESTServer) handleSetupReset(c *gin.Context) {
+	// Reset the dismissal flag to false
+	_, err := s.db.Exec(`
+		INSERT INTO settings (key, value, updated_at) VALUES ('onboarding_dismissed', 'false', datetime('now'))
+		ON CONFLICT(key) DO UPDATE SET value = 'false', updated_at = datetime('now')
+	`)
+	if err != nil {
+		logger.Errorf("Failed to reset onboarding: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reset setup wizard"})
+		return
+	}
+
+	logger.Infof("Setup wizard reset by user - will show on next page load")
+	c.JSON(http.StatusOK, gin.H{"message": "Setup wizard will appear on next page load"})
+}
+
 // handleDatabaseRestore restores the database from an uploaded backup file
 // This endpoint is public during first-time setup, authenticated otherwise
 // Requires X-Confirm-Restore: true header for safety

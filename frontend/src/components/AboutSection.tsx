@@ -16,10 +16,9 @@ const DockerIcon = ({ className }: { className?: string }) => (
     </svg>
 );
 
-const LinuxIcon = ({ className }: { className?: string }) => (
-    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
-        <path d="M12.504 0c-.155 0-.311.001-.465.003-.653.014-1.29.106-1.893.259-1.2.304-2.278.843-3.208 1.535C5.52 2.92 4.469 4.398 3.834 6.112c-.465 1.256-.71 2.602-.71 3.996 0 .502.023.998.068 1.49.119 1.292.42 2.52.893 3.66.358.869.816 1.688 1.361 2.444.234.325.485.636.75.934.268.298.55.583.845.854.3.275.613.535.938.78.68.512 1.42.94 2.206 1.274.791.337 1.627.576 2.494.71.454.07.914.112 1.379.126.157.003.313.005.47.005.154 0 .309-.002.462-.005.455-.014.905-.055 1.35-.123.866-.133 1.701-.372 2.491-.707.785-.334 1.524-.76 2.203-1.27.324-.245.635-.505.933-.78.294-.27.575-.554.842-.85.266-.297.518-.608.753-.932.545-.756 1.003-1.574 1.361-2.44.473-1.14.775-2.368.894-3.66.045-.492.068-.988.068-1.49 0-1.393-.245-2.739-.71-3.995-.635-1.714-1.686-3.192-3.103-4.315-.93-.693-2.008-1.231-3.208-1.536-.604-.153-1.24-.245-1.893-.259-.154-.002-.31-.003-.465-.003z"/>
-    </svg>
+// TuxIcon - uses PNG image from icons folder (respects base path)
+const TuxIcon = ({ className }: { className?: string }) => (
+    <img src={`${import.meta.env.BASE_URL}icons/tux.png`} alt="Linux" className={className} />
 );
 
 const AppleIcon = ({ className }: { className?: string }) => (
@@ -449,7 +448,7 @@ docker compose logs healarr | head -20`}</pre>
                                         : "bg-slate-50 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700"
                                 )}>
                                     <div className="flex items-center gap-2 mb-2">
-                                        <LinuxIcon className="w-5 h-5 text-slate-700 dark:text-slate-300" />
+                                        <TuxIcon className="w-5 h-5 text-slate-700 dark:text-slate-300" />
                                         <h5 className="font-medium text-slate-900 dark:text-white">Linux</h5>
                                         {currentPlatform === 'linux' && (
                                             <span className="text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">Your Platform</span>
