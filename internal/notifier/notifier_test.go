@@ -1120,6 +1120,21 @@ func TestNotifier_FormatMessage(t *testing.T) {
 			contains:  []string{"manually removed"},
 		},
 		{
+			eventType: string(domain.DownloadIgnored),
+			data:      map[string]interface{}{"file_path": "/media/ignored.mkv"},
+			contains:  []string{"Download ignored", "ignored.mkv"},
+		},
+		{
+			eventType: string(domain.SearchExhausted),
+			data:      map[string]interface{}{"file_path": "/media/exhausted.mkv", "attempts": 5, "reason": "no indexers available"},
+			contains:  []string{"No replacement found", "exhausted.mkv", "Attempts: 5", "Reason: no indexers available"},
+		},
+		{
+			eventType: string(domain.SearchExhausted),
+			data:      map[string]interface{}{"file_path": "/media/simple.mkv"},
+			contains:  []string{"No replacement found", "simple.mkv"},
+		},
+		{
 			eventType: "UnknownEvent",
 			data:      map[string]interface{}{},
 			contains:  []string{"Event:", "UnknownEvent"},
@@ -2650,4 +2665,47 @@ func TestNotifier_PublishNotificationEvent(t *testing.T) {
 		n.publishNotificationEvent("corruption-111", domain.NotificationFailed, "Slack", "DownloadStarted", "")
 		// Success = no panic
 	})
+}
+
+func TestExtractInt(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[string]interface{}
+		key  string
+		want int
+	}{
+		{
+			name: "int value",
+			data: map[string]interface{}{"count": 42},
+			key:  "count",
+			want: 42,
+		},
+		{
+			name: "float64 value from JSON",
+			data: map[string]interface{}{"count": float64(123)},
+			key:  "count",
+			want: 123,
+		},
+		{
+			name: "missing key",
+			data: map[string]interface{}{},
+			key:  "count",
+			want: 0,
+		},
+		{
+			name: "wrong type returns zero",
+			data: map[string]interface{}{"count": "not a number"},
+			key:  "count",
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractInt(tt.data, tt.key)
+			if got != tt.want {
+				t.Errorf("extractInt() = %d, want %d", got, tt.want)
+			}
+		})
+	}
 }
