@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.26] - 2026-01-09
+
+### Added
+- **Setup Wizard Reset**: Re-run the setup wizard anytime from the Config page
+  - Useful if you skipped steps during initial setup
+  - Access via Config → General Settings → Reset Setup Wizard
+- **Smart Instance Naming**: Arr instances now get friendly auto-generated names
+  - First Sonarr instance named "Sonarr", second becomes "Sonarr 2", etc.
+  - Works for Sonarr, Radarr, and Whisparr
+
+### Improved
+- **URL Validation**: Clearer error messages when adding arr instances
+  - Explicitly tells you if URL is missing http:// or https://
+  - Better feedback for malformed URLs
+- **Test Coverage**: Comprehensive testing across all packages
+  - Added tests for pagination, path validation, and instance naming
+  - Database package now at 80%+ coverage
+  - Overall test coverage improved to ~84%
+
 ## [1.1.25] - 2026-01-09
 
 ### Added
