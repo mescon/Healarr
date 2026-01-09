@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-    Activity,
     ArrowRight,
     ArrowLeft,
     Server,
@@ -19,12 +18,14 @@ import {
     Bell,
     Send,
     Info,
-    Webhook,
     Clock,
     PlayCircle,
+    Webhook,
 } from 'lucide-react';
 import FileBrowser from './ui/FileBrowser';
-import type { RootFolder, ConfigExport } from '../lib/api';
+import { ProviderSelect, ProviderFields, EventSelector } from './notifications';
+import { PROVIDER_CONFIGS, getProviderLabel } from '../lib/notificationProviders';
+import type { RootFolder, ConfigExport, EventGroup } from '../lib/api';
 import api, {
     getSetupStatus,
     dismissSetup,
@@ -36,6 +37,10 @@ import api, {
     getArrRootFolders,
     createNotification,
     testNotification,
+    getNotificationEvents,
+    getArrInstances,
+    getScanPaths,
+    getNotifications,
     type NotificationConfig,
 } from '../lib/api';
 
@@ -93,11 +98,25 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
     const [loadingRootFolders, setLoadingRootFolders] = useState(false);
     const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
 
-    // Notifications step
-    const [notificationProvider, setNotificationProvider] = useState<'discord' | 'slack' | 'telegram' | 'none'>('none');
-    const [notificationConfig, setNotificationConfig] = useState<Record<string, string>>({});
+    // Notifications step - full configuration like Config page
+    const [notificationData, setNotificationData] = useState<{
+        name: string;
+        provider_type: string;
+        config: Record<string, unknown>;
+        events: string[];
+        enabled: boolean;
+        throttle_seconds: number;
+    }>({
+        name: '',
+        provider_type: 'none',
+        config: {},
+        events: ['CorruptionDetected', 'ScanComplete'],  // Sensible defaults
+        enabled: true,
+        throttle_seconds: 300,
+    });
     const [notificationTested, setNotificationTested] = useState(false);
     const [notificationTestResult, setNotificationTestResult] = useState<{ success: boolean; message?: string } | null>(null);
+    const [eventGroups, setEventGroups] = useState<EventGroup[]>([]);
 
     // Import/restore - support both config JSON and database backup
     const [configFile, setConfigFile] = useState<File | null>(null);
@@ -106,6 +125,78 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
 
     // Auth token for completing setup
     const [authToken, setAuthToken] = useState<string | null>(null);
+
+    // Track restored/imported counts for user feedback
+    const [restoredCounts, setRestoredCounts] = useState<{
+        instances: number;
+        paths: number;
+        notifications: number;
+    } | null>(null);
+
+    // Load existing data from database after restore to pre-populate wizard
+    const loadExistingDataIntoWizard = useCallback(async (): Promise<void> => {
+        try {
+            const [instances, paths, notifications] = await Promise.all([
+                getArrInstances().catch(() => []),
+                getScanPaths().catch(() => []),
+                getNotifications().catch(() => []),
+            ]);
+
+            // Pre-populate arr instance if available
+            if (instances.length > 0) {
+                const first = instances[0];
+                setArrData({
+                    type: first.type as ArrFormData['type'],
+                    name: first.name || '',
+                    url: first.url,
+                    api_key: first.api_key,
+                });
+                setCreatedArrId(first.id);
+                setArrTested(true);
+                // Load root folders for path suggestions
+                setLoadingRootFolders(true);
+                getArrRootFolders(first.id)
+                    .then(folders => {
+                        setRootFolders(folders);
+                    })
+                    .catch(err => console.error('Failed to load root folders:', err))
+                    .finally(() => setLoadingRootFolders(false));
+            }
+
+            // Pre-populate scan path if available
+            if (paths.length > 0) {
+                const first = paths[0];
+                setPathData({
+                    local_path: first.local_path,
+                    arr_path: first.arr_path,
+                    arr_instance_id: first.arr_instance_id,
+                });
+            }
+
+            // Pre-populate notification if available
+            if (notifications.length > 0) {
+                const first = notifications[0];
+                setNotificationData({
+                    name: first.name,
+                    provider_type: first.provider_type,
+                    config: first.config || {},
+                    events: first.events || ['CorruptionDetected', 'ScanComplete'],
+                    enabled: first.enabled ?? true,
+                    throttle_seconds: first.throttle_seconds ?? 300,
+                });
+                setNotificationTested(true);
+            }
+
+            // Set restored counts for user feedback
+            setRestoredCounts({
+                instances: instances.length,
+                paths: paths.length,
+                notifications: notifications.length,
+            });
+        } catch (err) {
+            console.error('Failed to load existing data:', err);
+        }
+    }, []);
 
     // Check setup status on load and determine starting step
     useEffect(() => {
@@ -151,6 +242,15 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
         }
     }, [createdArrId, loadRootFolders]);
 
+    // Load notification events when reaching notifications step
+    useEffect(() => {
+        if (step === 'notifications' && eventGroups.length === 0) {
+            getNotificationEvents()
+                .then(setEventGroups)
+                .catch(err => console.error('Failed to load notification events:', err));
+        }
+    }, [step, eventGroups.length]);
+
     // Route to the appropriate step based on setup status
     const routeToNextStep = (status: { has_password: boolean; has_instances: boolean; has_scan_paths: boolean }) => {
         if (!status.has_password) {
@@ -191,6 +291,9 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 return;
             }
 
+            // Load restored data into wizard state for user review/modification
+            await loadExistingDataIntoWizard();
+
             const status = await getSetupStatus();
             routeToNextStep(status);
         } catch (err) {
@@ -207,19 +310,30 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
     };
 
     const handleSetupPassword = async () => {
-        if (password !== confirmPassword) {
-            setError('Passwords do not match');
-            return;
-        }
-        if (password.length < 1) {
-            setError('Password is required');
-            return;
-        }
-
         setLoading(true);
         setError('');
 
         try {
+            // Check if password is already set (e.g., from restore or previous wizard attempt)
+            const status = await getSetupStatus();
+            if (status.has_password) {
+                // Password already exists, just route to next step
+                routeToNextStep(status);
+                return;
+            }
+
+            // Validate password fields only if we need to set a new password
+            if (password !== confirmPassword) {
+                setError('Passwords do not match');
+                setLoading(false);
+                return;
+            }
+            if (password.length < 1) {
+                setError('Password is required');
+                setLoading(false);
+                return;
+            }
+
             const response = await api.post('/auth/setup', { password });
             const token = response.data.token || response.data.api_key;
             if (token) {
@@ -227,8 +341,8 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 localStorage.setItem('healarr_token', token);
             }
             // Check status to route to next needed step (may have imported instances)
-            const status = await getSetupStatus();
-            routeToNextStep(status);
+            const newStatus = await getSetupStatus();
+            routeToNextStep(newStatus);
         } catch (err: unknown) {
             const error = err as { response?: { data?: { error?: string } } };
             setError(error.response?.data?.error || 'Failed to set password');
@@ -872,19 +986,22 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
     );
 
     const handleTestNotification = async () => {
-        if (notificationProvider === 'none') return;
+        if (notificationData.provider_type === 'none') return;
 
         setLoading(true);
         setNotificationTestResult(null);
 
         try {
+            // Use entered name or generate a default
+            const name = notificationData.name || `${getProviderLabel(notificationData.provider_type)} Notification`;
+
             const config: NotificationConfig = {
-                name: `${notificationProvider.charAt(0).toUpperCase() + notificationProvider.slice(1)} Notification`,
-                provider_type: notificationProvider,
-                config: notificationConfig as Record<string, unknown>,
-                events: ['CorruptionDetected'],
-                enabled: true,
-                throttle_seconds: 0,
+                name,
+                provider_type: notificationData.provider_type,
+                config: notificationData.config,
+                events: notificationData.events,
+                enabled: notificationData.enabled,
+                throttle_seconds: notificationData.throttle_seconds,
             };
 
             const result = await testNotification(config);
@@ -904,7 +1021,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
     };
 
     const handleCreateNotification = async () => {
-        if (notificationProvider === 'none') {
+        if (notificationData.provider_type === 'none') {
             setStep('complete');
             return;
         }
@@ -913,13 +1030,16 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
         setError('');
 
         try {
+            // Use entered name or generate a default
+            const name = notificationData.name || `${getProviderLabel(notificationData.provider_type)} Notification`;
+
             await createNotification({
-                name: `${notificationProvider.charAt(0).toUpperCase() + notificationProvider.slice(1)} Notification`,
-                provider_type: notificationProvider,
-                config: notificationConfig as Record<string, unknown>,
-                events: ['CorruptionDetected', 'ScanComplete', 'RemediationComplete'],
-                enabled: true,
-                throttle_seconds: 300,
+                name,
+                provider_type: notificationData.provider_type,
+                config: notificationData.config,
+                events: notificationData.events,
+                enabled: notificationData.enabled,
+                throttle_seconds: notificationData.throttle_seconds,
             });
             setStep('complete');
         } catch (err: unknown) {
@@ -928,6 +1048,18 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
         } finally {
             setLoading(false);
         }
+    };
+
+    // Check if provider has config fields that are filled
+    const hasProviderConfig = () => {
+        if (notificationData.provider_type === 'none') return false;
+        const providerConfig = PROVIDER_CONFIGS[notificationData.provider_type];
+        if (!providerConfig) return false;
+        // Check if at least one required-looking field has a value
+        return providerConfig.fields.some(field =>
+            notificationData.config[field.key] !== undefined &&
+            notificationData.config[field.key] !== ''
+        );
     };
 
     const renderNotifications = () => (
@@ -957,111 +1089,90 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 </div>
             )}
 
-            <div className="space-y-4">
+            {/* Provider Selection */}
+            <div className="space-y-2">
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                     Notification Service
                 </label>
-                <div className="grid grid-cols-2 gap-3">
-                    {[
-                        { id: 'none' as const, label: 'Skip', icon: X, desc: 'Set up later' },
-                        { id: 'discord' as const, label: 'Discord', icon: Bell, desc: 'Webhook URL' },
-                        { id: 'slack' as const, label: 'Slack', icon: Bell, desc: 'Webhook URL' },
-                        { id: 'telegram' as const, label: 'Telegram', icon: Send, desc: 'Bot Token' },
-                    ].map((option) => (
-                        <button
-                            key={option.id}
-                            onClick={() => {
-                                setNotificationProvider(option.id);
-                                setNotificationConfig({});
-                                setNotificationTested(false);
-                                setNotificationTestResult(null);
-                            }}
-                            className={`p-3 rounded-xl border-2 transition-all text-left cursor-pointer ${
-                                notificationProvider === option.id
-                                    ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20'
-                                    : 'border-slate-200 dark:border-slate-700 hover:border-purple-300 dark:hover:border-purple-700'
-                            }`}
-                        >
-                            <div className="flex items-center gap-2">
-                                <option.icon className={`w-5 h-5 ${notificationProvider === option.id ? 'text-purple-500' : 'text-slate-400'}`} />
-                                <span className={`font-medium ${notificationProvider === option.id ? 'text-purple-700 dark:text-purple-300' : 'text-slate-700 dark:text-slate-300'}`}>
-                                    {option.label}
-                                </span>
-                            </div>
-                            <span className="text-xs text-slate-500 mt-1 block">{option.desc}</span>
-                        </button>
-                    ))}
-                </div>
+                <ProviderSelect
+                    value={notificationData.provider_type}
+                    onChange={(provider) => {
+                        setNotificationData(prev => ({
+                            ...prev,
+                            provider_type: provider,
+                            config: {},
+                            name: '', // Reset name when changing provider
+                        }));
+                        setNotificationTested(false);
+                        setNotificationTestResult(null);
+                    }}
+                    variant="wizard"
+                    includeNone={true}
+                    noneLabel="Skip (set up later)"
+                />
             </div>
 
-            {notificationProvider !== 'none' && (
+            {notificationData.provider_type !== 'none' && (
                 <motion.div
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: 'auto' }}
-                    className="space-y-4"
+                    className="space-y-6"
                 >
-                    {notificationProvider === 'discord' && (
-                        <div className="space-y-2">
-                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                                Webhook URL
-                            </label>
-                            <input
-                                type="text"
-                                value={notificationConfig.webhook_url || ''}
-                                onChange={(e) => setNotificationConfig({ ...notificationConfig, webhook_url: e.target.value })}
-                                className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors"
-                                placeholder="https://discord.com/api/webhooks/..."
-                            />
-                            <p className="text-xs text-slate-500">
-                                Create a webhook in Discord: Server Settings → Integrations → Webhooks
-                            </p>
-                        </div>
-                    )}
+                    {/* Notification Name */}
+                    <div className="space-y-2">
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                            Name (optional)
+                        </label>
+                        <input
+                            type="text"
+                            value={notificationData.name}
+                            onChange={(e) => setNotificationData(prev => ({ ...prev, name: e.target.value }))}
+                            className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-green-500/50 focus:border-green-500 transition-colors text-slate-900 dark:text-white placeholder-slate-500"
+                            placeholder={`My ${getProviderLabel(notificationData.provider_type)} Alerts`}
+                        />
+                    </div>
 
-                    {notificationProvider === 'slack' && (
-                        <div className="space-y-2">
-                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                                Webhook URL
-                            </label>
-                            <input
-                                type="text"
-                                value={notificationConfig.webhook_url || ''}
-                                onChange={(e) => setNotificationConfig({ ...notificationConfig, webhook_url: e.target.value })}
-                                className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors"
-                                placeholder="https://hooks.slack.com/services/..."
-                            />
-                        </div>
-                    )}
+                    {/* Provider-specific fields */}
+                    <ProviderFields
+                        provider={notificationData.provider_type}
+                        config={notificationData.config}
+                        onChange={(config) => setNotificationData(prev => ({ ...prev, config }))}
+                        variant="wizard"
+                        showHeader={true}
+                    />
 
-                    {notificationProvider === 'telegram' && (
-                        <>
-                            <div className="space-y-2">
-                                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                                    Bot Token
-                                </label>
-                                <input
-                                    type="text"
-                                    value={notificationConfig.bot_token || ''}
-                                    onChange={(e) => setNotificationConfig({ ...notificationConfig, bot_token: e.target.value })}
-                                    className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors"
-                                    placeholder="123456789:ABC..."
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                                    Chat ID
-                                </label>
-                                <input
-                                    type="text"
-                                    value={notificationConfig.chat_id || ''}
-                                    onChange={(e) => setNotificationConfig({ ...notificationConfig, chat_id: e.target.value })}
-                                    className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors"
-                                    placeholder="-1001234567890"
-                                />
-                            </div>
-                        </>
-                    )}
+                    {/* Throttle */}
+                    <div className="space-y-2">
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                            <Clock className="w-4 h-4" />
+                            Throttle (seconds)
+                        </label>
+                        <input
+                            type="number"
+                            min="0"
+                            value={notificationData.throttle_seconds}
+                            onChange={(e) => setNotificationData(prev => ({
+                                ...prev,
+                                throttle_seconds: parseInt(e.target.value) || 0
+                            }))}
+                            className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-green-500/50 focus:border-green-500 transition-colors text-slate-900 dark:text-white"
+                        />
+                        <p className="text-xs text-slate-500">
+                            Minimum seconds between notifications (0 = no throttling)
+                        </p>
+                    </div>
 
+                    {/* Event Selection */}
+                    <EventSelector
+                        events={notificationData.events}
+                        eventGroups={eventGroups}
+                        onChange={(events) => setNotificationData(prev => ({ ...prev, events }))}
+                        variant="wizard"
+                        defaultCollapsed={true}
+                        title="Events to Notify"
+                    />
+
+                    {/* Test result */}
                     {notificationTestResult && (
                         <div className={`p-3 rounded-xl flex items-center gap-2 ${
                             notificationTestResult.success
@@ -1079,9 +1190,10 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                         </div>
                     )}
 
+                    {/* Test button */}
                     <button
                         onClick={handleTestNotification}
-                        disabled={loading || !notificationConfig.webhook_url && !notificationConfig.bot_token}
+                        disabled={loading || !hasProviderConfig()}
                         className="w-full py-2 px-4 border border-purple-500 text-purple-500 rounded-xl hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed flex items-center justify-center gap-2"
                     >
                         {loading ? (
@@ -1104,14 +1216,14 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 </button>
                 <button
                     onClick={handleCreateNotification}
-                    disabled={loading || (notificationProvider !== 'none' && !notificationTested)}
+                    disabled={loading || (notificationData.provider_type !== 'none' && !notificationTested)}
                     className="flex-1 py-3 px-4 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-purple-500/20 flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
                 >
                     {loading ? (
                         <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                     ) : (
                         <>
-                            <span>{notificationProvider === 'none' ? 'Skip & Continue' : 'Add Notification'}</span>
+                            <span>{notificationData.provider_type === 'none' ? 'Skip & Continue' : 'Add Notification'}</span>
                             <ArrowRight className="w-5 h-5" />
                         </>
                     )}
@@ -1222,8 +1334,8 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
             >
                 {/* Logo/Header */}
                 <div className="text-center mb-6">
-                    <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl shadow-lg shadow-green-500/20 mb-4">
-                        <Activity className="text-white w-8 h-8" />
+                    <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl shadow-lg shadow-green-500/20 mb-4 p-2.5">
+                        <img src={`${import.meta.env.BASE_URL}healarr.svg`} alt="Healarr" className="w-full h-full" />
                     </div>
                     <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-1">Healarr</h1>
                     <p className="text-slate-600 dark:text-slate-400 text-sm">Setup Wizard</p>
@@ -1232,6 +1344,17 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 {/* Card */}
                 <div className="bg-white/80 dark:bg-slate-900/50 backdrop-blur-xl border border-slate-200 dark:border-slate-800/50 rounded-2xl p-8 shadow-2xl">
                     {step !== 'welcome' && renderStepIndicator()}
+
+                    {/* Show restored counts banner after config/db import */}
+                    {restoredCounts && step !== 'welcome' && step !== 'complete' && (
+                        <div className="mb-4 p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-sm text-green-600 dark:text-green-300 flex items-center gap-2">
+                            <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                            <span>
+                                Restored: {restoredCounts.instances} *arr instance{restoredCounts.instances !== 1 ? 's' : ''}, {restoredCounts.paths} scan path{restoredCounts.paths !== 1 ? 's' : ''}, {restoredCounts.notifications} notification{restoredCounts.notifications !== 1 ? 's' : ''}
+                            </span>
+                            <span className="ml-auto text-xs text-green-500/70">You can review and modify</span>
+                        </div>
+                    )}
 
                     {error && (
                         <motion.div

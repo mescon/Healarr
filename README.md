@@ -1,6 +1,4 @@
-![Healarr Logo](frontend/public/healarr.svg)
-
-# Healarr
+# <img src="frontend/public/healarr.svg" alt="Healarr Logo" height="32" align="top" /> Healarr
 
 **Health Evaluation And Library Auto-Recovery for *aRR**
 

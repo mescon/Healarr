@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Lock, Activity, ArrowRight } from 'lucide-react';
+import { Lock, ArrowRight } from 'lucide-react';
 import type { SetupStatus } from '../lib/api';
 import api, { getAuthStatus, getSetupStatus } from '../lib/api';
 import { useWebSocket } from '../contexts/WebSocketProvider';
@@ -130,8 +130,8 @@ const Login = () => {
             >
                 {/* Logo/Header */}
                 <div className="text-center mb-8">
-                    <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl shadow-lg shadow-green-500/20 mb-4">
-                        <Activity className="text-white w-8 h-8" />
+                    <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl shadow-lg shadow-green-500/20 mb-4 p-2">
+                        <img src={`${import.meta.env.BASE_URL}healarr.svg`} alt="Healarr" className="w-full h-full" />
                     </div>
                     <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-2">Healarr</h1>
                     <p className="text-slate-600 dark:text-slate-400">Health Evaluation And Library Auto-Recovery for *aRR</p>
