@@ -1135,3 +1135,25 @@ func TestValidateMediaInfoOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestNewHealthCheckerWithPaths(t *testing.T) {
+	hc := NewHealthCheckerWithPaths(
+		"/custom/ffprobe",
+		"/custom/ffmpeg",
+		"/custom/mediainfo",
+		"/custom/handbrake",
+	)
+
+	if hc.FFprobePath != "/custom/ffprobe" {
+		t.Errorf("FFprobePath = %q, want /custom/ffprobe", hc.FFprobePath)
+	}
+	if hc.FFmpegPath != "/custom/ffmpeg" {
+		t.Errorf("FFmpegPath = %q, want /custom/ffmpeg", hc.FFmpegPath)
+	}
+	if hc.MediaInfoPath != "/custom/mediainfo" {
+		t.Errorf("MediaInfoPath = %q, want /custom/mediainfo", hc.MediaInfoPath)
+	}
+	if hc.HandBrakePath != "/custom/handbrake" {
+		t.Errorf("HandBrakePath = %q, want /custom/handbrake", hc.HandBrakePath)
+	}
+}

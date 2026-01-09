@@ -1984,3 +1984,78 @@ func TestVerifierService_LogFilesDetected(t *testing.T) {
 		v.logFilesDetected("corruption-789", 1, []string{})
 	})
 }
+
+// =============================================================================
+// getQueueItemStatus tests
+// =============================================================================
+
+func TestGetQueueItemStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		item       integration.QueueItemInfo
+		wantStatus string
+		wantErrMsg string
+	}{
+		{
+			name: "normal status returns state only",
+			item: integration.QueueItemInfo{
+				TrackedDownloadState:  "downloading",
+				TrackedDownloadStatus: "ok",
+			},
+			wantStatus: "downloading",
+			wantErrMsg: "",
+		},
+		{
+			name: "warning status returns combined status and error message",
+			item: integration.QueueItemInfo{
+				TrackedDownloadState:  "importPending",
+				TrackedDownloadStatus: "warning",
+				ErrorMessage:          "Import blocked",
+			},
+			wantStatus: "warning:importPending",
+			wantErrMsg: "Import blocked",
+		},
+		{
+			name: "error status returns combined status and error message",
+			item: integration.QueueItemInfo{
+				TrackedDownloadState:  "failed",
+				TrackedDownloadStatus: "error",
+				ErrorMessage:          "Download failed",
+			},
+			wantStatus: "error:failed",
+			wantErrMsg: "Download failed",
+		},
+		{
+			name: "warning with status messages uses joined messages",
+			item: integration.QueueItemInfo{
+				TrackedDownloadState:  "importPending",
+				TrackedDownloadStatus: "warning",
+				ErrorMessage:          "Ignored message",
+				StatusMessages:        []string{"Quality cutoff", "File already exists"},
+			},
+			wantStatus: "warning:importPending",
+			wantErrMsg: "Quality cutoff; File already exists",
+		},
+		{
+			name: "queued status returns state only",
+			item: integration.QueueItemInfo{
+				TrackedDownloadState:  "queued",
+				TrackedDownloadStatus: "queued",
+			},
+			wantStatus: "queued",
+			wantErrMsg: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotStatus, gotErrMsg := getQueueItemStatus(tt.item)
+			if gotStatus != tt.wantStatus {
+				t.Errorf("getQueueItemStatus() status = %q, want %q", gotStatus, tt.wantStatus)
+			}
+			if gotErrMsg != tt.wantErrMsg {
+				t.Errorf("getQueueItemStatus() errMsg = %q, want %q", gotErrMsg, tt.wantErrMsg)
+			}
+		})
+	}
+}
