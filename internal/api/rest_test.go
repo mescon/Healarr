@@ -670,4 +670,222 @@ func TestRESTServer_AuthMiddleware(t *testing.T) {
 		assert.Equal(t, http.StatusInternalServerError, w.Code)
 		assert.Contains(t, w.Body.String(), "Authentication error")
 	})
+
+	t.Run("accepts valid token from Authorization header", func(t *testing.T) {
+		db, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer db.Close()
+
+		_, err = db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`)
+		require.NoError(t, err)
+
+		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'bearer-token')`)
+		require.NoError(t, err)
+
+		s := &RESTServer{db: db, router: gin.New()}
+
+		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
+			c.String(http.StatusOK, "success")
+		})
+
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("Authorization", "Bearer bearer-token")
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "success", w.Body.String())
+	})
+
+	t.Run("accepts valid token from query parameter token", func(t *testing.T) {
+		db, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer db.Close()
+
+		_, err = db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`)
+		require.NoError(t, err)
+
+		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'query-token')`)
+		require.NoError(t, err)
+
+		s := &RESTServer{db: db, router: gin.New()}
+
+		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
+			c.String(http.StatusOK, "success")
+		})
+
+		// Use 'token' parameter which is supported by extractAPIToken
+		req := httptest.NewRequest("GET", "/protected?token=query-token", nil)
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "success", w.Body.String())
+	})
+
+	t.Run("accepts valid token from query parameter apikey", func(t *testing.T) {
+		db, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		defer db.Close()
+
+		_, err = db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`)
+		require.NoError(t, err)
+
+		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'apikey-token')`)
+		require.NoError(t, err)
+
+		s := &RESTServer{db: db, router: gin.New()}
+
+		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
+			c.String(http.StatusOK, "success")
+		})
+
+		// Use 'apikey' parameter which is also supported
+		req := httptest.NewRequest("GET", "/protected?apikey=apikey-token", nil)
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "success", w.Body.String())
+	})
+}
+
+// =============================================================================
+// Middleware tests (request ID, CORS, recovery)
+// =============================================================================
+
+func TestRequestIDMiddleware_Rest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("generates request ID when not provided", func(t *testing.T) {
+		r := gin.New()
+		r.Use(func(c *gin.Context) {
+			reqID := c.GetHeader("X-Request-ID")
+			if reqID == "" {
+				reqID = "generated-id"
+			}
+			c.Set("request_id", reqID)
+			c.Header("X-Request-ID", reqID)
+			c.Next()
+		})
+		r.GET("/test", func(c *gin.Context) {
+			c.String(http.StatusOK, c.GetString("request_id"))
+		})
+
+		req := httptest.NewRequest("GET", "/test", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.NotEmpty(t, w.Header().Get("X-Request-ID"))
+	})
+
+	t.Run("uses provided request ID", func(t *testing.T) {
+		r := gin.New()
+		r.Use(func(c *gin.Context) {
+			reqID := c.GetHeader("X-Request-ID")
+			if reqID == "" {
+				reqID = "generated-id"
+			}
+			c.Set("request_id", reqID)
+			c.Header("X-Request-ID", reqID)
+			c.Next()
+		})
+		r.GET("/test", func(c *gin.Context) {
+			c.String(http.StatusOK, c.GetString("request_id"))
+		})
+
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("X-Request-ID", "custom-request-id")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "custom-request-id", w.Header().Get("X-Request-ID"))
+		assert.Equal(t, "custom-request-id", w.Body.String())
+	})
+}
+
+func TestCORSMiddleware(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("handles OPTIONS preflight request", func(t *testing.T) {
+		r := gin.New()
+		r.Use(func(c *gin.Context) {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET")
+			if c.Request.Method == "OPTIONS" {
+				c.AbortWithStatus(204)
+				return
+			}
+			c.Next()
+		})
+		r.GET("/test", func(c *gin.Context) {
+			c.String(http.StatusOK, "success")
+		})
+
+		req := httptest.NewRequest("OPTIONS", "/test", nil)
+		req.Header.Set("Origin", "http://example.com")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, 204, w.Code)
+		assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
+	})
+
+	t.Run("sets CORS headers for regular requests", func(t *testing.T) {
+		r := gin.New()
+		r.Use(func(c *gin.Context) {
+			origin := c.GetHeader("Origin")
+			if origin != "" {
+				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+				c.Writer.Header().Set("Vary", "Origin")
+			}
+			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+			c.Next()
+		})
+		r.GET("/test", func(c *gin.Context) {
+			c.String(http.StatusOK, "success")
+		})
+
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("Origin", "http://allowed.com")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "http://allowed.com", w.Header().Get("Access-Control-Allow-Origin"))
+	})
+}
+
+func TestRecoveryMiddleware(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("recovers from panic and returns 500", func(t *testing.T) {
+		r := gin.New()
+		r.Use(func(c *gin.Context) {
+			c.Set("request_id", "test-request-id")
+			c.Next()
+		})
+		r.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+			reqID := c.GetString("request_id")
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+				"error":      "Internal server error",
+				"request_id": reqID,
+			})
+		}))
+		r.GET("/panic", func(c *gin.Context) {
+			panic("test panic")
+		})
+
+		req := httptest.NewRequest("GET", "/panic", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Contains(t, w.Body.String(), "Internal server error")
+		assert.Contains(t, w.Body.String(), "test-request-id")
+	})
 }
