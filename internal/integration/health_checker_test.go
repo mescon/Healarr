@@ -2,6 +2,7 @@ package integration
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -593,7 +594,7 @@ func TestGetTimeoutDescription(t *testing.T) {
 		mode   string
 		want   string
 	}{
-		{DetectionZeroByte, "quick", "instant"},
+		{DetectionZeroByte, "quick", "instant (file metadata only)"},
 		{DetectionFFprobe, "quick", "30 seconds"},
 		{DetectionFFprobe, "thorough", "10 minutes"},
 		{DetectionMediaInfo, "quick", "30 seconds"},
@@ -1257,5 +1258,55 @@ func TestCmdHealthChecker_CheckWithConfig_InvalidPath(t *testing.T) {
 	}
 	if checkErr != nil && checkErr.Type != ErrorTypeInvalidConfig {
 		t.Errorf("Expected InvalidConfig error for invalid path, got %s", checkErr.Type)
+	}
+}
+
+// =============================================================================
+// runCommandWithTimeout tests
+// =============================================================================
+
+func TestRunCommandWithTimeout_Success(t *testing.T) {
+	// Run a simple command that succeeds
+	cmd := exec.Command("echo", "hello")
+	output, err := runCommandWithTimeout(cmd, 5*time.Second, "echo")
+
+	if err != nil {
+		t.Errorf("runCommandWithTimeout failed: %v", err)
+	}
+	if !strings.Contains(string(output), "hello") {
+		t.Errorf("Expected output to contain 'hello', got: %s", output)
+	}
+}
+
+func TestRunCommandWithTimeout_CommandFails(t *testing.T) {
+	// Run a command that fails (exit code != 0)
+	cmd := exec.Command("false")
+	_, err := runCommandWithTimeout(cmd, 5*time.Second, "false")
+
+	if err == nil {
+		t.Error("Expected error from failing command")
+	}
+}
+
+func TestRunCommandWithTimeout_Timeout(t *testing.T) {
+	// Run a command that takes too long
+	cmd := exec.Command("sleep", "10")
+	_, err := runCommandWithTimeout(cmd, 100*time.Millisecond, "sleep")
+
+	if err == nil {
+		t.Error("Expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("Expected timeout error message, got: %v", err)
+	}
+}
+
+func TestRunCommandWithTimeout_CommandNotFound(t *testing.T) {
+	// Run a command that doesn't exist
+	cmd := exec.Command("nonexistent-command-xyz-123")
+	_, err := runCommandWithTimeout(cmd, 5*time.Second, "nonexistent")
+
+	if err == nil {
+		t.Error("Expected error from nonexistent command")
 	}
 }

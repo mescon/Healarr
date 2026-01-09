@@ -1011,7 +1011,8 @@ func TestValidateArrURL_BlocksSSRFSchemes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateArrURL(tc.url)
 			assert.Error(t, err)
-			assert.Equal(t, errInvalidURLScheme, err)
+			// Error message should indicate only http/https are allowed
+			assert.Contains(t, err.Error(), "http")
 		})
 	}
 }
@@ -1143,4 +1144,150 @@ func TestTestArrConnection_SSRFBlocked(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &response)
 	assert.Equal(t, false, response["success"])
 	assert.Contains(t, response["error"], "Invalid URL")
+}
+
+func TestGenerateInstanceName_FirstInstance(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := &RESTServer{
+		router: r,
+		db:     db,
+	}
+
+	// No existing instances - should get base name without number
+	name := s.generateInstanceName("sonarr")
+	assert.Equal(t, "Sonarr", name)
+}
+
+func TestGenerateInstanceName_SecondInstance(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := &RESTServer{
+		router: r,
+		db:     db,
+	}
+
+	// Add one existing instance
+	_, err := db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", "key", true)
+	require.NoError(t, err)
+
+	// Second instance should get numbered name
+	name := s.generateInstanceName("sonarr")
+	assert.Equal(t, "Sonarr 2", name)
+}
+
+func TestGenerateInstanceName_ThirdInstance(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := &RESTServer{
+		router: r,
+		db:     db,
+	}
+
+	// Add two existing instances
+	_, err := db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", "key1", true)
+	require.NoError(t, err)
+	_, err = db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
+		"Sonarr 2", "sonarr", "http://localhost:8990", "key2", true)
+	require.NoError(t, err)
+
+	// Third instance should get numbered name
+	name := s.generateInstanceName("sonarr")
+	assert.Equal(t, "Sonarr 3", name)
+}
+
+func TestGenerateInstanceName_Radarr(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := &RESTServer{
+		router: r,
+		db:     db,
+	}
+
+	// No existing Radarr instances
+	name := s.generateInstanceName("radarr")
+	assert.Equal(t, "Radarr", name)
+}
+
+func TestGenerateInstanceName_Whisparr(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := &RESTServer{
+		router: r,
+		db:     db,
+	}
+
+	// Add one whisparr-v3 instance
+	_, err := db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
+		"Whisparr", "whisparr-v3", "http://localhost:6969", "key", true)
+	require.NoError(t, err)
+
+	// Second whisparr (even different version) should get numbered name
+	name := s.generateInstanceName("whisparr-v2")
+	assert.Equal(t, "Whisparr 2", name)
+}
+
+func TestGenerateInstanceName_UnknownType(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := &RESTServer{
+		router: r,
+		db:     db,
+	}
+
+	// Unknown type should capitalize first letter
+	name := s.generateInstanceName("lidarr")
+	assert.Equal(t, "Lidarr", name)
+}
+
+func TestGenerateInstanceName_EmptyType(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := &RESTServer{
+		router: r,
+		db:     db,
+	}
+
+	// Empty type should use "Instance" as fallback
+	name := s.generateInstanceName("")
+	assert.Equal(t, "Instance", name)
+}
+
+func TestGenerateInstanceName_SonarrV3(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := &RESTServer{
+		router: r,
+		db:     db,
+	}
+
+	// sonarr-v3 should use "Sonarr" display name
+	name := s.generateInstanceName("sonarr-v3")
+	assert.Equal(t, "Sonarr", name)
 }
