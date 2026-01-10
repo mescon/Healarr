@@ -173,11 +173,12 @@ const DataGrid = <T extends { id: string | number }>({
     mobileBreakpoint = 'md',
     mobileCardTitle,
 }: DataGridProps<T>) => {
-    // Determine responsive class prefix based on breakpoint
-    const breakpointClass = {
-        sm: 'sm:',
-        md: 'md:',
-        lg: 'lg:',
+    // Responsive class mappings - must use complete class names for Tailwind JIT detection
+    // DO NOT use template literals like `${prefix}block` - Tailwind won't detect them!
+    const responsiveClasses = {
+        sm: { showDesktop: 'sm:block', hideMobile: 'sm:hidden', showMobileRow: 'sm:flex-row', showMobileCol: 'sm:flex-col' },
+        md: { showDesktop: 'md:block', hideMobile: 'md:hidden', showMobileRow: 'md:flex-row', showMobileCol: 'md:flex-col' },
+        lg: { showDesktop: 'lg:block', hideMobile: 'lg:hidden', showMobileRow: 'lg:flex-row', showMobileCol: 'lg:flex-col' },
     }[mobileBreakpoint];
 
     if (isLoading) {
@@ -185,7 +186,7 @@ const DataGrid = <T extends { id: string | number }>({
         return (
             <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                 {/* Desktop skeleton */}
-                <div className={clsx("hidden overflow-x-auto", `${breakpointClass}block`)}>
+                <div className={clsx("hidden overflow-x-auto", responsiveClasses.showDesktop)}>
                     <table className="w-full text-left text-sm">
                         <thead className="bg-slate-100 dark:bg-slate-800/50">
                             <tr>
@@ -217,7 +218,7 @@ const DataGrid = <T extends { id: string | number }>({
                 </div>
 
                 {/* Mobile skeleton */}
-                <div className={clsx("block", `${breakpointClass}hidden`)}>
+                <div className={clsx("block", responsiveClasses.hideMobile)}>
                     {skeletonRows.map((_, idx) => (
                         <div key={idx} className="p-4 border-b border-slate-200 dark:border-slate-800/50 last:border-b-0">
                             <div
@@ -250,7 +251,7 @@ const DataGrid = <T extends { id: string | number }>({
     return (
         <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
             {/* Desktop Table View - hidden on mobile */}
-            <div className={clsx("hidden overflow-x-auto", `${breakpointClass}block`)}>
+            <div className={clsx("hidden overflow-x-auto", responsiveClasses.showDesktop)}>
                 <table className="w-full text-left text-sm text-slate-600 dark:text-slate-400">
                     <thead className="bg-slate-100 dark:bg-slate-800/50 text-xs uppercase text-slate-500 font-medium">
                         <tr>
@@ -292,7 +293,7 @@ const DataGrid = <T extends { id: string | number }>({
             </div>
 
             {/* Mobile Card View - visible only on mobile */}
-            <div className={clsx("block", `${breakpointClass}hidden`)}>
+            <div className={clsx("block", responsiveClasses.hideMobile)}>
                 {data.map((row, rowIndex) => (
                     <MobileCard
                         key={row.id}
