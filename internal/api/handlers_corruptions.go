@@ -264,6 +264,9 @@ func (s *RESTServer) enrichFromSearchCompleted(ctx context.Context, corruptionID
 	if v, ok := extractJSONInt(data, "episode_number"); ok {
 		enriched["episode_number"] = v
 	}
+	if v, ok := extractJSONString(data, "episode_title"); ok {
+		enriched["episode_title"] = v
+	}
 	if v, ok := extractJSONString(data, "arr_type"); ok {
 		enriched["arr_type"] = v
 	}

@@ -38,6 +38,7 @@ export interface Corruption {
     media_type?: 'movie' | 'series';
     season_number?: number;                // For TV shows
     episode_number?: number;               // For TV shows
+    episode_title?: string;                // Episode name, e.g., "Pilot"
     arr_type?: string;                     // "sonarr", "radarr", "whisparr"
     instance_name?: string;                // e.g., "Radarr", "Radarr4K"
 

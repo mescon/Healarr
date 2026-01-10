@@ -819,6 +819,80 @@ func TestVerifierService_CheckHistoryForImport(t *testing.T) {
 }
 
 // =============================================================================
+// hasImportEventInHistory tests
+// =============================================================================
+
+func TestVerifierService_HasImportEventInHistory(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	t.Run("returns true when import event exists", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		mockArr := &testutil.MockArrClient{
+			GetRecentHistoryForMediaByPathFunc: func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+				return []integration.HistoryItemInfo{
+					{EventType: "grabbed"},
+					{EventType: "downloadFolderImported"},
+				}, nil
+			},
+		}
+
+		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
+
+		result := verifier.hasImportEventInHistory("/movies", 123)
+		if !result {
+			t.Error("Expected true when import event exists in history")
+		}
+	})
+
+	t.Run("returns false when no import event exists", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		mockArr := &testutil.MockArrClient{
+			GetRecentHistoryForMediaByPathFunc: func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+				return []integration.HistoryItemInfo{
+					{EventType: "grabbed"},
+					{EventType: "downloadCompleted"},
+				}, nil
+			},
+		}
+
+		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
+
+		result := verifier.hasImportEventInHistory("/movies", 123)
+		if result {
+			t.Error("Expected false when no import event in history")
+		}
+	})
+
+	t.Run("returns false when history API fails", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		mockArr := &testutil.MockArrClient{
+			GetRecentHistoryForMediaByPathFunc: func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+				return nil, errPathNotConfigured
+			},
+		}
+
+		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
+
+		result := verifier.hasImportEventInHistory("/movies", 123)
+		if result {
+			t.Error("Expected false when history API fails")
+		}
+	})
+}
+
+// =============================================================================
 // pollForFileWithBackoff tests
 // =============================================================================
 

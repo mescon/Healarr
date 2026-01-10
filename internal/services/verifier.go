@@ -537,15 +537,24 @@ func isImportState(state string) bool {
 
 // handleNoQueueItems handles the case when no items are in the download queue
 func (v *VerifierService) handleNoQueueItems(state *monitorState, elapsed time.Duration) monitorAction {
-	// Check history for completed import
+	// Check history for completed import (includes file verification)
 	if v.checkHistoryForImport(state.corruptionID, state.arrPath, state.mediaID, state.filePath, state.metadata) {
 		return monitorStop
 	}
 
-	// If item was in queue but now gone, it was manually removed
+	// If item was in queue but now gone, check if it was imported (but files not accessible yet)
+	// vs actually manually removed from *arr queue
 	if state.wasInQueue {
-		v.publishManuallyRemoved(state.corruptionID, state.lastStatus)
-		return monitorStop
+		// Double-check: if *arr history shows an import event, don't mark as ManuallyRemoved
+		// The files may not be accessible yet (NFS sync delay, path mapping issue, etc.)
+		if v.hasImportEventInHistory(state.arrPath, state.mediaID) {
+			logger.Debugf("Import event found in history for %s but files not accessible yet, continuing to wait", state.corruptionID)
+			// Continue monitoring - files should become accessible eventually
+		} else {
+			// No import event in history - item was actually manually removed
+			v.publishManuallyRemoved(state.corruptionID, state.lastStatus)
+			return monitorStop
+		}
 	}
 
 	// Fallback - check if files exist via *arr API
@@ -694,6 +703,17 @@ func findImportEvent(historyItems []integration.HistoryItemInfo) *integration.Hi
 		}
 	}
 	return nil
+}
+
+// hasImportEventInHistory checks if *arr history contains an import event.
+// This is separate from checkHistoryForImport which also verifies files exist on disk.
+// Use this to avoid false ManuallyRemoved states when import succeeded but files aren't accessible yet.
+func (v *VerifierService) hasImportEventInHistory(arrPath string, mediaID int64) bool {
+	historyItems, err := v.getHistoryWithRetry(arrPath, mediaID, 20, 3)
+	if err != nil {
+		return false
+	}
+	return findImportEvent(historyItems) != nil
 }
 
 // checkHistoryForImport checks *arr history for import completion

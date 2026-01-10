@@ -242,15 +242,36 @@ const Corruptions = () => {
                         <ol className="text-sm text-purple-500/80 dark:text-purple-400/80 mt-2 ml-4 list-decimal space-y-1">
                             <li>Open your *arr app and check <span className="font-medium">Activity → Queue</span></li>
                             <li>Look for blocked imports, failed downloads, or manually removed items</li>
-                            <li>Resolve the issue in *arr, then click <span className="font-medium">Retry</span> here</li>
+                            <li>Resolve the issue in *arr, then click <span className="font-medium">Retry All</span></li>
                         </ol>
                     </div>
-                    <button
-                        onClick={() => handleStatusFilterChange('manual_intervention')}
-                        className="px-3 py-1.5 text-sm font-medium bg-purple-500/20 hover:bg-purple-500/30 text-purple-600 dark:text-purple-300 rounded-lg border border-purple-500/30 transition-colors cursor-pointer whitespace-nowrap"
-                    >
-                        View Items
-                    </button>
+                    <div className="flex flex-col gap-2">
+                        <button
+                            onClick={async () => {
+                                try {
+                                    const interventionData = await getCorruptions(1, 100, 'detected_at', 'desc', 'manual_intervention');
+                                    const ids = interventionData.data?.map((r: { id: string }) => r.id) || [];
+                                    if (ids.length > 0) {
+                                        const result = await retryCorruptions(ids);
+                                        toast.success(result.message);
+                                        queryClient.invalidateQueries({ queryKey: ['corruptions'] });
+                                    }
+                                } catch (error) {
+                                    toast.error('Failed to retry items');
+                                }
+                            }}
+                            className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg border border-blue-500/30 transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                            <RefreshCw className="w-4 h-4" />
+                            Retry All
+                        </button>
+                        <button
+                            onClick={() => handleStatusFilterChange('manual_intervention')}
+                            className="px-3 py-1.5 text-sm font-medium bg-purple-500/20 hover:bg-purple-500/30 text-purple-600 dark:text-purple-300 rounded-lg border border-purple-500/30 transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                            View Items
+                        </button>
+                    </div>
                 </div>
             )}
 
@@ -264,7 +285,9 @@ const Corruptions = () => {
                         if (row.media_type === 'series' && row.season_number && row.episode_number) {
                             const s = String(row.season_number).padStart(2, '0');
                             const e = String(row.episode_number).padStart(2, '0');
-                            return `${row.media_title} S${s}E${e}`;
+                            return row.episode_title
+                                ? `${row.media_title} S${s}E${e} - ${row.episode_title}`
+                                : `${row.media_title} S${s}E${e}`;
                         } else if (row.media_year) {
                             return `${row.media_title} (${row.media_year})`;
                         }
@@ -326,10 +349,12 @@ const Corruptions = () => {
 
                             if (row.media_title) {
                                 if (row.media_type === 'series' && row.season_number && row.episode_number) {
-                                    // Format: "Colony S01E08"
+                                    // Format: "Colony S01E08 - Pilot" or "Colony S01E08" if no episode title
                                     const s = String(row.season_number).padStart(2, '0');
                                     const e = String(row.episode_number).padStart(2, '0');
-                                    displayTitle = `${row.media_title} S${s}E${e}`;
+                                    displayTitle = row.episode_title
+                                        ? `${row.media_title} S${s}E${e} - ${row.episode_title}`
+                                        : `${row.media_title} S${s}E${e}`;
                                 } else if (row.media_year) {
                                     // Format: "The Matrix (1999)"
                                     displayTitle = `${row.media_title} (${row.media_year})`;
