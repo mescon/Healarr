@@ -51,6 +51,61 @@ func sanitizeBrowsePath(requestedPath string) (string, error) {
 	return cleanPath, nil
 }
 
+// scanPathRequest is the common request structure for creating and updating scan paths.
+type scanPathRequest struct {
+	LocalPath                string   `json:"local_path"`
+	ArrPath                  string   `json:"arr_path"`
+	ArrInstanceID            *int     `json:"arr_instance_id"`
+	Enabled                  bool     `json:"enabled"`
+	AutoRemediate            bool     `json:"auto_remediate"`
+	DetectionMethod          string   `json:"detection_method"`
+	DetectionArgs            []string `json:"detection_args"`
+	DetectionMode            string   `json:"detection_mode"`
+	MaxRetries               int      `json:"max_retries"`
+	VerificationTimeoutHours *int     `json:"verification_timeout_hours"`
+}
+
+// prepareScanPathRequest validates and normalizes a scan path request.
+// It applies defaults and marshals detection_args to JSON.
+// Returns the JSON bytes for detection_args and any validation error.
+func prepareScanPathRequest(req *scanPathRequest, c *gin.Context) ([]byte, bool) {
+	// Apply defaults
+	if req.DetectionMethod == "" {
+		req.DetectionMethod = "ffprobe"
+	}
+	if req.DetectionMode == "" {
+		req.DetectionMode = "quick"
+	}
+	if req.MaxRetries <= 0 || req.MaxRetries > 100 {
+		req.MaxRetries = config.Get().DefaultMaxRetries
+	}
+	if req.ArrPath == "" {
+		req.ArrPath = req.LocalPath
+	}
+
+	// Validate verification_timeout_hours (1 hour to 1 year)
+	if req.VerificationTimeoutHours != nil {
+		hours := *req.VerificationTimeoutHours
+		if hours < 1 || hours > 8760 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "verification_timeout_hours must be between 1 and 8760"})
+			return nil, false
+		}
+	}
+
+	// Marshal detection args to JSON
+	var detectionArgsJSON []byte
+	if len(req.DetectionArgs) > 0 {
+		var err error
+		detectionArgsJSON, err = json.Marshal(req.DetectionArgs)
+		if err != nil {
+			logger.Warnf("Failed to marshal detection_args: %v, using empty object", err)
+			detectionArgsJSON = []byte("{}")
+		}
+	}
+
+	return detectionArgsJSON, true
+}
+
 func (s *RESTServer) getScanPaths(c *gin.Context) {
 	rows, err := s.db.Query("SELECT id, local_path, arr_path, arr_instance_id, enabled, auto_remediate, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours FROM scan_paths")
 	if err != nil {
@@ -174,56 +229,15 @@ func (s *RESTServer) getDetectionPreview(c *gin.Context) {
 }
 
 func (s *RESTServer) createScanPath(c *gin.Context) {
-	var req struct {
-		LocalPath                string   `json:"local_path"`
-		ArrPath                  string   `json:"arr_path"`
-		ArrInstanceID            *int     `json:"arr_instance_id"`
-		Enabled                  bool     `json:"enabled"`
-		AutoRemediate            bool     `json:"auto_remediate"`
-		DetectionMethod          string   `json:"detection_method"`
-		DetectionArgs            []string `json:"detection_args"`
-		DetectionMode            string   `json:"detection_mode"`
-		MaxRetries               int      `json:"max_retries"`
-		VerificationTimeoutHours *int     `json:"verification_timeout_hours"`
-	}
+	var req scanPathRequest
 	if err := c.BindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Set defaults if not provided
-	if req.DetectionMethod == "" {
-		req.DetectionMethod = "ffprobe"
-	}
-	if req.DetectionMode == "" {
-		req.DetectionMode = "quick"
-	}
-	// Validate and apply defaults for max_retries (1-100 range)
-	if req.MaxRetries <= 0 || req.MaxRetries > 100 {
-		req.MaxRetries = config.Get().DefaultMaxRetries
-	}
-	// If arr_path is empty, assume same path as local (no mapping needed)
-	if req.ArrPath == "" {
-		req.ArrPath = req.LocalPath
-	}
-	// Validate verification_timeout_hours if provided (1 hour to 1 year)
-	if req.VerificationTimeoutHours != nil {
-		hours := *req.VerificationTimeoutHours
-		if hours < 1 || hours > 8760 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "verification_timeout_hours must be between 1 and 8760"})
-			return
-		}
-	}
-
-	// Marshal detection args to JSON
-	var detectionArgsJSON []byte
-	if len(req.DetectionArgs) > 0 {
-		var marshalErr error
-		detectionArgsJSON, marshalErr = json.Marshal(req.DetectionArgs)
-		if marshalErr != nil {
-			logger.Warnf("Failed to marshal detection_args: %v, using empty object", marshalErr)
-			detectionArgsJSON = []byte("{}")
-		}
+	detectionArgsJSON, ok := prepareScanPathRequest(&req, c)
+	if !ok {
+		return
 	}
 
 	_, err := s.db.Exec(`INSERT INTO scan_paths
@@ -348,55 +362,15 @@ func (s *RESTServer) browseDirectory(c *gin.Context) {
 
 func (s *RESTServer) updateScanPath(c *gin.Context) {
 	id := c.Param("id")
-	var req struct {
-		LocalPath                string   `json:"local_path"`
-		ArrPath                  string   `json:"arr_path"`
-		ArrInstanceID            *int     `json:"arr_instance_id"`
-		Enabled                  bool     `json:"enabled"`
-		AutoRemediate            bool     `json:"auto_remediate"`
-		DetectionMethod          string   `json:"detection_method"`
-		DetectionArgs            []string `json:"detection_args"`
-		DetectionMode            string   `json:"detection_mode"`
-		MaxRetries               int      `json:"max_retries"`
-		VerificationTimeoutHours *int     `json:"verification_timeout_hours"`
-	}
+	var req scanPathRequest
 	if err := c.BindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Validate and apply defaults for max_retries (1-100 range)
-	if req.MaxRetries <= 0 || req.MaxRetries > 100 {
-		req.MaxRetries = config.Get().DefaultMaxRetries
-	}
-	if req.DetectionMethod == "" {
-		req.DetectionMethod = "ffprobe"
-	}
-	if req.DetectionMode == "" {
-		req.DetectionMode = "quick"
-	}
-	// If arr_path is empty, assume same path as local (no mapping needed)
-	if req.ArrPath == "" {
-		req.ArrPath = req.LocalPath
-	}
-	// Validate verification_timeout_hours if provided (1 hour to 1 year)
-	if req.VerificationTimeoutHours != nil {
-		hours := *req.VerificationTimeoutHours
-		if hours < 1 || hours > 8760 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "verification_timeout_hours must be between 1 and 8760"})
-			return
-		}
-	}
-
-	// Marshal detection args to JSON
-	var detectionArgsJSON []byte
-	if len(req.DetectionArgs) > 0 {
-		var marshalErr error
-		detectionArgsJSON, marshalErr = json.Marshal(req.DetectionArgs)
-		if marshalErr != nil {
-			logger.Warnf("Failed to marshal detection_args: %v, using empty object", marshalErr)
-			detectionArgsJSON = []byte("{}")
-		}
+	detectionArgsJSON, ok := prepareScanPathRequest(&req, c)
+	if !ok {
+		return
 	}
 
 	_, err := s.db.Exec(`UPDATE scan_paths SET
