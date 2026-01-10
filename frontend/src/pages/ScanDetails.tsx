@@ -8,14 +8,7 @@ import DataGrid from '../components/ui/DataGrid';
 import { useDateFormat } from '../lib/useDateFormat';
 import { useToast } from '../contexts/ToastContext';
 import { useWebSocket } from '../contexts/WebSocketProvider';
-
-const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
+import { formatBytes } from '../lib/formatters';
 
 const ScanDetails = () => {
     const { id } = useParams();
@@ -217,8 +210,9 @@ const ScanDetails = () => {
                 <button
                     onClick={() => navigate('/scans')}
                     className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:text-white transition-colors cursor-pointer"
+                    aria-label="Back to Scans"
                 >
-                    <ArrowLeft className="w-5 h-5" />
+                    <ArrowLeft className="w-5 h-5" aria-hidden="true" />
                 </button>
                 <div className="flex-1">
                     <div className="flex items-center gap-3">
@@ -545,7 +539,7 @@ const ScanDetails = () => {
                                 {
                                     header: 'Size',
                                     accessorKey: (row: ScanFile) => (
-                                        <span className="text-slate-600 dark:text-slate-400">{formatFileSize(row.file_size)}</span>
+                                        <span className="text-slate-600 dark:text-slate-400">{formatBytes(row.file_size)}</span>
                                     ),
                                     className: 'w-24'
                                 },

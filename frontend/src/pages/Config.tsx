@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder, Info, Wand2 } from 'lucide-react';
 import FileBrowser from '../components/ui/FileBrowser';
+import ConfirmDialog from '../components/ui/ConfirmDialog';
 import { useDateFormat, type DateFormatPreset } from '../lib/useDateFormat';
 import { formatCronExpression } from '../lib/formatters';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -856,6 +857,10 @@ const Config = () => {
     const [showFileBrowser, setShowFileBrowser] = useState(false);
     const [fileBrowserTarget, setFileBrowserTarget] = useState<'new' | number>('new');
 
+    // Confirm dialog state
+    const [deleteArrConfirm, setDeleteArrConfirm] = useState<{ id: number; name: string } | null>(null);
+    const [deletePathConfirm, setDeletePathConfirm] = useState<{ id: number; path: string } | null>(null);
+
     // Detection preview - fetched when method, mode, or args change
     const { data: detectionPreview, isLoading: isLoadingPreview } = useQuery({
         queryKey: ['detectionPreview', newPath.detection_method || 'ffprobe', newPath.detection_mode || 'quick', newPath.detection_args || ''],
@@ -1302,24 +1307,23 @@ const Config = () => {
                                                         onClick={() => handleManualTest(arr)}
                                                         className="text-slate-600 dark:text-slate-400 hover:text-slate-700 dark:text-slate-300 cursor-pointer"
                                                         title="Test Connection"
+                                                        aria-label={`Test connection to ${arr.name}`}
                                                     >
-                                                        <Activity className="w-4 h-4" />
+                                                        <Activity className="w-4 h-4" aria-hidden="true" />
                                                     </button>
                                                     <button
                                                         onClick={() => handleEditArr(arr)}
                                                         className="text-blue-400 hover:text-blue-300 cursor-pointer"
                                                         title="Edit"
+                                                        aria-label={`Edit ${arr.name}`}
                                                     >
-                                                        <Pencil className="w-4 h-4" />
+                                                        <Pencil className="w-4 h-4" aria-hidden="true" />
                                                     </button>
                                                     <button
-                                                        onClick={() => {
-                                                            if (window.confirm(`Are you sure you want to delete "${arr.name}"? This action cannot be undone.`)) {
-                                                                deleteArrMutation.mutate(arr.id);
-                                                            }
-                                                        }}
+                                                        onClick={() => setDeleteArrConfirm({ id: arr.id, name: arr.name })}
                                                         className="p-2 hover:bg-red-500/10 text-red-400 rounded-lg transition-colors cursor-pointer"
                                                         title="Delete Server"
+                                                        aria-label={`Delete ${arr.name}`}
                                                     >
                                                         <Trash2 className="w-4 h-4" />
                                                     </button>
@@ -1765,25 +1769,24 @@ const Config = () => {
                                                         onClick={() => scanPathMutation.mutate(path.id)}
                                                         className="text-green-400 hover:text-green-300 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                                                         title="Scan Now"
+                                                        aria-label={`Scan ${path.local_path}`}
                                                         disabled={!path.enabled || scanPathMutation.isPending}
                                                     >
-                                                        <Play className="w-4 h-4" />
+                                                        <Play className="w-4 h-4" aria-hidden="true" />
                                                     </button>
                                                     <button
                                                         onClick={() => handleEditPath(path)}
                                                         className="text-blue-400 hover:text-blue-300 cursor-pointer"
                                                         title="Edit"
+                                                        aria-label={`Edit ${path.local_path}`}
                                                     >
-                                                        <Pencil className="w-4 h-4" />
+                                                        <Pencil className="w-4 h-4" aria-hidden="true" />
                                                     </button>
                                                     <button
-                                                        onClick={() => {
-                                                            if (window.confirm(`Remove scan path "${path.local_path}"?\n\nThis will remove the path from Healarr scanning only. No files will be deleted from your disk.`)) {
-                                                                deletePathMutation.mutate(path.id);
-                                                            }
-                                                        }}
+                                                        onClick={() => setDeletePathConfirm({ id: path.id, path: path.local_path })}
                                                         className="p-2 hover:bg-red-500/10 text-red-400 rounded-lg transition-colors cursor-pointer"
                                                         title="Delete Path"
+                                                        aria-label={`Delete ${path.local_path}`}
                                                     >
                                                         <Trash2 className="w-4 h-4" />
                                                     </button>
@@ -2156,6 +2159,43 @@ const Config = () => {
                     }
                 }}
                 initialPath={fileBrowserTarget === 'new' ? (newPath.local_path || '/') : (scanPaths?.find(p => p.id === fileBrowserTarget)?.local_path || '/')}
+            />
+
+            {/* Confirm Dialogs */}
+            <ConfirmDialog
+                isOpen={deleteArrConfirm !== null}
+                title="Delete Server?"
+                message={`Are you sure you want to delete "${deleteArrConfirm?.name}"? This action cannot be undone.`}
+                confirmLabel="Delete"
+                cancelLabel="Cancel"
+                variant="danger"
+                isLoading={deleteArrMutation.isPending}
+                onConfirm={() => {
+                    if (deleteArrConfirm) {
+                        deleteArrMutation.mutate(deleteArrConfirm.id, {
+                            onSuccess: () => setDeleteArrConfirm(null),
+                        });
+                    }
+                }}
+                onCancel={() => setDeleteArrConfirm(null)}
+            />
+
+            <ConfirmDialog
+                isOpen={deletePathConfirm !== null}
+                title="Remove Scan Path?"
+                message={`This will remove "${deletePathConfirm?.path}" from Healarr scanning only. No files will be deleted from your disk.`}
+                confirmLabel="Remove"
+                cancelLabel="Cancel"
+                variant="warning"
+                isLoading={deletePathMutation.isPending}
+                onConfirm={() => {
+                    if (deletePathConfirm) {
+                        deletePathMutation.mutate(deletePathConfirm.id, {
+                            onSuccess: () => setDeletePathConfirm(null),
+                        });
+                    }
+                }}
+                onCancel={() => setDeletePathConfirm(null)}
             />
         </div>
     );
@@ -2944,15 +2984,18 @@ const NotificationsSection = () => {
                                                         : "text-slate-600 dark:text-slate-400 hover:text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
                                                 )}
                                                 title="View Log"
+                                                aria-label={`${showLogFor === notification.id ? 'Hide' : 'View'} log for ${notification.name}`}
+                                                aria-expanded={showLogFor === notification.id}
                                             >
-                                                <History className="w-4 h-4" />
+                                                <History className="w-4 h-4" aria-hidden="true" />
                                             </button>
                                             <button
                                                 onClick={() => handleEdit(notification)}
                                                 className="p-2 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded-lg transition-colors cursor-pointer"
                                                 title="Edit"
+                                                aria-label={`Edit ${notification.name}`}
                                             >
-                                                <Pencil className="w-4 h-4" />
+                                                <Pencil className="w-4 h-4" aria-hidden="true" />
                                             </button>
                                             <button
                                                 onClick={() => {
@@ -2962,8 +3005,9 @@ const NotificationsSection = () => {
                                                 }}
                                                 className="p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors cursor-pointer"
                                                 title="Delete"
+                                                aria-label={`Delete ${notification.name}`}
                                             >
-                                                <Trash2 className="w-4 h-4" />
+                                                <Trash2 className="w-4 h-4" aria-hidden="true" />
                                             </button>
                                         </div>
                                     </div>

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import clsx from 'clsx';
-import { ChevronLeft, ChevronRight, ChevronDown } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronDown, FileX } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import EmptyState from './EmptyState';
 
 interface Column<T> {
     header: string | React.ReactNode;
@@ -180,17 +181,68 @@ const DataGrid = <T extends { id: string | number }>({
     }[mobileBreakpoint];
 
     if (isLoading) {
+        const skeletonRows = Array(5).fill(null);
         return (
-            <div className="w-full h-64 flex items-center justify-center rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500"></div>
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
+                {/* Desktop skeleton */}
+                <div className={clsx("hidden overflow-x-auto", `${breakpointClass}block`)}>
+                    <table className="w-full text-left text-sm">
+                        <thead className="bg-slate-100 dark:bg-slate-800/50">
+                            <tr>
+                                {columns.map((col, idx) => (
+                                    <th key={idx} className={clsx("px-6 py-4", col.className)}>
+                                        <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded animate-pulse w-20" />
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 dark:divide-slate-800/50">
+                            {skeletonRows.map((_, rowIndex) => (
+                                <tr key={rowIndex}>
+                                    {columns.map((col, colIndex) => (
+                                        <td key={colIndex} className={clsx("px-6 py-4", col.className)}>
+                                            <div
+                                                className="h-4 bg-slate-200 dark:bg-slate-700 rounded animate-pulse"
+                                                style={{
+                                                    width: `${60 + Math.random() * 40}%`,
+                                                    animationDelay: `${rowIndex * 100}ms`
+                                                }}
+                                            />
+                                        </td>
+                                    ))}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+
+                {/* Mobile skeleton */}
+                <div className={clsx("block", `${breakpointClass}hidden`)}>
+                    {skeletonRows.map((_, idx) => (
+                        <div key={idx} className="p-4 border-b border-slate-200 dark:border-slate-800/50 last:border-b-0">
+                            <div
+                                className="h-5 bg-slate-200 dark:bg-slate-700 rounded animate-pulse w-3/4 mb-2"
+                                style={{ animationDelay: `${idx * 100}ms` }}
+                            />
+                            <div
+                                className="h-4 bg-slate-200 dark:bg-slate-700 rounded animate-pulse w-1/2"
+                                style={{ animationDelay: `${idx * 100 + 50}ms` }}
+                            />
+                        </div>
+                    ))}
+                </div>
             </div>
         );
     }
 
     if (!data.length) {
         return (
-            <div className="w-full h-64 flex items-center justify-center rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl text-slate-500">
-                No data available
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl">
+                <EmptyState
+                    icon={FileX}
+                    title="No data found"
+                    description="There are no items to display. Try adjusting your filters or check back later."
+                />
             </div>
         );
     }
@@ -279,15 +331,17 @@ const DataGrid = <T extends { id: string | number }>({
                             disabled={pagination.page === 1}
                             onClick={() => pagination.onPageChange(pagination.page - 1)}
                             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                            aria-label="Previous page"
                         >
-                            <ChevronLeft className="w-4 h-4" />
+                            <ChevronLeft className="w-4 h-4" aria-hidden="true" />
                         </button>
                         <button
                             disabled={pagination.page * pagination.limit >= pagination.total}
                             onClick={() => pagination.onPageChange(pagination.page + 1)}
                             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                            aria-label="Next page"
                         >
-                            <ChevronRight className="w-4 h-4" />
+                            <ChevronRight className="w-4 h-4" aria-hidden="true" />
                         </button>
                     </div>
                 </div>

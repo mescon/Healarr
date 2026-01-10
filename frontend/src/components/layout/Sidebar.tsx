@@ -180,11 +180,12 @@ const Sidebar = () => {
                         onClick={toggleTheme}
                         className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200 border border-transparent hover:border-slate-300 dark:hover:border-slate-700 transition-all duration-200 cursor-pointer"
                         title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                        aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
                     >
                         {theme === 'dark' ? (
-                            <Sun className="w-5 h-5" />
+                            <Sun className="w-5 h-5" aria-hidden="true" />
                         ) : (
-                            <Moon className="w-5 h-5" />
+                            <Moon className="w-5 h-5" aria-hidden="true" />
                         )}
                     </button>
 
@@ -196,8 +197,9 @@ const Sidebar = () => {
                         }}
                         className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-slate-600 dark:text-slate-400 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 hover:border-red-500/20 border border-transparent transition-all duration-200 cursor-pointer"
                         title="Logout"
+                        aria-label="Logout"
                     >
-                        <LogOut className="w-5 h-5" />
+                        <LogOut className="w-5 h-5" aria-hidden="true" />
                     </button>
                 </div>
             </div>

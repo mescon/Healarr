@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom';
 import { getCorruptions, retryCorruptions, ignoreCorruptions, deleteCorruptions, getScanPaths } from '../lib/api';
 import DataGrid from '../components/ui/DataGrid';
 import RemediationJourney from '../components/RemediationJourney';
+import ConfirmDialog from '../components/ui/ConfirmDialog';
 import clsx from 'clsx';
 import { AlertTriangle, ArrowUpDown, Filter, RefreshCw, EyeOff, Trash2, X, AlertCircle, FolderOpen, Film, Tv } from 'lucide-react';
 import { formatCorruptionType, formatCorruptionState, formatBytes, formatDuration, getDownloadClientIcon, getArrIcon } from '../lib/formatters';
@@ -26,6 +27,8 @@ const Corruptions = () => {
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
     const [statusFilter, setStatusFilter] = useState<string>(() => searchParams.get('status') || 'action_required');
     const pathIdFilter = searchParams.get('path_id') ? parseInt(searchParams.get('path_id')!, 10) : undefined;
+    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
     const { formatTime, formatDate } = useDateFormat();
     const toast = useToast();
     const queryClient = useQueryClient();
@@ -162,17 +165,18 @@ const Corruptions = () => {
     };
 
     const handleBulkDelete = async () => {
-        if (!confirm(`Are you sure you want to delete ${selectedIds.size} corruption record(s)? This cannot be undone.`)) {
-            return;
-        }
+        setIsDeleting(true);
         try {
             const ids = Array.from(selectedIds);
             const result = await deleteCorruptions(ids);
             toast.success(result.message);
             setSelectedIds(new Set());
+            setShowDeleteConfirm(false);
             queryClient.invalidateQueries({ queryKey: ['corruptions'] });
         } catch (error) {
             toast.error('Failed to delete corruptions');
+        } finally {
+            setIsDeleting(false);
         }
     };
 
@@ -498,7 +502,7 @@ const Corruptions = () => {
                         Ignore
                     </button>
                     <button
-                        onClick={handleBulkDelete}
+                        onClick={() => setShowDeleteConfirm(true)}
                         className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-600 dark:text-red-400 border border-red-500/30 transition-colors text-sm font-medium cursor-pointer"
                     >
                         <Trash2 className="w-4 h-4" />
@@ -509,8 +513,9 @@ const Corruptions = () => {
                         onClick={() => setSelectedIds(new Set())}
                         className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
                         title="Clear selection"
+                        aria-label="Clear selection"
                     >
-                        <X className="w-4 h-4" />
+                        <X className="w-4 h-4" aria-hidden="true" />
                     </button>
                 </div>
             )}
@@ -521,6 +526,18 @@ const Corruptions = () => {
                     onClose={() => setSelectedCorruptionId(null)}
                 />
             )}
+
+            <ConfirmDialog
+                isOpen={showDeleteConfirm}
+                title="Delete Corruption Records?"
+                message={`This will permanently delete ${selectedIds.size} record${selectedIds.size > 1 ? 's' : ''}. This action cannot be undone.`}
+                confirmLabel="Delete"
+                cancelLabel="Cancel"
+                variant="danger"
+                isLoading={isDeleting}
+                onConfirm={handleBulkDelete}
+                onCancel={() => setShowDeleteConfirm(false)}
+            />
         </div>
     );
 };

@@ -159,20 +159,27 @@ const Login = () => {
 
                     <form onSubmit={handleSubmit} className="space-y-4">
                         <div>
-                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                            <label htmlFor="password" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
                                 Password
                             </label>
                             <input
+                                id="password"
                                 type="password"
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
-                                className="w-full px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus focus:ring-green-500/50 focus:border-green-500"
-                                placeholder="Enter your password"
+                                className="w-full px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-green-500/50 focus:border-green-500"
+                                placeholder={isSetup ? "Create a secure password" : "Enter your password"}
                                 required
-                                minLength={1}
-                                autoComplete="current-password"
+                                minLength={isSetup ? 6 : 1}
+                                autoComplete={isSetup ? "new-password" : "current-password"}
                                 autoFocus
+                                aria-describedby={isSetup ? "password-hint" : undefined}
                             />
+                            {isSetup && (
+                                <p id="password-hint" className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                                    Password must be at least 6 characters
+                                </p>
+                            )}
                         </div>
 
                         <button
