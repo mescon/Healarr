@@ -410,7 +410,7 @@ const QuickScanDropdown = () => {
                                                     {path.local_path}
                                                 </p>
                                                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                                                    {path.detection_method || 'ffprobe'} • {path.detection_mode || 'quick'}
+                                                    {path.detection_method === 'zero_byte' ? 'stat' : path.detection_method === 'handbrake' ? 'HandBrakeCLI' : (path.detection_method || 'ffprobe')} • {(path.detection_mode || 'quick') === 'quick' ? 'Quick - Header check' : 'Thorough - Full file decode'}
                                                 </p>
                                             </div>
                                         </button>

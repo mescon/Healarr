@@ -92,7 +92,7 @@ const PathValidationStatus = ({ pathId }: { pathId: number }) => {
         return (
             <div
                 className="flex items-center gap-1 text-red-400 cursor-help"
-                title={data?.error || 'Path not accessible'}
+                title={data?.error || 'Path not accessible - check permissions and mount status'}
             >
                 <X className="w-4 h-4" />
                 <span className="text-xs">Error</span>
@@ -1084,12 +1084,13 @@ const Config = () => {
             {/* Quick Actions */}
             <QuickActionsSection toast={toast} />
 
-            {/* *arr Servers Section */}
+            {/* Media Managers Section */}
             <CollapsibleSection
                 id="arr-servers"
                 icon={Server}
                 iconColor="text-blue-400"
-                title="*arr Servers"
+                title="Media Managers"
+                subtitle="Connect your Sonarr, Radarr, or other *arr apps"
                 defaultExpanded={true}
                 delay={0.1}
             >
@@ -1247,7 +1248,7 @@ const Config = () => {
                                         <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">URL</th>
                                         <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Enabled</th>
                                         <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Status</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Webhook URL</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase cursor-help" title="Add this URL to Sonarr/Radarr's Connect settings to notify Healarr of new imports">Webhook URL</th>
                                         <th className="px-6 py-3"></th>
                                     </tr>
                                 </thead>
@@ -1505,10 +1506,10 @@ const Config = () => {
                                             </label>
                                             <div className="space-y-2">
                                                 {[
-                                                    { value: 'ffprobe', label: 'FFprobe', desc: 'Fast header/stream check', badge: 'recommended' },
-                                                    { value: 'mediainfo', label: 'MediaInfo', desc: 'Detailed metadata analysis', badge: null },
-                                                    { value: 'handbrake', label: 'HandBrake', desc: 'Deep stream validation', badge: 'slow' },
-                                                    { value: 'zero_byte', label: 'Zero Byte', desc: 'Quick file size check only', badge: null },
+                                                    { value: 'ffprobe', label: 'ffprobe', desc: 'Truncated files, missing streams', badge: 'recommended' },
+                                                    { value: 'mediainfo', label: 'mediainfo', desc: 'Metadata and track info problems', badge: null },
+                                                    { value: 'handbrake', label: 'HandBrakeCLI', desc: 'Files that won\'t transcode', badge: null },
+                                                    { value: 'zero_byte', label: 'stat', desc: 'Empty files only', badge: null },
                                                 ].map((method) => {
                                                     const available = isToolAvailable(method.value);
                                                     const isSelected = (newPath.detection_method || 'ffprobe') === method.value;
@@ -1601,7 +1602,7 @@ const Config = () => {
                                                         onChange={e => setNewPath({ ...newPath, detection_mode: e.target.value as 'quick' | 'thorough' })}
                                                         className="w-4 h-4 text-blue-500 bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 focus:ring-blue-500"
                                                     />
-                                                    <label htmlFor="mode-quick" className="text-sm text-slate-700 dark:text-slate-300 cursor-pointer">Quick</label>
+                                                    <label htmlFor="mode-quick" className="text-sm text-slate-700 dark:text-slate-300 cursor-pointer">Quick - Header check</label>
                                                 </div>
                                                 <div className="flex items-center gap-2">
                                                     <input
@@ -1613,13 +1614,13 @@ const Config = () => {
                                                         onChange={e => setNewPath({ ...newPath, detection_mode: e.target.value as 'quick' | 'thorough' })}
                                                         className="w-4 h-4 text-blue-500 bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 focus:ring-blue-500"
                                                     />
-                                                    <label htmlFor="mode-thorough" className="text-sm text-slate-700 dark:text-slate-300 cursor-pointer">Thorough</label>
+                                                    <label htmlFor="mode-thorough" className="text-sm text-slate-700 dark:text-slate-300 cursor-pointer">Thorough - Full file decode (slow)</label>
                                                 </div>
                                             </div>
                                             <p className="mt-2 text-xs text-slate-500">
-                                                <span className="font-semibold">Quick:</span> Checks headers and basic structure only. Fast, good for most cases.
+                                                <span className="font-semibold">Quick:</span> Checks file headers and stream info. Fast, catches most issues.
                                                 <br />
-                                                <span className="font-semibold">Thorough:</span> May perform additional deep validation depending on method. Slower but more accurate.
+                                                <span className="font-semibold">Thorough:</span> Decodes the entire file to find mid-file corruption. Much slower.
                                             </p>
                                         </div>
 

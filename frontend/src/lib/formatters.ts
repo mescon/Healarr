@@ -4,13 +4,13 @@
 export function formatCorruptionType(type: string): string {
     const typeMap: Record<string, string> = {
         'CorruptHeader': 'Corrupt Header',
-        'TruncatedFile': 'Truncated File',
+        'TruncatedFile': 'Incomplete File',
         'EmptyFile': 'Empty File',
-        'StreamError': 'Stream Error',
-        'CodecError': 'Codec Error',
+        'StreamError': 'Playback Error',
+        'CodecError': 'Format Error',
         'InvalidFormat': 'Invalid Format',
         'BitrateError': 'Bitrate Error',
-        'Unknown': 'Unknown Error',
+        'Unknown': 'Unknown Issue',
     };
 
     return typeMap[type] || type.replace(/([A-Z])/g, ' $1').trim();
@@ -36,7 +36,7 @@ export function formatCorruptionState(state: string): { label: string; colorClas
     
     // Max retries reached - permanent failure (red)
     if (state === 'MaxRetriesReached') {
-        return { label: 'Max Retries', colorClass: 'bg-red-500/10 text-red-400 border-red-500/20' };
+        return { label: 'Failed - Needs Review', colorClass: 'bg-red-500/10 text-red-400 border-red-500/20' };
     }
     
     // Temporary failures - will retry (orange)
@@ -60,18 +60,18 @@ export function formatCorruptionState(state: string): { label: string; colorClas
 
     // Stuck remediation - item hasn't progressed in 24+ hours (orange - needs attention)
     if (state === 'StuckRemediation') {
-        return { label: 'Stuck Remediation', colorClass: 'bg-orange-500/10 text-orange-400 border-orange-500/20' };
+        return { label: 'Taking Too Long', colorClass: 'bg-orange-500/10 text-orange-400 border-orange-500/20' };
     }
 
     // Manual intervention required (purple/magenta - needs user attention)
     if (state === 'ImportBlocked') {
-        return { label: '⚠️ Import Blocked', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
+        return { label: 'Import Failed', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
     }
     if (state === 'ManuallyRemoved') {
-        return { label: '⚠️ Manually Removed', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
+        return { label: 'Manually Removed', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
     }
     if (state === 'DownloadIgnored') {
-        return { label: '⚠️ Download Ignored', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
+        return { label: 'Ignored by User', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
     }
 
     // Pending - just detected (amber)
@@ -197,27 +197,27 @@ export function getEventDescription(eventType: string, data?: Record<string, unk
     }
     
     const descriptions: Record<string, string> = {
-        'CorruptionDetected': 'Corruption detected',
-        'RemediationQueued': 'Remediation queued',
+        'CorruptionDetected': 'Corruption Detected',
+        'RemediationQueued': 'Queued for automatic fix',
         'DeletionStarted': 'Deleting corrupt file',
         'DeletionCompleted': 'Corrupt file deleted',
         'DeletionFailed': 'File deletion failed',
-        'SearchStarted': 'Searching for replacement',
+        'SearchStarted': 'Looking for replacement',
         'SearchCompleted': 'Replacement found, downloading',
         'SearchFailed': 'Search for replacement failed',
-        'SearchExhausted': 'No replacement found - check indexers or retry manually',
-        'StuckRemediation': 'Item stuck for 24+ hours - check *arr queue or retry',
+        'SearchExhausted': 'No copies found - try manual search in *arr',
+        'StuckRemediation': 'Taking too long - check *arr queue or retry',
         'FileDetected': 'New file detected',
         'VerificationStarted': 'Verifying replacement file',
-        'VerificationSuccess': 'Verification passed - resolved',
-        'VerificationFailed': 'Replacement file also corrupt',
+        'VerificationSuccess': 'New file verified - fixed!',
+        'VerificationFailed': 'New file also has issues - trying again',
         'MaxRetriesReached': 'Maximum retries exhausted',
         'RetryScheduled': 'Retry scheduled',
         'DownloadTimeout': 'Download timed out',
         'CorruptionIgnored': 'Marked as ignored',
-        'ImportBlocked': '⚠️ Import blocked - check *arr Activity → Queue for errors',
-        'ManuallyRemoved': '⚠️ Removed from queue - re-add in *arr or retry here',
-        'DownloadIgnored': '⚠️ Download ignored - unblock in *arr Activity → Queue',
+        'ImportBlocked': 'Import failed - check *arr Activity → Queue for errors',
+        'ManuallyRemoved': 'Removed from queue - re-add in *arr or retry here',
+        'DownloadIgnored': 'Ignored by user - unblock in *arr Activity → Queue',
     };
     
     return descriptions[eventType] || eventType.replace(/([A-Z])/g, ' $1').trim();
