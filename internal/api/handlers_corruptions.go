@@ -20,7 +20,9 @@ import (
 const dbTimeout = 5 * time.Second
 
 // statusFilterClauses maps status filter values to SQL WHERE clauses.
+// Includes both granular technical filters (for API compatibility) and user-friendly combined filters.
 var statusFilterClauses = map[string]string{
+	// Granular technical filters (kept for API compatibility and detail views)
 	"active":              "current_state != 'VerificationSuccess' AND current_state != 'MaxRetriesReached' AND current_state != 'CorruptionIgnored'",
 	"pending":             "current_state = 'CorruptionDetected'",
 	"in_progress":         "(current_state LIKE '%Started' OR current_state LIKE '%Queued' OR current_state LIKE '%Progress' OR current_state = 'RemediationQueued')",
@@ -29,6 +31,10 @@ var statusFilterClauses = map[string]string{
 	"orphaned":            "current_state = 'MaxRetriesReached'",
 	"ignored":             "current_state = 'CorruptionIgnored'",
 	"manual_intervention": "(current_state = 'ImportBlocked' OR current_state = 'ManuallyRemoved')",
+
+	// User-friendly combined filters (for simplified UI)
+	"action_required": "(current_state = 'ImportBlocked' OR current_state = 'ManuallyRemoved' OR current_state = 'MaxRetriesReached')",
+	"working":         "(current_state = 'CorruptionDetected' OR current_state LIKE '%Started' OR current_state LIKE '%Queued' OR current_state LIKE '%Progress' OR current_state = 'RemediationQueued' OR (current_state LIKE '%Failed' AND current_state != 'MaxRetriesReached'))",
 }
 
 // extractJSONString extracts a string value from a map if it exists and is non-empty.

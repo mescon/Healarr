@@ -539,7 +539,7 @@ const Dashboard = () => {
                     <div className="flex flex-wrap gap-3">
                         {(stats?.manual_intervention_corruptions ?? 0) > 0 && (
                             <button
-                                onClick={() => navigate('/corruptions?status=manual_intervention')}
+                                onClick={() => navigate('/corruptions?status=action_required')}
                                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/50 dark:bg-slate-800/50 border border-red-500/20 hover:border-red-500/40 hover:bg-white/80 dark:hover:bg-slate-800/80 transition-colors cursor-pointer"
                             >
                                 <HandMetal className="w-4 h-4 text-orange-500" />
@@ -551,7 +551,7 @@ const Dashboard = () => {
                         )}
                         {(stats?.orphaned_corruptions ?? 0) > 0 && (
                             <button
-                                onClick={() => navigate('/corruptions?status=orphaned')}
+                                onClick={() => navigate('/corruptions?status=action_required')}
                                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/50 dark:bg-slate-800/50 border border-red-500/20 hover:border-red-500/40 hover:bg-white/80 dark:hover:bg-slate-800/80 transition-colors cursor-pointer"
                             >
                                 <AlertTriangle className="w-4 h-4 text-red-500" />
@@ -587,21 +587,21 @@ const Dashboard = () => {
                         value={stats?.pending_corruptions ?? 0}
                         icon={Clock}
                         colorClass="text-amber-400"
-                        onClick={() => navigate('/corruptions?status=pending')}
+                        onClick={() => navigate('/corruptions?status=working')}
                     />
                     <MiniStatCard
                         title="Remediating"
                         value={stats?.in_progress_corruptions ?? 0}
                         icon={Loader2}
                         colorClass="text-blue-400"
-                        onClick={() => navigate('/corruptions?status=in_progress')}
+                        onClick={() => navigate('/corruptions?status=working')}
                     />
                     <MiniStatCard
                         title="Manual Action"
                         value={stats?.manual_intervention_corruptions ?? 0}
                         icon={HandMetal}
                         colorClass="text-orange-400"
-                        onClick={() => navigate('/corruptions?status=manual_intervention')}
+                        onClick={() => navigate('/corruptions?status=action_required')}
                         urgent
                     />
                     <MiniStatCard
@@ -616,7 +616,7 @@ const Dashboard = () => {
                         value={stats?.orphaned_corruptions ?? 0}
                         icon={AlertTriangle}
                         colorClass="text-red-400"
-                        onClick={() => navigate('/corruptions?status=orphaned')}
+                        onClick={() => navigate('/corruptions?status=action_required')}
                         urgent
                     />
                     <MiniStatCard

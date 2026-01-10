@@ -24,7 +24,7 @@ const Corruptions = () => {
     });
     const [sortBy, setSortBy] = useState<string>('detected_at');
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-    const [statusFilter, setStatusFilter] = useState<string>(() => searchParams.get('status') || 'active');
+    const [statusFilter, setStatusFilter] = useState<string>(() => searchParams.get('status') || 'action_required');
     const pathIdFilter = searchParams.get('path_id') ? parseInt(searchParams.get('path_id')!, 10) : undefined;
     const { formatTime, formatDate } = useDateFormat();
     const toast = useToast();
@@ -193,15 +193,11 @@ const Corruptions = () => {
                         onChange={(e) => handleStatusFilterChange(e.target.value)}
                         className="bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-300 border-none focus:ring-0 cursor-pointer py-1 pr-8 rounded [&>option]:bg-white dark:[&>option]:bg-slate-900 [&>option]:text-slate-700 dark:[&>option]:text-slate-300"
                     >
-                        <option value="active">Active (All Open)</option>
-                        <option value="pending">Pending</option>
-                        <option value="in_progress">In Progress</option>
-                        <option value="manual_intervention">Manual Intervention</option>
-                        <option value="failed">Failed (Retrying)</option>
-                        <option value="orphaned">Max Retries</option>
-                        <option value="resolved">Successfully Remediated</option>
+                        <option value="action_required">Action Required</option>
+                        <option value="working">In Progress</option>
+                        <option value="resolved">Resolved</option>
                         <option value="ignored">Ignored</option>
-                        <option value="all">All Statuses</option>
+                        <option value="all">All</option>
                     </select>
                 </div>
             </div>
