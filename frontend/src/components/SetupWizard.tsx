@@ -1334,9 +1334,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
             >
                 {/* Logo/Header */}
                 <div className="text-center mb-6">
-                    <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl shadow-lg shadow-green-500/20 mb-4 p-2.5">
-                        <img src={`${import.meta.env.BASE_URL}healarr.svg`} alt="Healarr" className="w-full h-full" />
-                    </div>
+                    <img src={`${import.meta.env.BASE_URL}healarr.svg`} alt="Healarr" className="w-16 h-16 mb-4 mx-auto" />
                     <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-1">Healarr</h1>
                     <p className="text-slate-600 dark:text-slate-400 text-sm">Setup Wizard</p>
                 </div>

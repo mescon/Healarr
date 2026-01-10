@@ -277,9 +277,19 @@ type importNotification struct {
 }
 
 // importArrInstances imports arr instances and returns the count.
+// Skips duplicates based on URL to prevent creating multiple entries for the same instance.
 func (s *RESTServer) importArrInstances(instances []importArrInstance) int {
 	count := 0
 	for _, inst := range instances {
+		// Check if an instance with the same URL already exists
+		var existingID int
+		err := s.db.QueryRow("SELECT id FROM arr_instances WHERE url = ?", inst.URL).Scan(&existingID)
+		if err == nil {
+			// Instance already exists, skip
+			logger.Debugf("Skipping duplicate arr instance with URL %s (existing ID: %d)", inst.URL, existingID)
+			continue
+		}
+
 		encryptedKey, err := crypto.Encrypt(inst.APIKey)
 		if err != nil {
 			logger.Errorf("Failed to encrypt API key for import: %v", err)
@@ -296,33 +306,47 @@ func (s *RESTServer) importArrInstances(instances []importArrInstance) int {
 	return count
 }
 
+// normalizeScanPathDefaults fills in default values for optional scan path fields
+func normalizeScanPathDefaults(path *importScanPath) {
+	if path.DetectionMethod == "" {
+		path.DetectionMethod = "ffprobe"
+	}
+	if path.DetectionMode == "" {
+		path.DetectionMode = "quick"
+	}
+	if path.MaxRetries == 0 {
+		path.MaxRetries = config.Get().DefaultMaxRetries
+	}
+	if path.ArrPath == "" {
+		path.ArrPath = path.LocalPath
+	}
+}
+
 // importScanPaths imports scan paths and returns count and path ID mapping.
+// Skips duplicates based on local_path to prevent creating multiple entries for the same path.
 func (s *RESTServer) importScanPaths(paths []importScanPath) (int, map[string]int64) {
 	count := 0
 	pathIDs := make(map[string]int64)
-	for _, path := range paths {
-		method := path.DetectionMethod
-		if method == "" {
-			method = "ffprobe"
+	for i := range paths {
+		path := &paths[i]
+
+		// Check if a scan path with the same local_path already exists
+		var existingID int64
+		err := s.db.QueryRow("SELECT id FROM scan_paths WHERE local_path = ?", path.LocalPath).Scan(&existingID)
+		if err == nil {
+			// Path already exists, add to mapping but don't count as imported
+			logger.Debugf("Skipping duplicate scan path %s (existing ID: %d)", path.LocalPath, existingID)
+			pathIDs[path.LocalPath] = existingID
+			continue
 		}
-		mode := path.DetectionMode
-		if mode == "" {
-			mode = "quick"
-		}
-		retries := path.MaxRetries
-		if retries == 0 {
-			retries = config.Get().DefaultMaxRetries
-		}
-		arrPath := path.ArrPath
-		if arrPath == "" {
-			arrPath = path.LocalPath
-		}
+
+		normalizeScanPathDefaults(path)
 
 		result, err := s.db.Exec(`INSERT INTO scan_paths
 			(local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			path.LocalPath, arrPath, path.ArrInstanceID, path.Enabled, path.AutoRemediate, path.DryRun,
-			method, path.DetectionArgs, mode, retries, path.VerificationTimeoutHours)
+			path.LocalPath, path.ArrPath, path.ArrInstanceID, path.Enabled, path.AutoRemediate, path.DryRun,
+			path.DetectionMethod, path.DetectionArgs, path.DetectionMode, path.MaxRetries, path.VerificationTimeoutHours)
 		if err == nil {
 			count++
 			if newID, idErr := result.LastInsertId(); idErr == nil {
@@ -336,6 +360,7 @@ func (s *RESTServer) importScanPaths(paths []importScanPath) (int, map[string]in
 }
 
 // importSchedules imports schedules using the path ID mapping.
+// Skips duplicates based on scan_path_id + cron_expression to prevent duplicate schedules.
 func (s *RESTServer) importSchedules(schedules []importSchedule, pathIDs map[string]int64) int {
 	count := 0
 	for _, sched := range schedules {
@@ -348,7 +373,16 @@ func (s *RESTServer) importSchedules(schedules []importSchedule, pathIDs map[str
 			}
 		}
 
-		_, err := s.db.Exec("INSERT INTO scan_schedules (scan_path_id, cron_expression, enabled) VALUES (?, ?, ?)",
+		// Check if a schedule with the same path and cron expression already exists
+		var existingID int
+		err := s.db.QueryRow("SELECT id FROM scan_schedules WHERE scan_path_id = ? AND cron_expression = ?",
+			scanPathID, sched.CronExpression).Scan(&existingID)
+		if err == nil {
+			logger.Debugf("Skipping duplicate schedule for path ID %d with cron %s", scanPathID, sched.CronExpression)
+			continue
+		}
+
+		_, err = s.db.Exec("INSERT INTO scan_schedules (scan_path_id, cron_expression, enabled) VALUES (?, ?, ?)",
 			scanPathID, sched.CronExpression, sched.Enabled)
 		if err == nil {
 			count++
@@ -360,12 +394,27 @@ func (s *RESTServer) importSchedules(schedules []importSchedule, pathIDs map[str
 }
 
 // importNotifications imports notification configs.
+// Skips duplicates based on name to prevent creating multiple entries for the same notification.
 func (s *RESTServer) importNotifications(notifications []importNotification) int {
 	if s.notifier == nil {
 		return 0
 	}
 	count := 0
 	for _, notif := range notifications {
+		// Check if a notification with the same name already exists
+		existing, _ := s.notifier.GetAllConfigs()
+		isDuplicate := false
+		for _, e := range existing {
+			if e.Name == notif.Name {
+				logger.Debugf("Skipping duplicate notification %s", notif.Name)
+				isDuplicate = true
+				break
+			}
+		}
+		if isDuplicate {
+			continue
+		}
+
 		configBytes, err := jsonMarshal(notif.Config)
 		if err != nil {
 			logger.Errorf("Failed to marshal notification config for %s: %v", notif.Name, err)

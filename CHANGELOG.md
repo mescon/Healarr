@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.28] - 2026-01-10
+
+### Fixed
+- **Config Import in Wizard**: Fixed redirect to /login when importing JSON config
+  - Uses authenticated endpoint when user has a token
+  - Public endpoint still works during initial setup
+- **Duplicate Prevention**: Importing config no longer creates duplicate entries
+  - Skips arr instances with matching URL
+  - Skips scan paths with matching local_path
+  - Skips schedules with matching path + cron expression
+  - Skips notifications with matching name
+- **Logo Display**: Removed green gradient background from logo containers
+  - SVG logo now displays without decorative background
+  - Cleaner appearance in sidebar, login, and wizard
+- **README.md Logo**: Increased logo size to 96px with vertically centered text
+- **Setup Wizard Reset**: Fixed wizard not appearing after using "Reset Setup Wizard"
+  - Wizard now correctly shows after reset, skipping password step if already set
+  - Allows users to reconfigure arr instances, paths, and notifications
+
 ## [1.1.27] - 2026-01-10
 
 ### Added
@@ -387,3 +406,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dark and light themes
 - Password-protected with API key authentication
 - Docker images for amd64 and arm64
+

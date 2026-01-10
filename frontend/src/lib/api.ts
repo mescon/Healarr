@@ -751,13 +751,17 @@ export const dismissSetup = async (): Promise<{ message: string }> => {
     return data;
 };
 
-// Import config during setup (public endpoint, no auth required)
+// Import config during setup
+// Uses authenticated endpoint if user has a token, otherwise uses public endpoint
 export const importConfigPublic = async (config: Partial<ConfigExport>): Promise<ConfigImportResult> => {
-    const { data } = await api.post<ConfigImportResult>('/setup/import', config);
+    const hasToken = !!localStorage.getItem('healarr_token');
+    const endpoint = hasToken ? '/config/import' : '/setup/import';
+    const { data } = await api.post<ConfigImportResult>(endpoint, config);
     return data;
 };
 
-// Restore database during setup (public endpoint, no auth required)
+// Restore database during setup
+// Uses authenticated endpoint if user has a token, otherwise uses public endpoint
 export interface RestoreResult {
     message: string;
     restart_required: boolean;
@@ -768,7 +772,9 @@ export interface RestoreResult {
 export const restoreDatabasePublic = async (file: File): Promise<RestoreResult> => {
     const formData = new FormData();
     formData.append('file', file);
-    const { data } = await api.post<RestoreResult>('/setup/restore', formData, {
+    const hasToken = !!localStorage.getItem('healarr_token');
+    const endpoint = hasToken ? '/config/restore' : '/setup/restore';
+    const { data } = await api.post<RestoreResult>(endpoint, formData, {
         headers: {
             'Content-Type': 'multipart/form-data',
             'X-Confirm-Restore': 'true',

@@ -1082,3 +1082,279 @@ func TestImportConfig_ScheduleWithExistingPath(t *testing.T) {
 	imported := response["imported"].(map[string]interface{})
 	assert.Equal(t, float64(1), imported["schedules"], "should find existing path and import schedule")
 }
+
+// TestImportConfigSkipsDuplicateArrInstances verifies that importing arr instances
+// skips duplicates based on URL to prevent creating multiple entries for the same instance.
+func TestImportConfigSkipsDuplicateArrInstances(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Insert an existing arr instance
+	encryptedKey, _ := crypto.Encrypt("existingkey123")
+	_, err := db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
+		"Existing Sonarr", "sonarr", "http://sonarr:8989", encryptedKey, true)
+	require.NoError(t, err)
+
+	pm := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, pm, false)
+	defer serverCleanup()
+
+	// Try to import an instance with the same URL
+	body := bytes.NewBufferString(`{
+		"arr_instances": [
+			{
+				"name": "Duplicate Sonarr",
+				"type": "sonarr",
+				"url": "http://sonarr:8989",
+				"api_key": "newkey456",
+				"enabled": true
+			},
+			{
+				"name": "New Radarr",
+				"type": "radarr",
+				"url": "http://radarr:7878",
+				"api_key": "radarrkey",
+				"enabled": true
+			}
+		]
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	imported := response["imported"].(map[string]interface{})
+	// Only the new Radarr should be imported, Sonarr is skipped as duplicate
+	assert.Equal(t, float64(1), imported["arr_instances"], "should only import non-duplicate instances")
+
+	// Verify only 2 instances in database (original + new radarr)
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM arr_instances").Scan(&count)
+	assert.Equal(t, 2, count, "should have 2 total instances")
+}
+
+// TestImportConfigSkipsDuplicateScanPaths verifies that importing scan paths
+// skips duplicates based on local_path to prevent creating multiple entries.
+func TestImportConfigSkipsDuplicateScanPaths(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Insert an existing scan path
+	_, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path, enabled) VALUES (?, ?, ?)",
+		"/media/tv", "/tv", true)
+	require.NoError(t, err)
+
+	pm := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, pm, false)
+	defer serverCleanup()
+
+	// Try to import paths including a duplicate
+	body := bytes.NewBufferString(`{
+		"scan_paths": [
+			{
+				"local_path": "/media/tv",
+				"arr_path": "/tv",
+				"enabled": true
+			},
+			{
+				"local_path": "/media/movies",
+				"arr_path": "/movies",
+				"enabled": true
+			}
+		]
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	imported := response["imported"].(map[string]interface{})
+	// Only /media/movies should be imported, /media/tv is skipped as duplicate
+	assert.Equal(t, float64(1), imported["scan_paths"], "should only import non-duplicate paths")
+
+	// Verify only 2 paths in database
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM scan_paths").Scan(&count)
+	assert.Equal(t, 2, count, "should have 2 total scan paths")
+}
+
+// TestImportConfigSkipsDuplicateSchedules verifies that importing schedules
+// skips duplicates based on scan_path_id + cron_expression combination.
+func TestImportConfigSkipsDuplicateSchedules(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Insert an existing scan path and schedule
+	result, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path, enabled) VALUES (?, ?, ?)",
+		"/media/tv", "/tv", true)
+	require.NoError(t, err)
+	pathID, _ := result.LastInsertId()
+
+	_, err = db.Exec("INSERT INTO scan_schedules (scan_path_id, cron_expression, enabled) VALUES (?, ?, ?)",
+		pathID, "0 2 * * *", true)
+	require.NoError(t, err)
+
+	pm := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, pm, false)
+	defer serverCleanup()
+
+	// Try to import schedules including a duplicate
+	body := bytes.NewBufferString(`{
+		"schedules": [
+			{
+				"local_path": "/media/tv",
+				"cron_expression": "0 2 * * *",
+				"enabled": true
+			},
+			{
+				"local_path": "/media/tv",
+				"cron_expression": "0 4 * * *",
+				"enabled": true
+			}
+		]
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	imported := response["imported"].(map[string]interface{})
+	// Only the 4am schedule should be imported, 2am is skipped as duplicate
+	assert.Equal(t, float64(1), imported["schedules"], "should only import non-duplicate schedules")
+
+	// Verify only 2 schedules in database
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM scan_schedules").Scan(&count)
+	assert.Equal(t, 2, count, "should have 2 total schedules")
+}
+
+// TestImportConfigSkipsDuplicateNotifications verifies that importing notifications
+// skips duplicates based on name.
+func TestImportConfigSkipsDuplicateNotifications(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Insert an existing notification
+	_, err := db.Exec(`INSERT INTO notifications (name, provider_type, config, events, enabled, throttle_seconds)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		"Discord Alerts", "discord", `{"webhook_url":"http://example.com"}`, `["CorruptionDetected"]`, true, 0)
+	require.NoError(t, err)
+
+	pm := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, pm, true)
+	defer serverCleanup()
+
+	// Try to import notifications including a duplicate
+	body := bytes.NewBufferString(`{
+		"notifications": [
+			{
+				"name": "Discord Alerts",
+				"provider_type": "discord",
+				"config": {"webhook_url": "http://new-webhook.com"},
+				"events": ["ScanComplete"],
+				"enabled": true,
+				"throttle_seconds": 0
+			},
+			{
+				"name": "Slack Alerts",
+				"provider_type": "slack",
+				"config": {"webhook_url": "http://slack.example.com"},
+				"events": ["CorruptionDetected"],
+				"enabled": true,
+				"throttle_seconds": 0
+			}
+		]
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	imported := response["imported"].(map[string]interface{})
+	// Only Slack Alerts should be imported, Discord Alerts is skipped as duplicate
+	assert.Equal(t, float64(1), imported["notifications"], "should only import non-duplicate notifications")
+
+	// Verify only 2 notifications in database
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM notifications").Scan(&count)
+	assert.Equal(t, 2, count, "should have 2 total notifications")
+}
+
+// TestNormalizeScanPathDefaults verifies the default value normalization for scan paths.
+func TestNormalizeScanPathDefaults(t *testing.T) {
+	// Save and restore config
+	cfg := config.Get()
+	originalRetries := cfg.DefaultMaxRetries
+
+	tests := []struct {
+		name     string
+		input    importScanPath
+		expected importScanPath
+	}{
+		{
+			name: "fills all defaults",
+			input: importScanPath{
+				LocalPath: "/media/test",
+			},
+			expected: importScanPath{
+				LocalPath:       "/media/test",
+				ArrPath:         "/media/test",
+				DetectionMethod: "ffprobe",
+				DetectionMode:   "quick",
+				MaxRetries:      originalRetries,
+			},
+		},
+		{
+			name: "preserves existing values",
+			input: importScanPath{
+				LocalPath:       "/media/test",
+				ArrPath:         "/custom/path",
+				DetectionMethod: "mediainfo",
+				DetectionMode:   "thorough",
+				MaxRetries:      5,
+			},
+			expected: importScanPath{
+				LocalPath:       "/media/test",
+				ArrPath:         "/custom/path",
+				DetectionMethod: "mediainfo",
+				DetectionMode:   "thorough",
+				MaxRetries:      5,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := tt.input
+			normalizeScanPathDefaults(&path)
+			assert.Equal(t, tt.expected.ArrPath, path.ArrPath)
+			assert.Equal(t, tt.expected.DetectionMethod, path.DetectionMethod)
+			assert.Equal(t, tt.expected.DetectionMode, path.DetectionMode)
+			assert.Equal(t, tt.expected.MaxRetries, path.MaxRetries)
+		})
+	}
+}

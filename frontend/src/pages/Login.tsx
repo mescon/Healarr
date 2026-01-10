@@ -30,8 +30,9 @@ const Login = () => {
                 setSetupStatus(setupStat);
 
                 // Determine if we should show the wizard
-                // Show wizard if: needs_setup is true AND onboarding hasn't been dismissed
-                if (setupStat && setupStat.needs_setup && !setupStat.onboarding_dismissed) {
+                // Show wizard if: onboarding hasn't been dismissed (fresh install or reset)
+                // The wizard will skip password step if password already exists
+                if (setupStat && !setupStat.onboarding_dismissed) {
                     // Clear any stale auth data from previous sessions
                     // This prevents WebSocket errors with invalid tokens
                     localStorage.removeItem('healarr_token');
@@ -130,9 +131,7 @@ const Login = () => {
             >
                 {/* Logo/Header */}
                 <div className="text-center mb-8">
-                    <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl shadow-lg shadow-green-500/20 mb-4 p-2">
-                        <img src={`${import.meta.env.BASE_URL}healarr.svg`} alt="Healarr" className="w-full h-full" />
-                    </div>
+                    <img src={`${import.meta.env.BASE_URL}healarr.svg`} alt="Healarr" className="w-16 h-16 mb-4 mx-auto" />
                     <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-2">Healarr</h1>
                     <p className="text-slate-600 dark:text-slate-400">Health Evaluation And Library Auto-Recovery for *aRR</p>
                 </div>

@@ -128,9 +128,7 @@ const Sidebar = () => {
     return (
         <aside className="w-64 bg-white/80 dark:bg-slate-900/50 backdrop-blur-xl border-r border-slate-200 dark:border-slate-800 h-screen flex flex-col fixed left-0 top-0 z-50">
             <div className="p-6 flex items-center gap-3 border-b border-slate-200 dark:border-slate-800/50">
-                <div className="w-10 h-10 bg-gradient-to-br from-green-500 to-emerald-600 rounded-xl flex items-center justify-center shadow-lg shadow-green-500/20 p-1.5">
-                    <img src={`${import.meta.env.BASE_URL}healarr.svg`} alt="Healarr" className="w-full h-full" />
-                </div>
+                <img src={`${import.meta.env.BASE_URL}healarr.svg`} alt="Healarr" className="w-10 h-10" />
                 <div>
                     <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-600 dark:from-white dark:to-slate-400">
                         Healarr
