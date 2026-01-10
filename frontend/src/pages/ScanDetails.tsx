@@ -481,11 +481,14 @@ const ScanDetails = () => {
                         <DataGrid
                             isLoading={isLoadingFiles}
                             data={filesData?.data || []}
+                            mobileCardTitle={(row: ScanFile) => row.file_path.split('/').pop() || row.file_path}
                             columns={[
                                 {
                                     header: 'Status',
                                     accessorKey: (row: ScanFile) => getFileStatusBadge(row),
-                                    className: 'w-28'
+                                    className: 'w-28',
+                                    mobileLabel: 'Status',
+                                    isPrimary: true,
                                 },
                                 {
                                     header: 'File Path',
@@ -534,14 +537,16 @@ const ScanDetails = () => {
                                                 </div>
                                             )}
                                         </div>
-                                    )
+                                    ),
+                                    mobileLabel: 'Path',
                                 },
                                 {
                                     header: 'Size',
                                     accessorKey: (row: ScanFile) => (
                                         <span className="text-slate-600 dark:text-slate-400">{formatBytes(row.file_size)}</span>
                                     ),
-                                    className: 'w-24'
+                                    className: 'w-24',
+                                    mobileLabel: 'Size',
                                 },
                                 {
                                     header: 'Scanned At',
@@ -550,7 +555,8 @@ const ScanDetails = () => {
                                             {formatTime(row.scanned_at)}
                                         </span>
                                     ),
-                                    className: 'w-28'
+                                    className: 'w-28',
+                                    mobileLabel: 'Scanned',
                                 }
                             ]}
                             pagination={filesData?.pagination ? {

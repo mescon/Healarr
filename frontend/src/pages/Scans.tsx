@@ -85,6 +85,7 @@ const Scans = () => {
                 isLoading={isLoading}
                 data={data?.data || []}
                 onRowClick={(row) => navigate(`/scans/${row.id}`)}
+                mobileCardTitle={(row) => row.path}
                 columns={[
                     {
                         header: (
@@ -98,7 +99,8 @@ const Scans = () => {
                                 <span className="text-xs text-slate-500">{formatDate(row.started_at)}</span>
                             </div>
                         ),
-                        className: 'w-32'
+                        className: 'w-32',
+                        mobileLabel: 'Started',
                     },
                     {
                         header: (
@@ -106,7 +108,8 @@ const Scans = () => {
                                 Path <ArrowUpDown className="w-3 h-3" />
                             </button>
                         ),
-                        accessorKey: 'path'
+                        accessorKey: 'path',
+                        hideOnMobile: true,  // Shown via mobileCardTitle instead
                     },
                     {
                         header: (
@@ -123,7 +126,9 @@ const Scans = () => {
                             )}>
                                 {row.status}
                             </span>
-                        )
+                        ),
+                        mobileLabel: 'Status',
+                        isPrimary: true,
                     },
                     {
                         header: (
@@ -132,7 +137,8 @@ const Scans = () => {
                             </button>
                         ),
                         accessorKey: 'files_scanned',
-                        className: 'text-center'
+                        className: 'text-center',
+                        mobileLabel: 'Files',
                     },
                     {
                         header: (
@@ -141,7 +147,8 @@ const Scans = () => {
                             </button>
                         ),
                         accessorKey: 'corruptions_found',
-                        className: 'text-center'
+                        className: 'text-center',
+                        mobileLabel: 'Corruptions',
                     },
                     {
                         header: 'Actions',
@@ -176,7 +183,8 @@ const Scans = () => {
                                 )}
                             </div>
                         ),
-                        className: 'w-20'
+                        className: 'w-20',
+                        hideOnMobile: true,
                     },
                 ]}
                 pagination={{
