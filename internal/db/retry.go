@@ -47,21 +47,22 @@ func ExecWithRetry(db *sql.DB, query string, args ...interface{}) (sql.Result, e
 }
 
 // QueryWithRetry executes a query with retry logic for SQLITE_BUSY errors.
+// Note: Unlike ExecWithRetry, this function does not use a context timeout because
+// the returned *sql.Rows continues to use the context for iteration (Next/Scan).
+// Canceling the context would cause "context canceled" errors during row iteration.
 func QueryWithRetry(db *sql.DB, query string, args ...interface{}) (*sql.Rows, error) {
 	var rows *sql.Rows
 	var err error
 
 	for attempt := 0; attempt < MaxRetries; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), retryQueryTimeout)
-		rows, err = db.QueryContext(ctx, query, args...)
-		cancel()
+		rows, err = db.Query(query, args...)
 		if err == nil {
 			return rows, nil
 		}
 
-		// Check if error is SQLITE_BUSY or context deadline
+		// Check if error is SQLITE_BUSY (database is locked)
 		errStr := err.Error()
-		if !strings.Contains(errStr, "SQLITE_BUSY") && !strings.Contains(errStr, "database is locked") && !strings.Contains(errStr, "context deadline exceeded") {
+		if !strings.Contains(errStr, "SQLITE_BUSY") && !strings.Contains(errStr, "database is locked") {
 			return nil, err
 		}
 
