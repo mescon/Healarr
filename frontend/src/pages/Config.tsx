@@ -1,375 +1,24 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, Server, FolderOpen, Plus, Trash2, ChevronDown, Pencil, Save, Play, Copy, RefreshCw, Shield, Lock, Activity, Clock, Monitor, Globe, Bell, Send, Check, X, History, Wrench, Download, Upload, PlayCircle, Database, Pause, Square, RotateCcw, Folder, Info, Wand2 } from 'lucide-react';
-import FileBrowser from '../components/ui/FileBrowser';
+import { Settings, ChevronDown, Pencil, Save, Copy, RefreshCw, Shield, Lock, Monitor, Globe, Database, Pause, Square, RotateCcw, Info, Wand2, Download, Upload, Play, PlayCircle, Wrench } from 'lucide-react';
 import { useDateFormat, type DateFormatPreset } from '../lib/useDateFormat';
-import { formatCronExpression } from '../lib/formatters';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-    getArrInstances, createArrInstance, updateArrInstance, deleteArrInstance,
-    getScanPaths, createScanPath, updateScanPath, deleteScanPath, triggerScan,
-    getAPIKey, regenerateAPIKey, changePassword, testArrConnection,
-    getSchedules, addSchedule, updateSchedule, deleteSchedule,
+    getAPIKey, regenerateAPIKey, changePassword,
     getRuntimeConfig, updateSettings, restartServer, resetSetupWizard,
-    getNotifications, createNotification, updateNotification, deleteNotification,
-    testNotification, getNotificationEvents, getNotificationLog,
     triggerScanAll, exportConfig, importConfig, downloadDatabaseBackup,
-    pauseAllScans, resumeAllScans, cancelAllScans, getDetectionPreview,
-    validateScanPath,
-    getSystemInfo,
-    type ArrInstance, type ScanPath, type NotificationConfig, type NotificationLogEntry, type ConfigExport
+    pauseAllScans, resumeAllScans, cancelAllScans,
+    type ConfigExport
 } from '../lib/api';
 import clsx from 'clsx';
 import { useToast } from '../contexts/ToastContext';
 import ConfigWarningBanner from '../components/ConfigWarningBanner';
 import AboutSection from '../components/AboutSection';
-import { PROVIDER_CONFIGS } from '../lib/notificationProviders';
-import { ProviderIcon, ProviderSelect, ProviderFields, EventSelector } from '../components/notifications';
+import { ArrServersSection, ScanPathsSection, SchedulesSection } from '../components/config';
 
-const ServerStatus = ({ url, apiKey, isManuallyTesting }: { url: string; apiKey: string; isManuallyTesting?: boolean }) => {
-    const { data, isLoading, isError, isFetching } = useQuery({
-        queryKey: ['serverStatus', url, apiKey],
-        queryFn: () => testArrConnection(url, apiKey),
-        retry: false,
-        refetchInterval: 600000, // Check every 10 minutes (was 1 minute)
-        refetchOnWindowFocus: true, // Refresh when user returns to page
-        staleTime: 60000, // Show cached result for 1 minute before showing "Checking..."
-    });
-
-    if (isLoading || isFetching || isManuallyTesting) {
-        return (
-            <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
-                <span className="text-sm text-slate-600 dark:text-slate-400">Checking...</span>
-            </div>
-        );
-    }
-
-    if (isError || !data?.success) {
-        return (
-            <div className="flex items-center gap-2" title={data?.error || 'Connection failed'}>
-                <div className="w-2 h-2 rounded-full bg-red-500" />
-                <span className="text-sm text-red-400">Offline</span>
-            </div>
-        );
-    }
-
-    return (
-        <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-green-500" />
-            <span className="text-sm text-green-400">Online</span>
-        </div>
-    );
-};
-
-// Path Validation Status Component
-const PathValidationStatus = ({ pathId }: { pathId: number }) => {
-    const { data, isLoading, refetch, isFetched } = useQuery({
-        queryKey: ['pathValidation', pathId],
-        queryFn: () => validateScanPath(pathId),
-        enabled: false, // Only fetch when clicked
-        staleTime: 30000, // Cache for 30 seconds
-    });
-
-    if (!isFetched) {
-        return (
-            <button
-                onClick={() => refetch()}
-                className="text-slate-400 hover:text-blue-400 transition-colors"
-                title="Check path accessibility"
-            >
-                <Info className="w-4 h-4" />
-            </button>
-        );
-    }
-
-    if (isLoading) {
-        return <div className="w-4 h-4 border-2 border-slate-400/30 border-t-slate-400 rounded-full animate-spin" />;
-    }
-
-    if (!data?.accessible) {
-        return (
-            <div
-                className="flex items-center gap-1 text-red-400 cursor-help"
-                title={data?.error || 'Path not accessible - check permissions and mount status'}
-            >
-                <X className="w-4 h-4" />
-                <span className="text-xs">Error</span>
-            </div>
-        );
-    }
-
-    return (
-        <div
-            className="flex items-center gap-1 text-green-400 cursor-help"
-            title={`${data.file_count.toLocaleString()} media files found${data.sample_files?.length ? '\n\nSamples:\n' + data.sample_files.join('\n') : ''}`}
-        >
-            <Check className="w-4 h-4" />
-            <span className="text-xs">{data.file_count.toLocaleString()}</span>
-        </div>
-    );
-};
-
-// Collapsible Section Component
-interface CollapsibleSectionProps {
-    id: string;
-    icon: React.ElementType;
-    iconColor: string;
-    title: string;
-    subtitle?: string;
-    defaultExpanded?: boolean;
-    children: React.ReactNode;
-    delay?: number;
-}
-
-const CollapsibleSection = ({ id, icon: Icon, iconColor, title, subtitle, defaultExpanded = true, children, delay = 0.1 }: CollapsibleSectionProps) => {
-    const storageKey = `config-section-${id}`;
-
-    // Initialize from localStorage or use default
-    const [isExpanded, setIsExpanded] = useState(() => {
-        const stored = localStorage.getItem(storageKey);
-        if (stored !== null) {
-            return stored === 'true';
-        }
-        return defaultExpanded;
-    });
-
-    // Persist state changes to localStorage
-    const toggleExpanded = () => {
-        const newValue = !isExpanded;
-        setIsExpanded(newValue);
-        localStorage.setItem(storageKey, String(newValue));
-    };
-
-    return (
-        <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay }}
-            className="space-y-4"
-        >
-            <button
-                onClick={toggleExpanded}
-                className="w-full flex items-center justify-between group cursor-pointer"
-            >
-                <div className="flex items-center gap-3">
-                    <Icon className={clsx("w-6 h-6", iconColor)} />
-                    <div className="text-left">
-                        <h2 className="text-2xl font-semibold text-slate-900 dark:text-white">{title}</h2>
-                        {subtitle && <p className="text-sm text-slate-600 dark:text-slate-400">{subtitle}</p>}
-                    </div>
-                </div>
-                <ChevronDown className={clsx(
-                    "w-5 h-5 text-slate-600 dark:text-slate-400 transition-transform duration-200",
-                    isExpanded && "rotate-180"
-                )} />
-            </button>
-
-            <AnimatePresence initial={false}>
-                {isExpanded && (
-                    <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: "auto", opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.2, ease: "easeInOut" }}
-                        className="overflow-hidden"
-                    >
-                        {children}
-                    </motion.div>
-                )}
-            </AnimatePresence>
-        </motion.div>
-    );
-};
-
-// Visual Cron Time Builder Component
-interface CronTimeBuilderProps {
-    value: string;
-    onChange: (cronExpression: string) => void;
-}
-
-const CronTimeBuilder = ({ value, onChange }: CronTimeBuilderProps) => {
-    const [useVisual, setUseVisual] = useState(true);
-    const [hour, setHour] = useState(3);
-    const [minute, setMinute] = useState(0);
-    const [selectedDays, setSelectedDays] = useState<number[]>([]);
-
-    const weekdays = [
-        { value: 0, label: 'Sun' },
-        { value: 1, label: 'Mon' },
-        { value: 2, label: 'Tue' },
-        { value: 3, label: 'Wed' },
-        { value: 4, label: 'Thu' },
-        { value: 5, label: 'Fri' },
-        { value: 6, label: 'Sat' },
-    ];
-
-    // Parse existing cron value when switching to visual mode
-    useEffect(() => {
-        if (value && useVisual) {
-            const parts = value.split(' ');
-            if (parts.length >= 5) {
-                const [min, hr, , , dow] = parts;
-                // Only parse simple numeric values
-                if (/^\d+$/.test(min)) setMinute(parseInt(min, 10));
-                if (/^\d+$/.test(hr)) setHour(parseInt(hr, 10));
-                if (dow !== '*') {
-                    const days = dow.split(',').map(d => parseInt(d, 10)).filter(d => !isNaN(d));
-                    setSelectedDays(days);
-                } else {
-                    setSelectedDays([]);
-                }
-            }
-        }
-    }, [value, useVisual]);
-
-    // Build cron expression from visual selections
-    useEffect(() => {
-        if (useVisual) {
-            const dowPart = selectedDays.length === 0 || selectedDays.length === 7
-                ? '*'
-                : selectedDays.sort((a, b) => a - b).join(',');
-            const expression = `${minute} ${hour} * * ${dowPart}`;
-            if (expression !== value) {
-                onChange(expression);
-            }
-        }
-    }, [hour, minute, selectedDays, useVisual, onChange, value]);
-
-    const toggleDay = (day: number) => {
-        setSelectedDays(prev =>
-            prev.includes(day)
-                ? prev.filter(d => d !== day)
-                : [...prev, day]
-        );
-    };
-
-    // Generate human-readable schedule description
-    const getScheduleDescription = () => {
-        const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-        if (selectedDays.length === 0 || selectedDays.length === 7) {
-            return `Every day at ${timeStr}`;
-        }
-        const dayNames = selectedDays
-            .sort((a, b) => a - b)
-            .map(d => weekdays.find(w => w.value === d)?.label)
-            .join(', ');
-        return `Every ${dayNames} at ${timeStr}`;
-    };
-
-    return (
-        <div className="space-y-4">
-            <div className="flex items-center gap-2 mb-2">
-                <button
-                    type="button"
-                    onClick={() => setUseVisual(true)}
-                    className={clsx(
-                        "px-3 py-1.5 text-xs font-medium rounded-lg transition-colors",
-                        useVisual
-                            ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
-                            : "text-slate-500 hover:text-slate-400"
-                    )}
-                >
-                    Visual
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setUseVisual(false)}
-                    className={clsx(
-                        "px-3 py-1.5 text-xs font-medium rounded-lg transition-colors",
-                        !useVisual
-                            ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
-                            : "text-slate-500 hover:text-slate-400"
-                    )}
-                >
-                    Advanced
-                </button>
-            </div>
-
-            {useVisual ? (
-                <div className="space-y-4">
-                    {/* Time Selection */}
-                    <div className="flex items-center gap-4">
-                        <div className="flex-1">
-                            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Hour</label>
-                            <select
-                                value={hour}
-                                onChange={e => setHour(parseInt(e.target.value, 10))}
-                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500 text-sm"
-                            >
-                                {Array.from({ length: 24 }, (_, i) => (
-                                    <option key={i} value={i}>{i.toString().padStart(2, '0')}:00</option>
-                                ))}
-                            </select>
-                        </div>
-                        <div className="flex-1">
-                            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Minute</label>
-                            <select
-                                value={minute}
-                                onChange={e => setMinute(parseInt(e.target.value, 10))}
-                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500 text-sm"
-                            >
-                                {[0, 15, 30, 45].map(m => (
-                                    <option key={m} value={m}>:{m.toString().padStart(2, '0')}</option>
-                                ))}
-                            </select>
-                        </div>
-                    </div>
-
-                    {/* Day Selection */}
-                    <div>
-                        <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-2">
-                            Days (leave empty for every day)
-                        </label>
-                        <div className="flex flex-wrap gap-2">
-                            {weekdays.map(day => (
-                                <button
-                                    key={day.value}
-                                    type="button"
-                                    onClick={() => toggleDay(day.value)}
-                                    className={clsx(
-                                        "px-3 py-1.5 text-xs font-medium rounded-lg transition-colors border",
-                                        selectedDays.includes(day.value)
-                                            ? "bg-purple-500/20 text-purple-400 border-purple-500/30"
-                                            : "text-slate-500 hover:text-slate-400 border-slate-600 hover:border-slate-500"
-                                    )}
-                                >
-                                    {day.label}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* Schedule Preview */}
-                    <div className="p-3 rounded-lg bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50">
-                        <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Schedule Preview</p>
-                        <p className="text-sm font-medium text-slate-900 dark:text-white">{getScheduleDescription()}</p>
-                        <p className="text-xs text-slate-500 font-mono mt-1">Cron: {value}</p>
-                    </div>
-                </div>
-            ) : (
-                <div>
-                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Cron Expression</label>
-                    <input
-                        type="text"
-                        value={value}
-                        onChange={e => onChange(e.target.value)}
-                        placeholder="0 3 * * *"
-                        className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-purple-500"
-                        required
-                    />
-                    <p className="mt-1 text-xs text-slate-500">
-                        Format: Minute Hour Day Month Weekday
-                    </p>
-                    <p className="mt-2 text-xs text-slate-600 dark:text-slate-400">
-                        Need help? Use <a href="https://crontab.guru" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">crontab.guru</a> to generate an expression.
-                    </p>
-                </div>
-            )}
-        </div>
-    );
-};
+// Notifications Section - imported directly as it has its own complex structure
+import NotificationsSection from './config/NotificationsSection';
 
 // Quick Actions Section Component
 interface QuickActionsSectionProps {
@@ -536,12 +185,10 @@ const DataManagementSection = ({ toast, queryClient }: DataManagementSectionProp
             const text = await file.text();
             const config: ConfigExport = JSON.parse(text);
 
-            // Validate it looks like a Healarr config
             if (!config.version || (!config.arr_instances && !config.scan_paths)) {
                 throw new Error('Invalid configuration file');
             }
 
-            // Ask for confirmation
             const arrCount = config.arr_instances?.length || 0;
             const pathCount = config.scan_paths?.length || 0;
             if (!confirm(`Import ${arrCount} *arr instance(s) and ${pathCount} scan path(s)?\n\nNote: This will ADD to your existing configuration, not replace it.`)) {
@@ -551,7 +198,6 @@ const DataManagementSection = ({ toast, queryClient }: DataManagementSectionProp
             const result = await importConfig(config);
             toast.success(`Imported ${result.imported.arr_instances} instance(s) and ${result.imported.scan_paths} path(s)`);
 
-            // Refresh data
             queryClient.invalidateQueries({ queryKey: ['arrInstances'] });
             queryClient.invalidateQueries({ queryKey: ['scanPaths'] });
         } catch (error: unknown) {
@@ -559,7 +205,6 @@ const DataManagementSection = ({ toast, queryClient }: DataManagementSectionProp
             toast.error(`Failed to import config: ${err.response?.data?.error || err.message || 'Invalid file'}`);
         }
 
-        // Reset input
         e.target.value = '';
     };
 
@@ -613,7 +258,7 @@ const DataManagementSection = ({ toast, queryClient }: DataManagementSectionProp
     );
 };
 
-// Setup Wizard Reset Section Component (for Advanced accordion)
+// Setup Wizard Reset Section Component
 interface SetupWizardResetSectionProps {
     toast: ReturnType<typeof useToast>;
 }
@@ -626,7 +271,6 @@ const SetupWizardResetSection = ({ toast }: SetupWizardResetSectionProps) => {
         try {
             await resetSetupWizard();
             toast.success('Setup wizard will appear on next page load');
-            // Reload the page to show the wizard
             setTimeout(() => {
                 window.location.reload();
             }, 500);
@@ -671,6 +315,436 @@ const SetupWizardResetSection = ({ toast }: SetupWizardResetSectionProps) => {
     );
 };
 
+// Security Section Component
+interface SecuritySectionProps {
+    apiKeyData: { api_key: string } | undefined;
+    refetchApiKey: () => Promise<unknown>;
+}
+
+const SecuritySection = ({ apiKeyData, refetchApiKey }: SecuritySectionProps) => {
+    const queryClient = useQueryClient();
+    const [copied, setCopied] = useState(false);
+    const [currentPassword, setCurrentPassword] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [passwordMessage, setPasswordMessage] = useState({ text: '', type: '' });
+
+    const regenerateMutation = useMutation({
+        mutationFn: regenerateAPIKey,
+        onSuccess: async (data) => {
+            queryClient.setQueryData(['apiKey'], { api_key: data.api_key });
+            await refetchApiKey();
+        },
+    });
+
+    const passwordMutation = useMutation({
+        mutationFn: async () => {
+            return await changePassword(currentPassword, newPassword);
+        },
+        onSuccess: () => {
+            setPasswordMessage({ text: 'Password changed successfully', type: 'success' });
+            setCurrentPassword('');
+            setNewPassword('');
+            setConfirmPassword('');
+            setTimeout(() => setPasswordMessage({ text: '', type: '' }), 3000);
+        },
+        onError: (error: unknown) => {
+            const err = error as { response?: { data?: { error?: string } }; message?: string };
+            setPasswordMessage({ text: err.response?.data?.error || 'Failed to change password', type: 'error' });
+        }
+    });
+
+    const handleCopy = async () => {
+        if (apiKeyData?.api_key) {
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(apiKeyData.api_key);
+                } else {
+                    const textArea = document.createElement('textarea');
+                    textArea.value = apiKeyData.api_key;
+                    textArea.style.position = 'fixed';
+                    textArea.style.left = '-999999px';
+                    textArea.style.top = '-999999px';
+                    document.body.appendChild(textArea);
+                    textArea.focus();
+                    textArea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                }
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+            } catch (err) {
+                console.error('Failed to copy:', err);
+            }
+        }
+    };
+
+    const handleRegenerate = () => {
+        if (confirm('Are you sure? This will invalidate your current API key. You will need to update all webhook URLs in Sonarr/Radarr!')) {
+            regenerateMutation.mutate();
+        }
+    };
+
+    const handlePasswordChange = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (newPassword.length < 8) {
+            setPasswordMessage({ text: 'New password must be at least 8 characters', type: 'error' });
+            return;
+        }
+        if (newPassword !== confirmPassword) {
+            setPasswordMessage({ text: 'Passwords do not match', type: 'error' });
+            return;
+        }
+        passwordMutation.mutate();
+    };
+
+    return (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* API Key Section */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 h-full">
+                <div className="space-y-4">
+                    <div>
+                        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Webhook API Key</h3>
+                        <p className="text-xs text-slate-500 mb-4">
+                            Use this API key in your Sonarr/Radarr webhook URLs. Add <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded text-purple-600 dark:text-purple-300">?apikey=YOUR_KEY</code> to the webhook URL.
+                        </p>
+                    </div>
+
+                    <div className="flex gap-2">
+                        <div className="flex-1 relative">
+                            <input
+                                type="text"
+                                value={apiKeyData?.api_key || 'Loading...'}
+                                readOnly
+                                onClick={(e) => (e.target as HTMLInputElement).select()}
+                                onFocus={(e) => e.target.select()}
+                                className="w-full px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-700 dark:text-slate-300 font-mono text-sm cursor-pointer select-all"
+                            />
+                        </div>
+                        <button
+                            onClick={handleCopy}
+                            className="px-4 py-3 bg-blue-500 hover:bg-blue-600 text-slate-900 dark:text-white rounded-xl font-medium transition-colors flex items-center gap-2 cursor-pointer"
+                        >
+                            <Copy className="w-4 h-4" />
+                            {copied ? 'Copied!' : 'Copy'}
+                        </button>
+                        <button
+                            onClick={handleRegenerate}
+                            disabled={regenerateMutation.isPending}
+                            className="px-4 py-3 bg-orange-500 hover:bg-orange-600 disabled:bg-orange-500/50 disabled:cursor-not-allowed text-slate-900 dark:text-white rounded-xl font-medium transition-colors flex items-center gap-2 cursor-pointer"
+                        >
+                            <RefreshCw className={clsx("w-4 h-4", regenerateMutation.isPending && "animate-spin")} />
+                            Regenerate
+                        </button>
+                    </div>
+
+                    <div className="bg-amber-100 dark:bg-yellow-500/10 border border-amber-300 dark:border-yellow-500/20 rounded-lg p-3">
+                        <p className="text-xs text-amber-800 dark:text-yellow-300">
+                            <strong>Webhook URL Format:</strong><br />
+                            <code className="text-xs">{window.location.origin}/api/webhook/{'{'}instance_id{'}'}</code> + <code>?apikey={apiKeyData?.api_key || 'YOUR_KEY'}</code>
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/* Password Change Section */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 h-full">
+                <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2 flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-slate-600 dark:text-slate-400" />
+                    Change Password
+                </h3>
+                <p className="text-xs text-slate-500 mb-4">
+                    Update the password used to access the Healarr dashboard.
+                </p>
+
+                <form onSubmit={handlePasswordChange} className="space-y-3">
+                    <div>
+                        <input
+                            type="password"
+                            autoComplete="current-password"
+                            value={currentPassword}
+                            onChange={(e) => setCurrentPassword(e.target.value)}
+                            placeholder="Current Password"
+                            className="w-full px-4 py-2 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 text-sm"
+                            required
+                        />
+                    </div>
+                    <div>
+                        <input
+                            type="password"
+                            autoComplete="new-password"
+                            value={newPassword}
+                            onChange={(e) => setNewPassword(e.target.value)}
+                            placeholder="New Password (min 8 chars)"
+                            className="w-full px-4 py-2 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 text-sm"
+                            required
+                            minLength={8}
+                        />
+                    </div>
+                    <div>
+                        <input
+                            type="password"
+                            autoComplete="new-password"
+                            value={confirmPassword}
+                            onChange={(e) => setConfirmPassword(e.target.value)}
+                            placeholder="Confirm New Password"
+                            className="w-full px-4 py-2 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 text-sm"
+                            required
+                        />
+                    </div>
+
+                    {passwordMessage.text && (
+                        <div className={clsx(
+                            "p-2 rounded-lg text-xs",
+                            passwordMessage.type === 'success' ? "bg-green-500/10 text-green-600 dark:text-green-300 border border-green-500/20" : "bg-red-500/10 text-red-600 dark:text-red-300 border border-red-500/20"
+                        )}>
+                            {passwordMessage.text}
+                        </div>
+                    )}
+
+                    <button
+                        type="submit"
+                        disabled={passwordMutation.isPending}
+                        className="w-full px-4 py-2 bg-purple-500 hover:bg-purple-600 disabled:bg-purple-500/50 disabled:cursor-not-allowed text-slate-900 dark:text-white rounded-xl font-medium transition-colors text-sm cursor-pointer"
+                    >
+                        {passwordMutation.isPending ? 'Updating...' : 'Update Password'}
+                    </button>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+// Server Settings Section Component
+interface ServerSettingsSectionProps {
+    runtimeConfig: { base_path: string; base_path_source: string } | undefined;
+    queryClient: ReturnType<typeof useQueryClient>;
+    toast: ReturnType<typeof useToast>;
+}
+
+const ServerSettingsSection = ({ runtimeConfig, queryClient, toast }: ServerSettingsSectionProps) => {
+    const [isEditing, setIsEditing] = useState(false);
+    const [basePath, setBasePath] = useState(runtimeConfig?.base_path || '/');
+    const [showRestartConfirm, setShowRestartConfirm] = useState(false);
+    const [pendingRestart, setPendingRestart] = useState(false);
+
+    useEffect(() => {
+        if (runtimeConfig?.base_path) {
+            setBasePath(runtimeConfig.base_path);
+        }
+    }, [runtimeConfig?.base_path]);
+
+    const updateSettingsMutation = useMutation({
+        mutationFn: updateSettings,
+        onSuccess: (data) => {
+            queryClient.invalidateQueries({ queryKey: ['runtimeConfig'] });
+            toast.success('Base path saved! A restart is required for changes to take effect.');
+            setIsEditing(false);
+            if (data.restart_required) {
+                setPendingRestart(true);
+            }
+        },
+        onError: (error: unknown) => {
+            const err = error as { response?: { data?: { error?: string } }; message?: string };
+            toast.error(`Failed to save settings: ${err.response?.data?.error || err.message}`);
+        }
+    });
+
+    const restartMutation = useMutation({
+        mutationFn: restartServer,
+        onSuccess: () => {
+            toast.success('Restart initiated! Healarr will be back shortly...');
+            setShowRestartConfirm(false);
+            setTimeout(() => {
+                window.location.reload();
+            }, 3000);
+        },
+        onError: () => {
+            toast.success('Restart initiated! Healarr will be back shortly...');
+            setShowRestartConfirm(false);
+            setTimeout(() => {
+                window.location.reload();
+            }, 3000);
+        }
+    });
+
+    const handleSave = () => {
+        updateSettingsMutation.mutate({ base_path: basePath });
+    };
+
+    const handleCancel = () => {
+        setBasePath(runtimeConfig?.base_path || '/');
+        setIsEditing(false);
+    };
+
+    const handleRestart = () => {
+        restartMutation.mutate();
+    };
+
+    const isEnvOverride = runtimeConfig?.base_path_source === 'environment';
+
+    return (
+        <div className="bg-slate-100 dark:bg-slate-800/30 border border-slate-300 dark:border-slate-700/50 rounded-2xl p-6">
+            <div className="space-y-4">
+                <div className="p-4 bg-slate-100 dark:bg-slate-800/50 rounded-xl border border-slate-300 dark:border-slate-700">
+                    <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1">
+                            <div className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Base Path</div>
+                            <div className="text-xs text-slate-500 mb-3">
+                                URL prefix for reverse proxy setups (e.g., /healarr for domain.com/healarr)
+                            </div>
+
+                            {isEditing ? (
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        type="text"
+                                        value={basePath}
+                                        onChange={(e) => setBasePath(e.target.value)}
+                                        placeholder="/"
+                                        className="flex-1 px-3 py-2 bg-white dark:bg-slate-900 border border-slate-600 rounded-lg text-slate-900 dark:text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500"
+                                    />
+                                    <button
+                                        onClick={handleSave}
+                                        disabled={updateSettingsMutation.isPending}
+                                        className="px-3 py-2 bg-green-500 hover:bg-green-600 disabled:bg-green-500/50 text-slate-900 dark:text-white rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center gap-1"
+                                    >
+                                        <Save className="w-4 h-4" />
+                                        {updateSettingsMutation.isPending ? 'Saving...' : 'Save'}
+                                    </button>
+                                    <button
+                                        onClick={handleCancel}
+                                        className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-700 dark:text-slate-300 rounded-lg text-sm font-medium transition-colors cursor-pointer"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="flex items-center gap-3">
+                                    <code className="px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-sm font-mono text-orange-400">
+                                        {runtimeConfig?.base_path || '/'}
+                                    </code>
+                                    <span className={clsx(
+                                        "text-xs px-2 py-1 rounded-full border",
+                                        isEnvOverride
+                                            ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                                            : runtimeConfig?.base_path_source === 'database'
+                                                ? "bg-purple-500/10 text-purple-400 border-purple-500/20"
+                                                : "bg-slate-700/50 text-slate-600 dark:text-slate-400 border-slate-600/50"
+                                    )}>
+                                        {isEnvOverride ? 'from env' : runtimeConfig?.base_path_source === 'database' ? 'custom' : 'default'}
+                                    </span>
+                                    {!isEnvOverride && (
+                                        <button
+                                            onClick={() => setIsEditing(true)}
+                                            className="text-slate-600 dark:text-slate-400 hover:text-orange-400 transition-colors cursor-pointer"
+                                            title="Edit base path"
+                                        >
+                                            <Pencil className="w-4 h-4" />
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                {isEnvOverride && (
+                    <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-3">
+                        <p className="text-xs text-blue-300/80">
+                            <strong>Environment Override:</strong> Base path is set via HEALARR_BASE_PATH environment variable.
+                            To edit it here, remove the environment variable and restart.
+                        </p>
+                    </div>
+                )}
+
+                {pendingRestart && (
+                    <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-4">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <div className="text-sm font-medium text-orange-300">Restart Required</div>
+                                <p className="text-xs text-orange-300/70 mt-1">
+                                    Settings have been saved. Restart Healarr for changes to take effect.
+                                </p>
+                            </div>
+                            <button
+                                onClick={() => setShowRestartConfirm(true)}
+                                className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-slate-900 dark:text-white rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center gap-2"
+                            >
+                                <RefreshCw className="w-4 h-4" />
+                                Restart Now
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Restart Confirmation Modal */}
+                <AnimatePresence>
+                    {showRestartConfirm && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+                            onClick={() => setShowRestartConfirm(false)}
+                        >
+                            <motion.div
+                                initial={{ scale: 0.95, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                exit={{ scale: 0.95, opacity: 0 }}
+                                className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-2xl p-6 max-w-md w-full shadow-2xl"
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                <div className="text-center mb-6">
+                                    <div className="w-16 h-16 mx-auto bg-orange-500/10 border border-orange-500/30 rounded-full flex items-center justify-center mb-4">
+                                        <RefreshCw className="w-8 h-8 text-orange-400" />
+                                    </div>
+                                    <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Restart Healarr?</h3>
+                                    <p className="text-sm text-slate-600 dark:text-slate-400">
+                                        The server will restart to apply the new base path.
+                                        This page will automatically reload once Healarr is back online.
+                                    </p>
+                                </div>
+
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => setShowRestartConfirm(false)}
+                                        className="flex-1 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-900 dark:text-white rounded-lg font-medium transition-colors cursor-pointer"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        onClick={handleRestart}
+                                        disabled={restartMutation.isPending}
+                                        className="flex-1 px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:bg-orange-500/50 text-slate-900 dark:text-white rounded-lg font-medium transition-colors cursor-pointer flex items-center justify-center gap-2"
+                                    >
+                                        {restartMutation.isPending ? (
+                                            <>
+                                                <RefreshCw className="w-4 h-4 animate-spin" />
+                                                Restarting...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <RefreshCw className="w-4 h-4" />
+                                                Restart
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            </motion.div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
+                <div className="text-xs text-slate-500">
+                    <strong>Tip:</strong> You can also set the base path via the <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded text-slate-600 dark:text-slate-400">HEALARR_BASE_PATH</code> environment variable.
+                    Environment variables take precedence over database settings.
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// Main Config Component
 const Config = () => {
     const queryClient = useQueryClient();
     const toast = useToast();
@@ -679,9 +753,6 @@ const Config = () => {
     const aboutSectionRef = useRef<HTMLDivElement>(null);
 
     // Collapsible state
-    const [isAddArrExpanded, setIsAddArrExpanded] = useState(false);
-    const [isAddPathExpanded, setIsAddPathExpanded] = useState(false);
-    const [isAddScheduleExpanded, setIsAddScheduleExpanded] = useState(false);
     const [isAdvancedExpanded, setIsAdvancedExpanded] = useState(false);
     const [isAboutExpanded, setIsAboutExpanded] = useState(false);
 
@@ -689,46 +760,11 @@ const Config = () => {
     useEffect(() => {
         if (location.hash === '#about') {
             setIsAboutExpanded(true);
-            // Small delay to ensure the section is rendered before scrolling
             setTimeout(() => {
                 aboutSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }, 100);
         }
     }, [location.hash]);
-
-    // --- Queries ---
-    const { data: runtimeConfig } = useQuery({
-        queryKey: ['runtimeConfig'],
-        queryFn: getRuntimeConfig,
-        staleTime: Infinity, // Runtime config doesn't change without restart
-    });
-
-    const { data: apiKeyData, refetch: refetchApiKey } = useQuery({
-        queryKey: ['apiKey'],
-        queryFn: getAPIKey,
-    });
-
-    const { data: arrInstances, isLoading: isLoadingArr } = useQuery({
-        queryKey: ['arrInstances'],
-        queryFn: getArrInstances,
-    });
-
-    const { data: scanPaths, isLoading: isLoadingPaths } = useQuery({
-        queryKey: ['scanPaths'],
-        queryFn: getScanPaths,
-    });
-
-    const { data: schedules, isLoading: isLoadingSchedules } = useQuery({
-        queryKey: ['schedules'],
-        queryFn: getSchedules,
-    });
-
-    // System info for tool availability
-    const { data: systemInfo } = useQuery({
-        queryKey: ['systemInfo'],
-        queryFn: getSystemInfo,
-        staleTime: 60000, // 1 minute
-    });
 
     // Helper to scroll to About section (Detection Tools)
     const scrollToDetectionTools = () => {
@@ -738,336 +774,17 @@ const Config = () => {
         }, 100);
     };
 
-    // Check if a detection tool is available
-    const isToolAvailable = (method: string): boolean => {
-        if (method === 'zero_byte') return true; // Always available (no external tool needed)
-        return systemInfo?.tools?.[method]?.available ?? true; // Default to true if no info
-    };
-
-    // --- Mutations ---
-    const createArrMutation = useMutation({
-        mutationFn: createArrInstance,
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['arrInstances'] });
-            toast.success('Server added successfully');
-            // Debounce status refresh to avoid rapid-fire requests
-            setTimeout(() => {
-                queryClient.invalidateQueries({ queryKey: ['serverStatus'] });
-            }, 500);
-        },
-        onError: (error: Error) => {
-            toast.error(`Failed to add server: ${error.message}`);
-        },
+    // Queries
+    const { data: runtimeConfig } = useQuery({
+        queryKey: ['runtimeConfig'],
+        queryFn: getRuntimeConfig,
+        staleTime: Infinity,
     });
 
-    const updateArrMutation = useMutation({
-        mutationFn: ({ id, data }: { id: number; data: Omit<ArrInstance, 'id'> }) =>
-            updateArrInstance(id, data),
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['arrInstances'] });
-            toast.success('Server updated successfully');
-            // Debounce status refresh to avoid rapid-fire requests
-            setTimeout(() => {
-                queryClient.invalidateQueries({ queryKey: ['serverStatus'] });
-            }, 500);
-        },
-        onError: (error: Error) => {
-            toast.error(`Failed to update server: ${error.message}`);
-        },
+    const { data: apiKeyData, refetch: refetchApiKey } = useQuery({
+        queryKey: ['apiKey'],
+        queryFn: getAPIKey,
     });
-
-    const deleteArrMutation = useMutation({
-        mutationFn: deleteArrInstance,
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['arrInstances'] }),
-    });
-
-    const createPathMutation = useMutation({
-        mutationFn: createScanPath,
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['scanPaths'] }),
-    });
-
-    const updatePathMutation = useMutation({
-        mutationFn: ({ id, data }: { id: number; data: Omit<ScanPath, 'id'> }) =>
-            updateScanPath(id, data),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['scanPaths'] }),
-    });
-
-    const deletePathMutation = useMutation({
-        mutationFn: deleteScanPath,
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['scanPaths'] });
-        },
-    });
-
-    const scanPathMutation = useMutation({
-        mutationFn: triggerScan,
-        onSuccess: () => {
-            // Optionally show a toast notification here
-        },
-        onError: (error: unknown) => {
-            const err = error as { response?: { status: number; data?: { error?: string } }; message?: string };
-            if (err.response?.status === 409) {
-                toast.warning('A scan is already in progress for this path. Please wait for it to complete or cancel it first.');
-            } else {
-                toast.error(`Failed to start scan: ${err.response?.data?.error || err.message}`);
-            }
-        },
-    });
-
-    const addScheduleMutation = useMutation({
-        mutationFn: addSchedule,
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['schedules'] }),
-    });
-
-    const updateScheduleMutation = useMutation({
-        mutationFn: ({ id, schedule }: { id: number; schedule: { cron_expression?: string; enabled?: boolean } }) =>
-            updateSchedule(id, schedule),
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['schedules'] });
-        },
-        onError: (error: unknown) => {
-            const err = error as { response?: { data?: { error?: string } }; message?: string };
-            toast.error(`Failed to update schedule: ${err.response?.data?.error || err.message}`);
-        }
-    });
-
-    const deleteScheduleMutation = useMutation({
-        mutationFn: deleteSchedule,
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['schedules'] });
-        },
-        onError: (error: unknown) => {
-            const err = error as { response?: { data?: { error?: string } }; message?: string };
-            toast.error(`Failed to delete schedule: ${err.response?.data?.error || err.message}`);
-        }
-    });
-    // --- Forms State ---
-    const [editingArrId, setEditingArrId] = useState<number | null>(null);
-    const [editingPathId, setEditingPathId] = useState<number | null>(null);
-    const [newArr, setNewArr] = useState<Partial<ArrInstance>>({ type: 'sonarr', enabled: true });
-    const [newPath, setNewPath] = useState<Partial<ScanPath>>({
-        enabled: true,
-        auto_remediate: true,
-        detection_method: 'ffprobe',
-        detection_mode: 'quick',
-        max_retries: 3,
-        verification_timeout_hours: null
-    });
-    const [showFileBrowser, setShowFileBrowser] = useState(false);
-    const [fileBrowserTarget, setFileBrowserTarget] = useState<'new' | number>('new');
-
-    // Detection preview - fetched when method, mode, or args change
-    const { data: detectionPreview, isLoading: isLoadingPreview } = useQuery({
-        queryKey: ['detectionPreview', newPath.detection_method || 'ffprobe', newPath.detection_mode || 'quick', newPath.detection_args || ''],
-        queryFn: () => getDetectionPreview(
-            newPath.detection_method || 'ffprobe',
-            newPath.detection_mode || 'quick',
-            newPath.detection_args || undefined
-        ),
-        staleTime: 60000, // Cache for 1 minute
-    });
-
-    const [newSchedule, setNewSchedule] = useState<{ scan_path_id: number; cron_expression: string }>({
-        scan_path_id: 0,
-        cron_expression: '0 3 * * *' // Default to 3 AM daily
-    });
-    const [schedulePreset, setSchedulePreset] = useState('daily');
-
-    const handlePresetChange = (preset: string) => {
-        setSchedulePreset(preset);
-        switch (preset) {
-            case 'hourly':
-                setNewSchedule(prev => ({ ...prev, cron_expression: '0 * * * *' }));
-                break;
-            case 'every_6h':
-                setNewSchedule(prev => ({ ...prev, cron_expression: '0 */6 * * *' }));
-                break;
-            case 'every_12h':
-                setNewSchedule(prev => ({ ...prev, cron_expression: '0 */12 * * *' }));
-                break;
-            case 'daily':
-                setNewSchedule(prev => ({ ...prev, cron_expression: '0 3 * * *' }));
-                break;
-            case 'weekly':
-                setNewSchedule(prev => ({ ...prev, cron_expression: '0 3 * * 0' }));
-                break;
-            case 'custom':
-                // Keep current or clear it
-                break;
-        }
-    };
-    const [testStatus, setTestStatus] = useState<{ success?: boolean; message?: string }>({});
-    const [isTesting, setIsTesting] = useState(false);
-    const [manualTestingServer, setManualTestingServer] = useState<string | null>(null);
-
-    const handleTestConnection = async () => {
-        if (!newArr.url || !newArr.api_key) {
-            setTestStatus({ success: false, message: 'URL and API Key required' });
-            return;
-        }
-        setIsTesting(true);
-        try {
-            const result = await testArrConnection(newArr.url, newArr.api_key);
-            setTestStatus({
-                success: result.success,
-                message: result.success ? 'Connection successful' : result.error
-            });
-        } catch {
-            setTestStatus({ success: false, message: 'Connection failed' });
-        } finally {
-            setIsTesting(false);
-        }
-    };
-
-    const handleManualTest = async (arr: ArrInstance) => {
-        // Set manual testing state for immediate UI feedback
-        const testKey = `${arr.url}-${arr.api_key}`;
-        setManualTestingServer(testKey);
-
-        try {
-            // Add a minimum delay so users can see the "Checking..." state
-            await Promise.all([
-                queryClient.refetchQueries({ queryKey: ['serverStatus', arr.url, arr.api_key], exact: true }),
-                new Promise(resolve => setTimeout(resolve, 1000)) // Minimum 1 second
-            ]);
-        } finally {
-            // Small delay before clearing to ensure the final state is visible
-            setTimeout(() => setManualTestingServer(null), 100);
-        }
-    };
-
-    const handleCreateArr = (e: React.FormEvent) => {
-        e.preventDefault();
-
-        // Validate required fields with user feedback
-        const missingFields: string[] = [];
-        if (!newArr.name?.trim()) missingFields.push('Name');
-        if (!newArr.url?.trim()) missingFields.push('URL');
-        if (!newArr.api_key?.trim()) missingFields.push('API Key');
-        if (!newArr.type) missingFields.push('Type');
-
-        if (missingFields.length > 0) {
-            toast.error(`Please fill in required fields: ${missingFields.join(', ')}`);
-            return;
-        }
-
-        if (editingArrId) {
-            updateArrMutation.mutate({ id: editingArrId, data: newArr as Omit<ArrInstance, 'id'> });
-            setEditingArrId(null);
-        } else {
-            createArrMutation.mutate(newArr as Omit<ArrInstance, 'id'>);
-        }
-        setNewArr({ type: 'sonarr', enabled: true, name: '', url: '', api_key: '' });
-        setTestStatus({});
-        setIsAddArrExpanded(false);
-    };
-
-    const handleCreatePath = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (newPath.local_path && newPath.arr_instance_id) {
-            // Convert comma-separated args to array
-            const formData = { ...newPath };
-            if (formData.detection_args && typeof formData.detection_args === 'string') {
-                formData.detection_args = (formData.detection_args as string)
-                    .split(',')
-                    .map(arg => arg.trim())
-                    .filter(arg => arg.length > 0) as unknown as string;
-            }
-
-            if (editingPathId) {
-                updatePathMutation.mutate({ id: editingPathId, data: formData as Omit<ScanPath, 'id'> });
-                setEditingPathId(null);
-            } else {
-                createPathMutation.mutate(formData as Omit<ScanPath, 'id'>);
-            }
-            setNewPath({
-                enabled: true,
-                auto_remediate: true,
-                local_path: '',
-                arr_path: '',
-                arr_instance_id: null,
-                detection_method: 'ffprobe',
-                detection_mode: 'quick'
-            });
-            setIsAddPathExpanded(false);
-        }
-    };
-
-    const handleCreateSchedule = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (newSchedule.scan_path_id && newSchedule.cron_expression) {
-            addScheduleMutation.mutate(newSchedule);
-            setNewSchedule({ scan_path_id: 0, cron_expression: '0 3 * * *' });
-            setIsAddScheduleExpanded(false);
-        }
-    };
-
-    const handleToggleSchedule = (schedule: { id: number; enabled: boolean }) => {
-        updateScheduleMutation.mutate({
-            id: schedule.id,
-            schedule: { enabled: !schedule.enabled }
-        });
-    };
-
-    const handleEditArr = (arr: ArrInstance) => {
-        setNewArr({
-            name: arr.name,
-            type: arr.type,
-            url: arr.url,
-            api_key: arr.api_key,
-            enabled: arr.enabled
-        });
-        setEditingArrId(arr.id);
-        setIsAddArrExpanded(true);
-    };
-
-    const handleEditPath = (path: ScanPath) => {
-        // Convert JSON array string to comma-separated string for editing
-        let detectionArgsStr = '';
-        if (path.detection_args) {
-            try {
-                const argsArray = JSON.parse(path.detection_args);
-                if (Array.isArray(argsArray)) {
-                    detectionArgsStr = argsArray.join(', ');
-                }
-            } catch {
-                detectionArgsStr = path.detection_args;
-            }
-        }
-
-        setNewPath({
-            local_path: path.local_path,
-            arr_path: path.arr_path,
-            arr_instance_id: path.arr_instance_id,
-            enabled: path.enabled,
-            auto_remediate: path.auto_remediate,
-            detection_method: path.detection_method || 'ffprobe',
-            detection_mode: path.detection_mode || 'quick',
-            detection_args: detectionArgsStr,
-            max_retries: path.max_retries ?? 3,
-            verification_timeout_hours: path.verification_timeout_hours ?? null
-        });
-        setEditingPathId(path.id);
-        setIsAddPathExpanded(true);
-    };
-
-    const handleCancelEdit = () => {
-        setEditingArrId(null);
-        setEditingPathId(null);
-        setNewArr({ type: 'sonarr', enabled: true, name: '', url: '', api_key: '' });
-        setTestStatus({});
-        setNewPath({
-            enabled: true,
-            auto_remediate: true,
-            local_path: '',
-            arr_path: '',
-            arr_instance_id: null,
-            detection_method: 'ffprobe',
-            detection_mode: 'quick',
-            max_retries: 3,
-            verification_timeout_hours: null
-        });
-    };
 
     return (
         <div className="space-y-8">
@@ -1085,886 +802,16 @@ const Config = () => {
             <QuickActionsSection toast={toast} />
 
             {/* Media Managers Section */}
-            <CollapsibleSection
-                id="arr-servers"
-                icon={Server}
-                iconColor="text-blue-400"
-                title="Media Managers"
-                subtitle="Connect your Sonarr, Radarr, or other *arr apps"
-                defaultExpanded={true}
-                delay={0.1}
-            >
-                {/* Add *arr Server Form */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
-                    <button
-                        onClick={() => {
-                            if (!isAddArrExpanded && editingArrId) {
-                                handleCancelEdit();
-                            }
-                            setIsAddArrExpanded(!isAddArrExpanded);
-                        }}
-                        className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
-                    >
-                        <div className="flex items-center gap-3">
-                            {editingArrId ? (
-                                <>
-                                    <Pencil className="w-5 h-5 text-yellow-400" />
-                                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Edit Server</h3>
-                                </>
-                            ) : (
-                                <>
-                                    <Plus className="w-5 h-5 text-blue-400" />
-                                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Add Server</h3>
-                                </>
-                            )}
-                        </div>
-                        <ChevronDown className={clsx(
-                            "w-5 h-5 text-slate-600 dark:text-slate-400 transition-transform duration-200",
-                            isAddArrExpanded && "rotate-180"
-                        )} />
-                    </button>
-
-                    <AnimatePresence>
-                        {isAddArrExpanded && (
-                            <motion.div
-                                initial={{ height: 0, opacity: 0 }}
-                                animate={{ height: "auto", opacity: 1 }}
-                                exit={{ height: 0, opacity: 0 }}
-                                transition={{ duration: 0.2, ease: "easeInOut" }}
-                            >
-                                <form onSubmit={handleCreateArr} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-800/50 pt-4">
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Type</label>
-                                            <select
-                                                value={newArr.type || 'sonarr'}
-                                                onChange={e => setNewArr({ ...newArr, type: e.target.value as 'sonarr' | 'radarr' | 'whisparr-v2' | 'whisparr-v3' })}
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-                                            >
-                                                <option value="sonarr">Sonarr</option>
-                                                <option value="radarr">Radarr</option>
-                                                <option value="whisparr-v2">Whisparr v2 (Sonarr-based)</option>
-                                                <option value="whisparr-v3">Whisparr v3 (Radarr-based)</option>
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Name <span className="text-red-400">*</span></label>
-                                            <input
-                                                type="text"
-                                                required
-                                                value={newArr.name || ''}
-                                                onChange={e => setNewArr({ ...newArr, name: e.target.value })}
-                                                placeholder="My Sonarr"
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">URL <span className="text-red-400">*</span></label>
-                                            <input
-                                                type="url"
-                                                required
-                                                value={newArr.url || ''}
-                                                onChange={e => setNewArr({ ...newArr, url: e.target.value })}
-                                                placeholder="http://localhost:8989"
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">API Key <span className="text-red-400">*</span></label>
-                                            <input
-                                                type="text"
-                                                required
-                                                value={newArr.api_key || ''}
-                                                onChange={e => setNewArr({ ...newArr, api_key: e.target.value })}
-                                                placeholder="API key"
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500"
-                                            />
-                                            <p className="mt-1 text-xs text-slate-500">Find in *arr Settings → General. Required for webhooks even if local auth is disabled.</p>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-3 pb-2">
-                                        <input
-                                            type="checkbox"
-                                            id="arr-enabled"
-                                            checked={newArr.enabled || false}
-                                            onChange={e => setNewArr({ ...newArr, enabled: e.target.checked })}
-                                            className="w-4 h-4 text-blue-500 bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 rounded focus:ring-blue-500"
-                                        />
-                                        <label htmlFor="arr-enabled" className="text-sm text-slate-700 dark:text-slate-300">Enabled</label>
-                                    </div>
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <button
-                                                type="button"
-                                                onClick={handleTestConnection}
-                                                disabled={isTesting || !newArr.url || !newArr.api_key}
-                                                className="px-4 py-2 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                                            >
-                                                {isTesting ? 'Testing...' : 'Test Connection'}
-                                            </button>
-                                            {testStatus.message && (
-                                                <span className={clsx(
-                                                    "text-sm",
-                                                    testStatus.success ? "text-green-400" : "text-red-400"
-                                                )}>
-                                                    {testStatus.message}
-                                                </span>
-                                            )}
-                                        </div>
-                                        <button
-                                            type="submit"
-                                            className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 text-slate-900 dark:text-white rounded-lg transition-colors cursor-pointer"
-                                        >
-                                            {editingArrId ? (
-                                                <>
-                                                    <Save className="w-4 h-4" />
-                                                    Update Server
-                                                </>
-                                            ) : (
-                                                <>
-                                                    <Plus className="w-4 h-4" />
-                                                    Add Server
-                                                </>
-                                            )}
-                                        </button>
-                                    </div>
-                                </form>
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
-                </div>
-
-                {/* *arr Servers List */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
-                    {isLoadingArr ? (
-                        <div className="p-8 text-center text-slate-600 dark:text-slate-400">Loading servers...</div>
-                    ) : arrInstances && arrInstances.length > 0 ? (
-                        <div className="overflow-x-auto">
-                            <table className="w-full">
-                                <thead>
-                                    <tr className="border-b border-slate-200 dark:border-slate-800">
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Type</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Name</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">URL</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Enabled</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Status</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase cursor-help" title="Add this URL to Sonarr/Radarr's Connect settings to notify Healarr of new imports">Webhook URL</th>
-                                        <th className="px-6 py-3"></th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-800/50">
-                                    {arrInstances.map((arr) => (
-                                        <tr key={arr.id} className="hover:bg-slate-100 dark:hover:bg-slate-800/30">
-                                            <td className="px-6 py-4">
-                                                <span className={clsx(
-                                                    "px-2 py-1 rounded text-xs font-medium",
-                                                    arr.type === 'sonarr' ? "bg-purple-500/10 text-purple-400" :
-                                                    arr.type === 'radarr' ? "bg-yellow-500/10 text-yellow-400" :
-                                                    arr.type === 'whisparr-v2' ? "bg-pink-500/10 text-pink-400" :
-                                                    "bg-pink-500/10 text-pink-300"
-                                                )}>
-                                                    {arr.type === 'whisparr-v2' ? 'Whisparr v2' : arr.type === 'whisparr-v3' ? 'Whisparr v3' : arr.type}
-                                                </span>
-                                            </td>
-                                            <td className="px-6 py-4 text-slate-700 dark:text-slate-300">{arr.name}</td>
-                                            <td className="px-6 py-4 text-xs text-slate-600 dark:text-slate-400 font-mono">{arr.url}</td>
-                                            <td className="px-6 py-4">
-                                                {arr.enabled ? (
-                                                    <span className="text-xs bg-green-500/10 text-green-400 px-2 py-1 rounded-full border border-green-500/20">Enabled</span>
-                                                ) : (
-                                                    <span className="text-xs bg-slate-700/50 text-slate-600 dark:text-slate-400 px-2 py-1 rounded-full border border-slate-600/50">Disabled</span>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <ServerStatus
-                                                    url={arr.url}
-                                                    apiKey={arr.api_key}
-                                                    isManuallyTesting={manualTestingServer === `${arr.url}-${arr.api_key}`}
-                                                />
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <div className="relative group">
-                                                    <input
-                                                        type="text"
-                                                        readOnly
-                                                        value={`${window.location.origin}/api/webhook/${arr.id}?apikey=${apiKeyData?.api_key || '...'}`}
-                                                        onClick={(e) => e.currentTarget.select()}
-                                                        className="w-full max-w-md bg-white dark:bg-slate-900/50 border border-slate-300 dark:border-slate-700 rounded px-2 py-1 text-xs text-slate-600 dark:text-slate-400 font-mono focus:outline-none focus:border-blue-500 focus:text-blue-300 cursor-pointer"
-                                                    />
-                                                    <div className="absolute inset-y-0 right-2 flex items-center opacity-0 group-hover:opacity-100 pointer-events-none">
-                                                        <Copy className="w-3 h-3 text-slate-500" />
-                                                    </div>
-                                                </div>
-                                            </td>
-                                            <td className="px-6 py-4 text-right">
-                                                <div className="flex items-center justify-end gap-2">
-                                                    <button
-                                                        onClick={() => handleManualTest(arr)}
-                                                        className="text-slate-600 dark:text-slate-400 hover:text-slate-700 dark:text-slate-300 cursor-pointer"
-                                                        title="Test Connection"
-                                                    >
-                                                        <Activity className="w-4 h-4" />
-                                                    </button>
-                                                    <button
-                                                        onClick={() => handleEditArr(arr)}
-                                                        className="text-blue-400 hover:text-blue-300 cursor-pointer"
-                                                        title="Edit"
-                                                    >
-                                                        <Pencil className="w-4 h-4" />
-                                                    </button>
-                                                    <button
-                                                        onClick={() => {
-                                                            if (window.confirm(`Are you sure you want to delete "${arr.name}"? This action cannot be undone.`)) {
-                                                                deleteArrMutation.mutate(arr.id);
-                                                            }
-                                                        }}
-                                                        className="p-2 hover:bg-red-500/10 text-red-400 rounded-lg transition-colors cursor-pointer"
-                                                        title="Delete Server"
-                                                    >
-                                                        <Trash2 className="w-4 h-4" />
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    ) : (
-                        <div className="p-8 text-center text-slate-500 italic">No servers configured</div>
-                    )}
-                </div>
-            </CollapsibleSection>
+            <ArrServersSection />
 
             {/* Scan Paths Section */}
-            <CollapsibleSection
-                id="scan-paths"
-                icon={FolderOpen}
-                iconColor="text-green-400"
-                title="Scan Paths"
-                defaultExpanded={true}
-                delay={0.2}
-            >
-                {/* Add Scan Path Form */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
-                    <button
-                        onClick={() => {
-                            if (!isAddPathExpanded && editingPathId) {
-                                handleCancelEdit();
-                            }
-                            setIsAddPathExpanded(!isAddPathExpanded);
-                        }}
-                        className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
-                    >
-                        <div className="flex items-center gap-3">
-                            {editingPathId ? (
-                                <>
-                                    <Pencil className="w-5 h-5 text-yellow-400" />
-                                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Edit Scan Path</h3>
-                                </>
-                            ) : (
-                                <>
-                                    <Plus className="w-5 h-5 text-green-400" />
-                                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Add Scan Path</h3>
-                                </>
-                            )}
-                        </div>
-                        <ChevronDown className={clsx(
-                            "w-5 h-5 text-slate-600 dark:text-slate-400 transition-transform duration-200",
-                            isAddPathExpanded && "rotate-180"
-                        )} />
-                    </button>
-
-                    <AnimatePresence>
-                        {isAddPathExpanded && (
-                            <motion.div
-                                initial={{ height: 0, opacity: 0 }}
-                                animate={{ height: "auto", opacity: 1 }}
-                                exit={{ height: 0, opacity: 0 }}
-                                transition={{ duration: 0.2, ease: "easeInOut" }}
-                            >
-                                <form onSubmit={handleCreatePath} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-800/50 pt-4">
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Local Path</label>
-                                            <div className="flex gap-2">
-                                                <input
-                                                    type="text"
-                                                    value={newPath.local_path || ''}
-                                                    onChange={e => setNewPath({ ...newPath, local_path: e.target.value })}
-                                                    placeholder="/media/tv or /tv"
-                                                    className="flex-1 px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500"
-                                                />
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        setFileBrowserTarget('new');
-                                                        setShowFileBrowser(true);
-                                                    }}
-                                                    className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded-lg transition-colors"
-                                                    title="Browse..."
-                                                >
-                                                    <Folder className="w-5 h-5 text-slate-600 dark:text-slate-400" />
-                                                </button>
-                                            </div>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">*arr Path <span className="text-slate-500 font-normal">(optional)</span></label>
-                                            <input
-                                                type="text"
-                                                value={newPath.arr_path || ''}
-                                                onChange={e => setNewPath({ ...newPath, arr_path: e.target.value })}
-                                                placeholder="Leave empty if same as local path"
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500"
-                                            />
-                                            <p className="mt-1 text-xs text-slate-500">Only fill this in if your *arr app sees media at a different path than Healarr</p>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">*arr Server</label>
-                                            <select
-                                                value={newPath.arr_instance_id || ''}
-                                                onChange={e => setNewPath({ ...newPath, arr_instance_id: e.target.value ? parseInt(e.target.value) : null })}
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-                                                required
-                                            >
-                                                <option value="">Select a server...</option>
-                                                {arrInstances?.map(arr => (
-                                                    <option key={arr.id} value={arr.id}>{arr.name}</option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-6 pb-2">
-                                        <div className="flex items-center gap-3">
-                                            <input
-                                                type="checkbox"
-                                                id="path-enabled"
-                                                checked={newPath.enabled || false}
-                                                onChange={e => setNewPath({ ...newPath, enabled: e.target.checked })}
-                                                className="w-4 h-4 text-blue-500 bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 rounded focus:ring-blue-500"
-                                            />
-                                            <label htmlFor="path-enabled" className="text-sm text-slate-700 dark:text-slate-300">Enabled</label>
-                                        </div>
-                                        <div className="flex items-center gap-3">
-                                            <input
-                                                type="checkbox"
-                                                id="path-auto-remediate"
-                                                checked={newPath.auto_remediate || false}
-                                                onChange={e => setNewPath({ ...newPath, auto_remediate: e.target.checked })}
-                                                className="w-4 h-4 text-blue-500 bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 rounded focus:ring-blue-500"
-                                            />
-                                            <label htmlFor="path-auto-remediate" className="text-sm text-slate-700 dark:text-slate-300">Auto Remediate</label>
-                                        </div>
-                                        <div className="flex items-center gap-3">
-                                            <label htmlFor="path-max-retries" className="text-sm text-slate-700 dark:text-slate-300">Max Retries:</label>
-                                            <input
-                                                type="number"
-                                                id="path-max-retries"
-                                                min="0"
-                                                max="10"
-                                                value={newPath.max_retries ?? 3}
-                                                onChange={e => setNewPath({ ...newPath, max_retries: parseInt(e.target.value) || 0 })}
-                                                className="w-20 px-3 py-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white text-center focus:ring-2 focus:ring-blue-500"
-                                            />
-                                        </div>
-                                    </div>
-
-                                    {/* Verification Timeout - for hard-to-find items */}
-                                    <div className="flex items-center gap-4 pb-2">
-                                        <label htmlFor="path-verification-timeout" className="text-sm text-slate-700 dark:text-slate-300">Verification Timeout:</label>
-                                        <select
-                                            id="path-verification-timeout"
-                                            value={newPath.verification_timeout_hours ?? ''}
-                                            onChange={e => setNewPath({ ...newPath, verification_timeout_hours: e.target.value ? parseInt(e.target.value) : null })}
-                                            className="w-48 px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-                                        >
-                                            <option value="">Use global default</option>
-                                            <option value="24">1 day</option>
-                                            <option value="72">3 days</option>
-                                            <option value="168">1 week</option>
-                                            <option value="336">2 weeks</option>
-                                            <option value="720">1 month</option>
-                                            <option value="2160">3 months</option>
-                                            <option value="4320">6 months</option>
-                                        </select>
-                                        <p className="text-xs text-slate-500">
-                                            How long to keep searching for replacements. Use longer timeouts for rare/hard-to-find content.
-                                        </p>
-                                    </div>
-
-                                    {/* Detection Configuration */}
-                                    <div className="space-y-4 pt-4 border-t border-slate-200 dark:border-slate-800">
-                                        <div>
-                                            <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300">Detection Settings</h4>
-                                            <p className="text-xs text-slate-500 mt-1">Configure how files are checked for corruption</p>
-                                        </div>
-
-                                        {/* Detection Method */}
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                                                Detection Method
-                                            </label>
-                                            <div className="space-y-2">
-                                                {[
-                                                    { value: 'ffprobe', label: 'ffprobe', desc: 'Truncated files, missing streams', badge: 'recommended' },
-                                                    { value: 'mediainfo', label: 'mediainfo', desc: 'Metadata and track info problems', badge: null },
-                                                    { value: 'handbrake', label: 'HandBrakeCLI', desc: 'Files that won\'t transcode', badge: null },
-                                                    { value: 'zero_byte', label: 'stat', desc: 'Empty files only', badge: null },
-                                                ].map((method) => {
-                                                    const available = isToolAvailable(method.value);
-                                                    const isSelected = (newPath.detection_method || 'ffprobe') === method.value;
-                                                    return (
-                                                        <div
-                                                            key={method.value}
-                                                            onClick={() => {
-                                                                if (available) {
-                                                                    setNewPath({ ...newPath, detection_method: method.value as 'ffprobe' | 'mediainfo' | 'handbrake' | 'zero_byte' });
-                                                                } else {
-                                                                    scrollToDetectionTools();
-                                                                }
-                                                            }}
-                                                            className={clsx(
-                                                                "flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all",
-                                                                available && isSelected
-                                                                    ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20"
-                                                                    : available
-                                                                    ? "border-slate-300 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-700"
-                                                                    : "border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 opacity-60"
-                                                            )}
-                                                        >
-                                                            <div className={clsx(
-                                                                "w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0",
-                                                                available && isSelected
-                                                                    ? "border-blue-500"
-                                                                    : "border-slate-400 dark:border-slate-600"
-                                                            )}>
-                                                                {available && isSelected && (
-                                                                    <div className="w-2 h-2 rounded-full bg-blue-500" />
-                                                                )}
-                                                            </div>
-                                                            <div className="flex-1 min-w-0">
-                                                                <div className="flex items-center gap-2">
-                                                                    <span className={clsx(
-                                                                        "font-medium text-sm",
-                                                                        available
-                                                                            ? "text-slate-900 dark:text-white"
-                                                                            : "text-slate-500 dark:text-slate-500 line-through"
-                                                                    )}>
-                                                                        {method.label}
-                                                                    </span>
-                                                                    {method.badge && available && (
-                                                                        <span className={clsx(
-                                                                            "text-xs px-1.5 py-0.5 rounded",
-                                                                            method.badge === 'recommended'
-                                                                                ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400"
-                                                                                : "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400"
-                                                                        )}>
-                                                                            {method.badge}
-                                                                        </span>
-                                                                    )}
-                                                                    {!available && (
-                                                                        <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400">
-                                                                            Not installed
-                                                                        </span>
-                                                                    )}
-                                                                </div>
-                                                                <span className={clsx(
-                                                                    "text-xs",
-                                                                    available
-                                                                        ? "text-slate-500 dark:text-slate-400"
-                                                                        : "text-slate-400 dark:text-slate-600 line-through"
-                                                                )}>
-                                                                    {method.desc}
-                                                                </span>
-                                                            </div>
-                                                            {!available && (
-                                                                <span className="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 whitespace-nowrap">
-                                                                    View installation →
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        </div>
-
-                                        {/* Detection Mode */}
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Detection Mode</label>
-                                            <div className="flex gap-4">
-                                                <div className="flex items-center gap-2">
-                                                    <input
-                                                        type="radio"
-                                                        id="mode-quick"
-                                                        name="detection-mode"
-                                                        value="quick"
-                                                        checked={(newPath.detection_mode || 'quick') === 'quick'}
-                                                        onChange={e => setNewPath({ ...newPath, detection_mode: e.target.value as 'quick' | 'thorough' })}
-                                                        className="w-4 h-4 text-blue-500 bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 focus:ring-blue-500"
-                                                    />
-                                                    <label htmlFor="mode-quick" className="text-sm text-slate-700 dark:text-slate-300 cursor-pointer">Quick - Header check</label>
-                                                </div>
-                                                <div className="flex items-center gap-2">
-                                                    <input
-                                                        type="radio"
-                                                        id="mode-thorough"
-                                                        name="detection-mode"
-                                                        value="thorough"
-                                                        checked={newPath.detection_mode === 'thorough'}
-                                                        onChange={e => setNewPath({ ...newPath, detection_mode: e.target.value as 'quick' | 'thorough' })}
-                                                        className="w-4 h-4 text-blue-500 bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 focus:ring-blue-500"
-                                                    />
-                                                    <label htmlFor="mode-thorough" className="text-sm text-slate-700 dark:text-slate-300 cursor-pointer">Thorough - Full file decode (slow)</label>
-                                                </div>
-                                            </div>
-                                            <p className="mt-2 text-xs text-slate-500">
-                                                <span className="font-semibold">Quick:</span> Checks file headers and stream info. Fast, catches most issues.
-                                                <br />
-                                                <span className="font-semibold">Thorough:</span> Decodes the entire file to find mid-file corruption. Much slower.
-                                            </p>
-                                        </div>
-
-                                        {/* Custom Arguments */}
-                                        {newPath.detection_method !== 'zero_byte' && (
-                                            <div>
-                                                <label htmlFor="path-detection-args" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                                                    Custom Arguments <span className="text-slate-500 font-normal">(optional, comma-separated)</span>
-                                                </label>
-                                                <input
-                                                    type="text"
-                                                    id="path-detection-args"
-                                                    value={newPath.detection_args || ''}
-                                                    onChange={e => setNewPath({ ...newPath, detection_args: e.target.value })}
-                                                    placeholder="e.g. --verbose, --threads 2"
-                                                    className="w-full px-4 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                                />
-                                                <p className="mt-1 text-xs text-slate-500">
-                                                    Enter custom arguments to pass to the detection tool (will be split by commas)
-                                                </p>
-                                            </div>
-                                        )}
-
-                                        {/* Command Preview */}
-                                        <div className="mt-4 p-4 rounded-lg bg-slate-950 border border-slate-700">
-                                            <div className="flex items-center justify-between mb-2">
-                                                <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">Command Preview</span>
-                                                {isLoadingPreview && (
-                                                    <span className="text-xs text-slate-500 animate-pulse">Loading...</span>
-                                                )}
-                                            </div>
-                                            <code className="block text-sm text-green-400 font-mono break-all">
-                                                {detectionPreview?.command || 'Loading...'}
-                                            </code>
-                                            {detectionPreview && (
-                                                <div className="mt-3 pt-3 border-t border-slate-800 space-y-2">
-                                                    <div className="flex items-center gap-2 text-xs">
-                                                        <Clock className="w-3 h-3 text-slate-500" />
-                                                        <span className="text-slate-500">Timeout:</span>
-                                                        <span className="text-slate-400">{detectionPreview.timeout}</span>
-                                                    </div>
-                                                    <p className="text-xs text-slate-500 leading-relaxed">
-                                                        {detectionPreview.mode_description}
-                                                    </p>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    <button
-                                        type="submit"
-                                        className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 text-slate-900 dark:text-white rounded-lg transition-colors cursor-pointer"
-                                    >
-                                        {editingPathId ? (
-                                            <>
-                                                <Save className="w-4 h-4" />
-                                                Update Path
-                                            </>
-                                        ) : (
-                                            <>
-                                                <Plus className="w-4 h-4" />
-                                                Add Path
-                                            </>
-                                        )}
-                                    </button>
-                                </form>
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
-                </div>
-
-                {/* Scan Paths List */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
-                    {isLoadingPaths ? (
-                        <div className="p-8 text-center text-slate-600 dark:text-slate-400">Loading paths...</div>
-                    ) : scanPaths && scanPaths.length > 0 ? (
-                        <div className="overflow-x-auto">
-                            <table className="w-full">
-                                <thead>
-                                    <tr className="border-b border-slate-200 dark:border-slate-800">
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Local Path</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">*arr Path</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Status</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Auto Remediate</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Retries</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Timeout</th>
-                                        <th className="px-6 py-3"></th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-800/50">
-                                    {scanPaths.map((path) => (
-                                        <tr key={path.id} className="hover:bg-slate-100 dark:hover:bg-slate-800/30">
-                                            <td className="px-6 py-4">
-                                                <div className="flex items-center gap-3">
-                                                    <span className="text-slate-700 dark:text-slate-300 font-mono text-sm">{path.local_path}</span>
-                                                    <PathValidationStatus pathId={path.id} />
-                                                </div>
-                                            </td>
-                                            <td className="px-6 py-4 text-slate-600 dark:text-slate-400 font-mono text-sm">
-                                                {path.arr_path === path.local_path ? (
-                                                    <span className="text-slate-500 italic">Same as local</span>
-                                                ) : (
-                                                    path.arr_path
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                {path.enabled ? (
-                                                    <span className="text-xs bg-green-500/10 text-green-400 px-2 py-1 rounded-full border border-green-500/20">Enabled</span>
-                                                ) : (
-                                                    <span className="text-xs text-slate-500">Disabled</span>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                {path.auto_remediate ? (
-                                                    <span className="text-xs bg-green-500/10 text-green-400 px-2 py-1 rounded-full border border-green-500/20">Enabled</span>
-                                                ) : (
-                                                    <span className="text-xs text-slate-500">Disabled</span>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4 text-slate-600 dark:text-slate-400 font-mono text-sm">
-                                                {path.max_retries ?? 3}
-                                            </td>
-                                            <td className="px-6 py-4 text-slate-600 dark:text-slate-400 text-sm">
-                                                {(() => {
-                                                    const hours = path.verification_timeout_hours ?? 72;
-                                                    const isDefault = !path.verification_timeout_hours;
-                                                    const formatted = hours >= 720 
-                                                        ? `${Math.round(hours / 720)}mo`
-                                                        : hours >= 168
-                                                            ? `${Math.round(hours / 168)}w`
-                                                            : hours >= 24
-                                                                ? `${Math.round(hours / 24)}d`
-                                                                : `${hours}h`;
-                                                    return isDefault ? (
-                                                        <span className="text-slate-500" title="Using default (72h)">{formatted}</span>
-                                                    ) : formatted;
-                                                })()}
-                                            </td>
-                                            <td className="px-6 py-4 text-right">
-                                                <div className="flex items-center justify-end gap-2">
-                                                    <button
-                                                        onClick={() => scanPathMutation.mutate(path.id)}
-                                                        className="text-green-400 hover:text-green-300 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                                                        title="Scan Now"
-                                                        disabled={!path.enabled || scanPathMutation.isPending}
-                                                    >
-                                                        <Play className="w-4 h-4" />
-                                                    </button>
-                                                    <button
-                                                        onClick={() => handleEditPath(path)}
-                                                        className="text-blue-400 hover:text-blue-300 cursor-pointer"
-                                                        title="Edit"
-                                                    >
-                                                        <Pencil className="w-4 h-4" />
-                                                    </button>
-                                                    <button
-                                                        onClick={() => {
-                                                            if (window.confirm(`Remove scan path "${path.local_path}"?\n\nThis will remove the path from Healarr scanning only. No files will be deleted from your disk.`)) {
-                                                                deletePathMutation.mutate(path.id);
-                                                            }
-                                                        }}
-                                                        className="p-2 hover:bg-red-500/10 text-red-400 rounded-lg transition-colors cursor-pointer"
-                                                        title="Delete Path"
-                                                    >
-                                                        <Trash2 className="w-4 h-4" />
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    ) : (
-                        <div className="p-8 text-center text-slate-500 italic">No scan paths configured</div>
-                    )}
-                </div>
-            </CollapsibleSection>
+            <ScanPathsSection onScrollToDetectionTools={scrollToDetectionTools} />
 
             {/* Scheduled Scans Section */}
-            <CollapsibleSection
-                id="scheduled-scans"
-                icon={Clock}
-                iconColor="text-purple-400"
-                title="Scheduled Scans"
-                defaultExpanded={false}
-                delay={0.3}
-            >
-                {/* Add Schedule Form */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
-                    <button
-                        onClick={() => setIsAddScheduleExpanded(!isAddScheduleExpanded)}
-                        className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
-                    >
-                        <div className="flex items-center gap-3">
-                            <Plus className="w-5 h-5 text-purple-400" />
-                            <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Add Schedule</h3>
-                        </div>
-                        <ChevronDown className={clsx(
-                            "w-5 h-5 text-slate-600 dark:text-slate-400 transition-transform duration-200",
-                            isAddScheduleExpanded && "rotate-180"
-                        )} />
-                    </button>
-
-                    <AnimatePresence>
-                        {isAddScheduleExpanded && (
-                            <motion.div
-                                initial={{ height: 0, opacity: 0 }}
-                                animate={{ height: "auto", opacity: 1 }}
-                                exit={{ height: 0, opacity: 0 }}
-                                transition={{ duration: 0.2, ease: "easeInOut" }}
-                            >
-                                <form onSubmit={handleCreateSchedule} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-800/50 pt-4">
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Scan Path</label>
-                                            <select
-                                                value={newSchedule.scan_path_id || ''}
-                                                onChange={e => setNewSchedule({ ...newSchedule, scan_path_id: parseInt(e.target.value) })}
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500"
-                                                required
-                                            >
-                                                <option value="">Select a path...</option>
-                                                {scanPaths?.map(path => (
-                                                    <option key={path.id} value={path.id}>{path.local_path}</option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                        <div className="space-y-4">
-                                            <div>
-                                                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Frequency</label>
-                                                <select
-                                                    value={schedulePreset}
-                                                    onChange={e => handlePresetChange(e.target.value)}
-                                                    className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500"
-                                                >
-                                                    <option value="hourly">Hourly</option>
-                                                    <option value="every_6h">Every 6 Hours</option>
-                                                    <option value="every_12h">Every 12 Hours</option>
-                                                    <option value="daily">Daily (3 AM)</option>
-                                                    <option value="weekly">Weekly (Sunday 3 AM)</option>
-                                                    <option value="custom">Custom Cron Expression</option>
-                                                </select>
-                                            </div>
-
-                                            {schedulePreset === 'custom' && (
-                                                <CronTimeBuilder
-                                                    value={newSchedule.cron_expression}
-                                                    onChange={(expression) => setNewSchedule({ ...newSchedule, cron_expression: expression })}
-                                                />
-                                            )}
-                                            {schedulePreset !== 'custom' && (
-                                                <div className="text-xs text-slate-500 font-mono mt-2">
-                                                    Expression: {newSchedule.cron_expression}
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                    <button
-                                        type="submit"
-                                        className="flex items-center gap-2 px-4 py-2 bg-purple-500 hover:bg-purple-600 text-slate-900 dark:text-white rounded-lg transition-colors cursor-pointer"
-                                    >
-                                        <Plus className="w-4 h-4" />
-                                        Add Schedule
-                                    </button>
-                                </form>
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
-                </div>
-
-                {/* Schedules List */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
-                    {isLoadingSchedules ? (
-                        <div className="p-8 text-center text-slate-600 dark:text-slate-400">Loading schedules...</div>
-                    ) : schedules?.length === 0 ? (
-                        <div className="p-8 text-center text-slate-500 italic">No scheduled scans configured</div>
-                    ) : (
-                        <div className="divide-y divide-slate-800/50">
-                            {schedules?.map(schedule => {
-                                const path = scanPaths?.find(p => p.id === schedule.scan_path_id);
-                                return (
-                                    <div key={schedule.id} className="p-4 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors">
-                                        <div className="flex items-center gap-4">
-                                            <div className={clsx(
-                                                "w-2 h-2 rounded-full",
-                                                schedule.enabled ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" : "bg-slate-600"
-                                            )} />
-                                            <div>
-                                                <div className="font-medium text-slate-900 dark:text-white flex items-center gap-2">
-                                                    {path?.local_path || `Path ID: ${schedule.scan_path_id}`}
-                                                    {!path && <span className="text-xs text-red-400">(Path not found)</span>}
-                                                </div>
-                                                <div className="text-sm text-slate-600 dark:text-slate-400 mt-0.5 flex items-center gap-2">
-                                                    <Clock className="w-3 h-3" />
-                                                    <span>{formatCronExpression(schedule.cron_expression)}</span>
-                                                    <span className="text-xs font-mono text-slate-500">({schedule.cron_expression})</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <button
-                                                onClick={() => handleToggleSchedule(schedule)}
-                                                className={clsx(
-                                                    "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border cursor-pointer",
-                                                    schedule.enabled
-                                                        ? "bg-green-500/10 text-green-400 border-green-500/20 hover:bg-green-500/20"
-                                                        : "bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700 hover:bg-slate-300 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white"
-                                                )}
-                                            >
-                                                {schedule.enabled ? 'Enabled' : 'Disabled'}
-                                            </button>
-                                            <button
-                                                onClick={() => {
-                                                    if (confirm('Are you sure you want to delete this schedule?')) {
-                                                        deleteScheduleMutation.mutate(schedule.id);
-                                                    }
-                                                }}
-                                                className="p-2 text-slate-600 dark:text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors cursor-pointer"
-                                                title="Delete Schedule"
-                                            >
-                                                <Trash2 className="w-4 h-4" />
-                                            </button>
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    )}
-                </div>
-            </CollapsibleSection>
+            <SchedulesSection />
 
             {/* Notifications Section */}
-            <CollapsibleSection
-                id="notifications"
-                icon={Bell}
-                iconColor="text-pink-400"
-                title="Notifications"
-                subtitle="Configure alerts for scan events"
-                defaultExpanded={false}
-                delay={0.35}
-            >
-                <NotificationsSection />
-            </CollapsibleSection>
+            <NotificationsSection />
 
             {/* Advanced Settings Accordion */}
             <motion.div
@@ -2138,883 +985,6 @@ const Config = () => {
                     </AnimatePresence>
                 </div>
             </motion.div>
-
-            {/* File Browser Modal */}
-            <FileBrowser
-                isOpen={showFileBrowser}
-                onClose={() => setShowFileBrowser(false)}
-                onSelect={(selectedPath) => {
-                    if (fileBrowserTarget === 'new') {
-                        setNewPath({ ...newPath, local_path: selectedPath });
-                    } else {
-                        // For editing existing paths, update via mutation
-                        const existingPath = scanPaths?.find(p => p.id === fileBrowserTarget);
-                        if (existingPath) {
-                            const { id: _id, ...pathData } = existingPath;
-                            updatePathMutation.mutate({ id: fileBrowserTarget, data: { ...pathData, local_path: selectedPath } });
-                        }
-                    }
-                }}
-                initialPath={fileBrowserTarget === 'new' ? (newPath.local_path || '/') : (scanPaths?.find(p => p.id === fileBrowserTarget)?.local_path || '/')}
-            />
-        </div>
-    );
-};
-
-interface SecuritySectionProps {
-    apiKeyData: { api_key: string } | undefined;
-    refetchApiKey: () => Promise<unknown>;
-}
-
-const SecuritySection = ({ apiKeyData, refetchApiKey }: SecuritySectionProps) => {
-    const queryClient = useQueryClient();
-    const [copied, setCopied] = useState(false);
-
-    // Password change state
-    const [currentPassword, setCurrentPassword] = useState('');
-    const [newPassword, setNewPassword] = useState('');
-    const [confirmPassword, setConfirmPassword] = useState('');
-    const [passwordMessage, setPasswordMessage] = useState({ text: '', type: '' });
-
-    const regenerateMutation = useMutation({
-        mutationFn: regenerateAPIKey,
-        onSuccess: async (data) => {
-            // Immediately update the cache with the new key from the response
-            queryClient.setQueryData(['apiKey'], { api_key: data.api_key });
-            // Force refetch to be absolutely sure
-            await refetchApiKey();
-        },
-    });
-
-    const passwordMutation = useMutation({
-        mutationFn: async () => {
-            return await changePassword(currentPassword, newPassword);
-        },
-        onSuccess: () => {
-            setPasswordMessage({ text: 'Password changed successfully', type: 'success' });
-            setCurrentPassword('');
-            setNewPassword('');
-            setConfirmPassword('');
-            setTimeout(() => setPasswordMessage({ text: '', type: '' }), 3000);
-        },
-        onError: (error: unknown) => {
-            const err = error as { response?: { data?: { error?: string } }; message?: string };
-            setPasswordMessage({ text: err.response?.data?.error || 'Failed to change password', type: 'error' });
-        }
-    });
-
-    const handleCopy = async () => {
-        if (apiKeyData?.api_key) {
-            try {
-                // Try modern clipboard API first
-                if (navigator.clipboard && window.isSecureContext) {
-                    await navigator.clipboard.writeText(apiKeyData.api_key);
-                } else {
-                    // Fallback for non-secure contexts (HTTP)
-                    const textArea = document.createElement('textarea');
-                    textArea.value = apiKeyData.api_key;
-                    textArea.style.position = 'fixed';
-                    textArea.style.left = '-999999px';
-                    textArea.style.top = '-999999px';
-                    document.body.appendChild(textArea);
-                    textArea.focus();
-                    textArea.select();
-                    document.execCommand('copy');
-                    document.body.removeChild(textArea);
-                }
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
-            } catch (err) {
-                console.error('Failed to copy:', err);
-            }
-        }
-    };
-
-    const handleRegenerate = () => {
-        if (confirm('Are you sure? This will invalidate your current API key. You will need to update all webhook URLs in Sonarr/Radarr!')) {
-            regenerateMutation.mutate();
-        }
-    };
-
-    const handlePasswordChange = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (newPassword.length < 8) {
-            setPasswordMessage({ text: 'New password must be at least 8 characters', type: 'error' });
-            return;
-        }
-        if (newPassword !== confirmPassword) {
-            setPasswordMessage({ text: 'Passwords do not match', type: 'error' });
-            return;
-        }
-        passwordMutation.mutate();
-    };
-
-    return (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* API Key Section */}
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 h-full">
-                <div className="space-y-4">
-                    <div>
-                        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Webhook API Key</h3>
-                        <p className="text-xs text-slate-500 mb-4">
-                            Use this API key in your Sonarr/Radarr webhook URLs. Add <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded text-purple-600 dark:text-purple-300">?apikey=YOUR_KEY</code> to the webhook URL.
-                        </p>
-                    </div>
-
-                    <div className="flex gap-2">
-                        <div className="flex-1 relative">
-                            <input
-                                type="text"
-                                value={apiKeyData?.api_key || 'Loading...'}
-                                readOnly
-                                onClick={(e) => (e.target as HTMLInputElement).select()}
-                                onFocus={(e) => e.target.select()}
-                                className="w-full px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-700 dark:text-slate-300 font-mono text-sm cursor-pointer select-all"
-                            />
-                        </div>
-                        <button
-                            onClick={handleCopy}
-                            className="px-4 py-3 bg-blue-500 hover:bg-blue-600 text-slate-900 dark:text-white rounded-xl font-medium transition-colors flex items-center gap-2 cursor-pointer"
-                        >
-                            <Copy className="w-4 h-4" />
-                            {copied ? 'Copied!' : 'Copy'}
-                        </button>
-                        <button
-                            onClick={handleRegenerate}
-                            disabled={regenerateMutation.isPending}
-                            className="px-4 py-3 bg-orange-500 hover:bg-orange-600 disabled:bg-orange-500/50 disabled:cursor-not-allowed text-slate-900 dark:text-white rounded-xl font-medium transition-colors flex items-center gap-2 cursor-pointer"
-                        >
-                            <RefreshCw className={clsx("w-4 h-4", regenerateMutation.isPending && "animate-spin")} />
-                            Regenerate
-                        </button>
-                    </div>
-
-                    <div className="bg-amber-100 dark:bg-yellow-500/10 border border-amber-300 dark:border-yellow-500/20 rounded-lg p-3">
-                        <p className="text-xs text-amber-800 dark:text-yellow-300">
-                            <strong>Webhook URL Format:</strong><br />
-                            <code className="text-xs">{window.location.origin}/api/webhook/{'{'}instance_id{'}'}</code> + <code>?apikey={apiKeyData?.api_key || 'YOUR_KEY'}</code>
-                        </p>
-                    </div>
-                </div>
-            </div>
-
-            {/* Password Change Section */}
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 h-full">
-                <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2 flex items-center gap-2">
-                    <Lock className="w-4 h-4 text-slate-600 dark:text-slate-400" />
-                    Change Password
-                </h3>
-                <p className="text-xs text-slate-500 mb-4">
-                    Update the password used to access the Healarr dashboard.
-                </p>
-
-                <form onSubmit={handlePasswordChange} className="space-y-3">
-                    <div>
-                        <input
-                            type="password"
-                            autoComplete="current-password"
-                            value={currentPassword}
-                            onChange={(e) => setCurrentPassword(e.target.value)}
-                            placeholder="Current Password"
-                            className="w-full px-4 py-2 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 text-sm"
-                            required
-                        />
-                    </div>
-                    <div>
-                        <input
-                            type="password"
-                            autoComplete="new-password"
-                            value={newPassword}
-                            onChange={(e) => setNewPassword(e.target.value)}
-                            placeholder="New Password (min 8 chars)"
-                            className="w-full px-4 py-2 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 text-sm"
-                            required
-                            minLength={8}
-                        />
-                    </div>
-                    <div>
-                        <input
-                            type="password"
-                            autoComplete="new-password"
-                            value={confirmPassword}
-                            onChange={(e) => setConfirmPassword(e.target.value)}
-                            placeholder="Confirm New Password"
-                            className="w-full px-4 py-2 bg-slate-100 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 text-sm"
-                            required
-                        />
-                    </div>
-
-                    {passwordMessage.text && (
-                        <div className={clsx(
-                            "p-2 rounded-lg text-xs",
-                            passwordMessage.type === 'success' ? "bg-green-500/10 text-green-600 dark:text-green-300 border border-green-500/20" : "bg-red-500/10 text-red-600 dark:text-red-300 border border-red-500/20"
-                        )}>
-                            {passwordMessage.text}
-                        </div>
-                    )}
-
-                    <button
-                        type="submit"
-                        disabled={passwordMutation.isPending}
-                        className="w-full px-4 py-2 bg-purple-500 hover:bg-purple-600 disabled:bg-purple-500/50 disabled:cursor-not-allowed text-slate-900 dark:text-white rounded-xl font-medium transition-colors text-sm cursor-pointer"
-                    >
-                        {passwordMutation.isPending ? 'Updating...' : 'Update Password'}
-                    </button>
-                </form>
-            </div>
-        </div>
-    );
-};
-
-interface ServerSettingsSectionProps {
-    runtimeConfig: { base_path: string; base_path_source: string } | undefined;
-    queryClient: ReturnType<typeof useQueryClient>;
-    toast: ReturnType<typeof useToast>;
-}
-
-const ServerSettingsSection = ({ runtimeConfig, queryClient, toast }: ServerSettingsSectionProps) => {
-    const [isEditing, setIsEditing] = useState(false);
-    const [basePath, setBasePath] = useState(runtimeConfig?.base_path || '/');
-    const [showRestartConfirm, setShowRestartConfirm] = useState(false);
-    const [pendingRestart, setPendingRestart] = useState(false);
-
-    // Sync state when runtimeConfig changes
-    useEffect(() => {
-        if (runtimeConfig?.base_path) {
-            setBasePath(runtimeConfig.base_path);
-        }
-    }, [runtimeConfig?.base_path]);
-
-    const updateSettingsMutation = useMutation({
-        mutationFn: updateSettings,
-        onSuccess: (data) => {
-            queryClient.invalidateQueries({ queryKey: ['runtimeConfig'] });
-            toast.success('Base path saved! A restart is required for changes to take effect.');
-            setIsEditing(false);
-            if (data.restart_required) {
-                setPendingRestart(true);
-            }
-        },
-        onError: (error: unknown) => {
-            const err = error as { response?: { data?: { error?: string } }; message?: string };
-            toast.error(`Failed to save settings: ${err.response?.data?.error || err.message}`);
-        }
-    });
-
-    const restartMutation = useMutation({
-        mutationFn: restartServer,
-        onSuccess: () => {
-            toast.success('Restart initiated! Healarr will be back shortly...');
-            setShowRestartConfirm(false);
-            // Show a loading state while the server restarts
-            setTimeout(() => {
-                window.location.reload();
-            }, 3000);
-        },
-        onError: () => {
-            // Server likely restarted before response - this is expected
-            toast.success('Restart initiated! Healarr will be back shortly...');
-            setShowRestartConfirm(false);
-            setTimeout(() => {
-                window.location.reload();
-            }, 3000);
-        }
-    });
-
-    const handleSave = () => {
-        updateSettingsMutation.mutate({ base_path: basePath });
-    };
-
-    const handleCancel = () => {
-        setBasePath(runtimeConfig?.base_path || '/');
-        setIsEditing(false);
-    };
-
-    const handleRestart = () => {
-        restartMutation.mutate();
-    };
-
-    const isEnvOverride = runtimeConfig?.base_path_source === 'environment';
-
-    return (
-        <div className="bg-slate-100 dark:bg-slate-800/30 border border-slate-300 dark:border-slate-700/50 rounded-2xl p-6">
-            <div className="space-y-4">
-                <div className="p-4 bg-slate-100 dark:bg-slate-800/50 rounded-xl border border-slate-300 dark:border-slate-700">
-                    <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1">
-                            <div className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Base Path</div>
-                            <div className="text-xs text-slate-500 mb-3">
-                                URL prefix for reverse proxy setups (e.g., /healarr for domain.com/healarr)
-                            </div>
-
-                            {isEditing ? (
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        type="text"
-                                        value={basePath}
-                                        onChange={(e) => setBasePath(e.target.value)}
-                                        placeholder="/"
-                                        className="flex-1 px-3 py-2 bg-white dark:bg-slate-900 border border-slate-600 rounded-lg text-slate-900 dark:text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500"
-                                    />
-                                    <button
-                                        onClick={handleSave}
-                                        disabled={updateSettingsMutation.isPending}
-                                        className="px-3 py-2 bg-green-500 hover:bg-green-600 disabled:bg-green-500/50 text-slate-900 dark:text-white rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center gap-1"
-                                    >
-                                        <Save className="w-4 h-4" />
-                                        {updateSettingsMutation.isPending ? 'Saving...' : 'Save'}
-                                    </button>
-                                    <button
-                                        onClick={handleCancel}
-                                        className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-700 dark:text-slate-300 rounded-lg text-sm font-medium transition-colors cursor-pointer"
-                                    >
-                                        Cancel
-                                    </button>
-                                </div>
-                            ) : (
-                                <div className="flex items-center gap-3">
-                                    <code className="px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-sm font-mono text-orange-400">
-                                        {runtimeConfig?.base_path || '/'}
-                                    </code>
-                                    <span className={clsx(
-                                        "text-xs px-2 py-1 rounded-full border",
-                                        isEnvOverride
-                                            ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
-                                            : runtimeConfig?.base_path_source === 'database'
-                                                ? "bg-purple-500/10 text-purple-400 border-purple-500/20"
-                                                : "bg-slate-700/50 text-slate-600 dark:text-slate-400 border-slate-600/50"
-                                    )}>
-                                        {isEnvOverride ? 'from env' : runtimeConfig?.base_path_source === 'database' ? 'custom' : 'default'}
-                                    </span>
-                                    {!isEnvOverride && (
-                                        <button
-                                            onClick={() => setIsEditing(true)}
-                                            className="text-slate-600 dark:text-slate-400 hover:text-orange-400 transition-colors cursor-pointer"
-                                            title="Edit base path"
-                                        >
-                                            <Pencil className="w-4 h-4" />
-                                        </button>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </div>
-
-                {isEnvOverride && (
-                    <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-3">
-                        <p className="text-xs text-blue-300/80">
-                            <strong>Environment Override:</strong> Base path is set via HEALARR_BASE_PATH environment variable.
-                            To edit it here, remove the environment variable and restart.
-                        </p>
-                    </div>
-                )}
-
-                {pendingRestart && (
-                    <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-4">
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <div className="text-sm font-medium text-orange-300">Restart Required</div>
-                                <p className="text-xs text-orange-300/70 mt-1">
-                                    Settings have been saved. Restart Healarr for changes to take effect.
-                                </p>
-                            </div>
-                            <button
-                                onClick={() => setShowRestartConfirm(true)}
-                                className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-slate-900 dark:text-white rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center gap-2"
-                            >
-                                <RefreshCw className="w-4 h-4" />
-                                Restart Now
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* Restart Confirmation Modal */}
-                <AnimatePresence>
-                    {showRestartConfirm && (
-                        <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-                            onClick={() => setShowRestartConfirm(false)}
-                        >
-                            <motion.div
-                                initial={{ scale: 0.95, opacity: 0 }}
-                                animate={{ scale: 1, opacity: 1 }}
-                                exit={{ scale: 0.95, opacity: 0 }}
-                                className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-2xl p-6 max-w-md w-full shadow-2xl"
-                                onClick={(e) => e.stopPropagation()}
-                            >
-                                <div className="text-center mb-6">
-                                    <div className="w-16 h-16 mx-auto bg-orange-500/10 border border-orange-500/30 rounded-full flex items-center justify-center mb-4">
-                                        <RefreshCw className="w-8 h-8 text-orange-400" />
-                                    </div>
-                                    <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Restart Healarr?</h3>
-                                    <p className="text-sm text-slate-600 dark:text-slate-400">
-                                        The server will restart to apply the new base path. 
-                                        This page will automatically reload once Healarr is back online.
-                                    </p>
-                                </div>
-
-                                <div className="flex gap-3">
-                                    <button
-                                        onClick={() => setShowRestartConfirm(false)}
-                                        className="flex-1 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-900 dark:text-white rounded-lg font-medium transition-colors cursor-pointer"
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={handleRestart}
-                                        disabled={restartMutation.isPending}
-                                        className="flex-1 px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:bg-orange-500/50 text-slate-900 dark:text-white rounded-lg font-medium transition-colors cursor-pointer flex items-center justify-center gap-2"
-                                    >
-                                        {restartMutation.isPending ? (
-                                            <>
-                                                <RefreshCw className="w-4 h-4 animate-spin" />
-                                                Restarting...
-                                            </>
-                                        ) : (
-                                            <>
-                                                <RefreshCw className="w-4 h-4" />
-                                                Restart
-                                            </>
-                                        )}
-                                    </button>
-                                </div>
-                            </motion.div>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-
-                <div className="text-xs text-slate-500">
-                    <strong>Tip:</strong> You can also set the base path via the <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded text-slate-600 dark:text-slate-400">HEALARR_BASE_PATH</code> environment variable.
-                    Environment variables take precedence over database settings.
-                </div>
-            </div>
-        </div>
-    );
-};
-
-const NotificationsSection = () => {
-    const queryClient = useQueryClient();
-    const toast = useToast();
-    const [isAddExpanded, setIsAddExpanded] = useState(false);
-    const [editingId, setEditingId] = useState<number | null>(null);
-    const [showLogFor, setShowLogFor] = useState<number | null>(null);
-
-    // Form state
-    const [formData, setFormData] = useState<{
-        name: string;
-        provider_type: string;
-        config: Record<string, unknown>;
-        events: string[];
-        enabled: boolean;
-        throttle_seconds: number;
-    }>({
-        name: '',
-        provider_type: 'discord',
-        config: {},
-        events: [],
-        enabled: true,
-        throttle_seconds: 5
-    });
-
-    // Queries
-    const { data: notifications, isLoading } = useQuery({
-        queryKey: ['notifications'],
-        queryFn: getNotifications
-    });
-
-    const { data: eventGroups } = useQuery({
-        queryKey: ['notificationEvents'],
-        queryFn: getNotificationEvents
-    });
-
-    const { data: logEntries } = useQuery({
-        queryKey: ['notificationLog', showLogFor],
-        queryFn: () => showLogFor ? getNotificationLog(showLogFor) : Promise.resolve([]),
-        enabled: !!showLogFor
-    });
-
-    // Mutations
-    const createMutation = useMutation({
-        mutationFn: createNotification,
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['notifications'] });
-            toast.success('Notification created successfully');
-            resetForm();
-        },
-        onError: (error: unknown) => {
-            const err = error as { response?: { data?: { error?: string } }; message?: string };
-            toast.error(`Failed to create notification: ${err.response?.data?.error || err.message}`);
-        }
-    });
-
-    const updateMutation = useMutation({
-        mutationFn: ({ id, data }: { id: number; data: NotificationConfig }) => updateNotification(id, data),
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['notifications'] });
-            toast.success('Notification updated successfully');
-            resetForm();
-        },
-        onError: (error: unknown) => {
-            const err = error as { response?: { data?: { error?: string } }; message?: string };
-            toast.error(`Failed to update notification: ${err.response?.data?.error || err.message}`);
-        }
-    });
-
-    const deleteMutation = useMutation({
-        mutationFn: deleteNotification,
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['notifications'] });
-            toast.success('Notification deleted');
-        },
-        onError: (error: unknown) => {
-            const err = error as { response?: { data?: { error?: string } }; message?: string };
-            toast.error(`Failed to delete notification: ${err.response?.data?.error || err.message}`);
-        }
-    });
-
-    const [isTesting, setIsTesting] = useState(false);
-    const [testResult, setTestResult] = useState<{ success?: boolean; message?: string }>({});
-
-    const handleTest = async () => {
-        setIsTesting(true);
-        setTestResult({});
-        try {
-            const result = await testNotification({
-                name: formData.name,
-                provider_type: formData.provider_type,
-                config: formData.config,
-                events: formData.events,
-                enabled: formData.enabled,
-                throttle_seconds: formData.throttle_seconds
-            });
-            setTestResult({
-                success: result.success,
-                message: result.success ? 'Test notification sent!' : result.error
-            });
-        } catch (error: unknown) {
-            const err = error as { response?: { data?: { error?: string } }; message?: string };
-            setTestResult({ success: false, message: err.response?.data?.error || err.message });
-        } finally {
-            setIsTesting(false);
-        }
-    };
-
-    const resetForm = () => {
-        setFormData({
-            name: '',
-            provider_type: 'discord',
-            config: {},
-            events: [],
-            enabled: true,
-            throttle_seconds: 5
-        });
-        setEditingId(null);
-        setIsAddExpanded(false);
-        setTestResult({});
-    };
-
-    const handleEdit = (notification: NotificationConfig) => {
-        setFormData({
-            name: notification.name,
-            provider_type: notification.provider_type,
-            config: notification.config,
-            events: notification.events,
-            enabled: notification.enabled,
-            throttle_seconds: notification.throttle_seconds
-        });
-        setEditingId(notification.id!);
-        setIsAddExpanded(true);
-    };
-
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        const payload: NotificationConfig = {
-            ...formData
-        };
-        if (editingId) {
-            updateMutation.mutate({ id: editingId, data: payload });
-        } else {
-            createMutation.mutate(payload);
-        }
-    };
-
-    return (
-        <div className="space-y-4">
-            {/* Add/Edit Form */}
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
-                <button
-                    onClick={() => {
-                        if (isAddExpanded && editingId) {
-                            resetForm();
-                        } else {
-                            setIsAddExpanded(!isAddExpanded);
-                        }
-                    }}
-                    className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
-                >
-                    <div className="flex items-center gap-3">
-                        {editingId ? (
-                            <>
-                                <Pencil className="w-5 h-5 text-yellow-400" />
-                                <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Edit Notification</h3>
-                            </>
-                        ) : (
-                            <>
-                                <Plus className="w-5 h-5 text-pink-400" />
-                                <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Add Notification</h3>
-                            </>
-                        )}
-                    </div>
-                    <ChevronDown className={clsx(
-                        "w-5 h-5 text-slate-600 dark:text-slate-400 transition-transform duration-200",
-                        isAddExpanded && "rotate-180"
-                    )} />
-                </button>
-
-                <AnimatePresence>
-                    {isAddExpanded && (
-                        <motion.div
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: "auto", opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.2, ease: "easeInOut" }}
-                        >
-                            <form onSubmit={handleSubmit} className="px-6 pb-6 space-y-6 border-t border-slate-200 dark:border-slate-800/50 pt-4">
-                                {/* Basic Settings */}
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Name</label>
-                                        <input
-                                            type="text"
-                                            value={formData.name}
-                                            onChange={e => setFormData({ ...formData, name: e.target.value })}
-                                            placeholder="My Discord Alerts"
-                                            className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-pink-500"
-                                            required
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Provider</label>
-                                        <ProviderSelect
-                                            value={formData.provider_type}
-                                            onChange={provider => setFormData({ ...formData, provider_type: provider, config: {} })}
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Throttle (seconds)</label>
-                                        <input
-                                            type="number"
-                                            min="0"
-                                            value={formData.throttle_seconds}
-                                            onChange={e => setFormData({ ...formData, throttle_seconds: parseInt(e.target.value) || 0 })}
-                                            className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-pink-500"
-                                        />
-                                        <p className="text-xs text-slate-500 mt-1">Minimum seconds between notifications</p>
-                                    </div>
-                                </div>
-
-                                {/* Provider-specific fields */}
-                                <ProviderFields
-                                    provider={formData.provider_type}
-                                    config={formData.config}
-                                    onChange={(config) => setFormData(prev => ({ ...prev, config }))}
-                                    variant="config"
-                                />
-
-                                {/* Event Selection */}
-                                <EventSelector
-                                    events={formData.events}
-                                    eventGroups={eventGroups}
-                                    onChange={(events) => setFormData(prev => ({ ...prev, events }))}
-                                    variant="config"
-                                />
-
-                                {/* Enable/Disable */}
-                                <div className="flex items-center gap-3">
-                                    <input
-                                        type="checkbox"
-                                        id="notif-enabled"
-                                        checked={formData.enabled}
-                                        onChange={e => setFormData({ ...formData, enabled: e.target.checked })}
-                                        className="w-4 h-4 text-pink-500 bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 rounded focus:ring-pink-500"
-                                    />
-                                    <label htmlFor="notif-enabled" className="text-sm text-slate-700 dark:text-slate-300">Enabled</label>
-                                </div>
-
-                                {/* Actions */}
-                                <div className="flex items-center justify-between pt-4 border-t border-slate-200 dark:border-slate-800">
-                                    <div className="flex items-center gap-3">
-                                        <button
-                                            type="button"
-                                            onClick={handleTest}
-                                            disabled={isTesting || !formData.name}
-                                            className="px-4 py-2 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center gap-2"
-                                        >
-                                            <Send className="w-4 h-4" />
-                                            {isTesting ? 'Sending...' : 'Test'}
-                                        </button>
-                                        {testResult.message && (
-                                            <span className={clsx(
-                                                "text-sm flex items-center gap-1",
-                                                testResult.success ? "text-green-400" : "text-red-400"
-                                            )}>
-                                                {testResult.success ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
-                                                {testResult.message}
-                                            </span>
-                                        )}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        {editingId && (
-                                            <button
-                                                type="button"
-                                                onClick={resetForm}
-                                                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-700 dark:text-slate-300 rounded-lg transition-colors cursor-pointer"
-                                            >
-                                                Cancel
-                                            </button>
-                                        )}
-                                        <button
-                                            type="submit"
-                                            disabled={createMutation.isPending || updateMutation.isPending}
-                                            className="flex items-center gap-2 px-4 py-2 bg-pink-500 hover:bg-pink-600 disabled:bg-pink-500/50 text-slate-900 dark:text-white rounded-lg transition-colors cursor-pointer"
-                                        >
-                                            {editingId ? (
-                                                <>
-                                                    <Save className="w-4 h-4" />
-                                                    Update
-                                                </>
-                                            ) : (
-                                                <>
-                                                    <Plus className="w-4 h-4" />
-                                                    Create
-                                                </>
-                                            )}
-                                        </button>
-                                    </div>
-                                </div>
-                            </form>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-            </div>
-
-            {/* Notifications List */}
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
-                {isLoading ? (
-                    <div className="p-8 text-center text-slate-600 dark:text-slate-400">Loading notifications...</div>
-                ) : notifications && notifications.length > 0 ? (
-                    <div className="divide-y divide-slate-800/50">
-                        {notifications.map(notification => {
-                            const provider = PROVIDER_CONFIGS[notification.provider_type as keyof typeof PROVIDER_CONFIGS];
-                            return (
-                                <div key={notification.id} className="p-4 hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors">
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-4">
-                                            <div className={clsx(
-                                                "w-3 h-3 rounded-full",
-                                                notification.enabled
-                                                    ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]"
-                                                    : "bg-slate-600"
-                                            )} />
-                                            <div>
-                                                <div className="flex items-center gap-2">
-                                                    <ProviderIcon provider={notification.provider_type} className="w-5 h-5" />
-                                                    <span className="font-medium text-slate-900 dark:text-white">{notification.name}</span>
-                                                    <span className="text-xs text-slate-600 dark:text-slate-500 bg-slate-200 dark:bg-slate-800 px-2 py-0.5 rounded">
-                                                        {provider?.label || notification.provider_type}
-                                                    </span>
-                                                </div>
-                                                <div className="text-xs text-slate-500 mt-1">
-                                                    {notification.events.length} events • {notification.throttle_seconds}s throttle
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <button
-                                                onClick={() => setShowLogFor(showLogFor === notification.id ? null : notification.id!)}
-                                                className={clsx(
-                                                    "p-2 rounded-lg transition-colors cursor-pointer",
-                                                    showLogFor === notification.id
-                                                        ? "bg-pink-500/20 text-pink-400"
-                                                        : "text-slate-600 dark:text-slate-400 hover:text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                                )}
-                                                title="View Log"
-                                            >
-                                                <History className="w-4 h-4" />
-                                            </button>
-                                            <button
-                                                onClick={() => handleEdit(notification)}
-                                                className="p-2 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded-lg transition-colors cursor-pointer"
-                                                title="Edit"
-                                            >
-                                                <Pencil className="w-4 h-4" />
-                                            </button>
-                                            <button
-                                                onClick={() => {
-                                                    if (confirm(`Delete notification "${notification.name}"?`)) {
-                                                        deleteMutation.mutate(notification.id!);
-                                                    }
-                                                }}
-                                                className="p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors cursor-pointer"
-                                                title="Delete"
-                                            >
-                                                <Trash2 className="w-4 h-4" />
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    {/* Log entries */}
-                                    <AnimatePresence>
-                                        {showLogFor === notification.id && (
-                                            <motion.div
-                                                initial={{ height: 0, opacity: 0 }}
-                                                animate={{ height: "auto", opacity: 1 }}
-                                                exit={{ height: 0, opacity: 0 }}
-                                                className="mt-4 overflow-hidden"
-                                            >
-                                                <div className="bg-slate-100 dark:bg-slate-800/50 rounded-lg p-4 max-h-64 overflow-y-auto">
-                                                    <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Recent Activity</h4>
-                                                    {logEntries && logEntries.length > 0 ? (
-                                                        <div className="space-y-2">
-                                                            {logEntries.map((entry: NotificationLogEntry) => (
-                                                                <div key={entry.id} className="flex items-start gap-3 text-xs">
-                                                                    <div className={clsx(
-                                                                        "w-2 h-2 mt-1.5 rounded-full flex-shrink-0",
-                                                                        entry.status === 'sent' ? "bg-green-500" : "bg-red-500"
-                                                                    )} />
-                                                                    <div className="flex-1 min-w-0">
-                                                                        <div className="flex items-center gap-2">
-                                                                            <span className="text-slate-600 dark:text-slate-400">{entry.event_type}</span>
-                                                                            <span className="text-slate-600">•</span>
-                                                                            <span className="text-slate-500">{new Date(entry.sent_at).toLocaleString()}</span>
-                                                                        </div>
-                                                                        {entry.error && (
-                                                                            <div className="text-red-400 mt-0.5">{entry.error}</div>
-                                                                        )}
-                                                                    </div>
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                    ) : (
-                                                        <div className="text-slate-500 text-sm">No activity yet</div>
-                                                    )}
-                                                </div>
-                                            </motion.div>
-                                        )}
-                                    </AnimatePresence>
-                                </div>
-                            );
-                        })}
-                    </div>
-                ) : (
-                    <div className="p-8 text-center text-slate-500 italic">No notifications configured</div>
-                )}
-            </div>
         </div>
     );
 };

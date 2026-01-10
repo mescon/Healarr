@@ -453,3 +453,32 @@ export function formatCronExpression(cron: string): string {
     // Fallback: return a simplified description
     return cron;
 }
+
+/**
+ * Format a date/time as relative time (e.g., "3h ago", "2 days ago")
+ * @param isoDate - ISO date string or Date object
+ * @returns Relative time string
+ */
+export function formatDistanceToNow(isoDate: string | Date | null | undefined): string {
+    if (!isoDate) return 'never';
+
+    const date = typeof isoDate === 'string' ? new Date(isoDate) : isoDate;
+    if (isNaN(date.getTime())) return 'invalid date';
+
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffSecs = Math.floor(diffMs / 1000);
+    const diffMins = Math.floor(diffSecs / 60);
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffSecs < 10) return 'just now';
+    if (diffSecs < 60) return `${diffSecs}s ago`;
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays === 1) return 'yesterday';
+    if (diffDays < 7) return `${diffDays} days ago`;
+    if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
+    if (diffDays < 365) return `${Math.floor(diffDays / 30)} months ago`;
+    return `${Math.floor(diffDays / 365)} years ago`;
+}
