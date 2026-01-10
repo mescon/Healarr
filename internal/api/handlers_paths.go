@@ -91,6 +91,10 @@ func (s *RESTServer) getScanPaths(c *gin.Context) {
 		}
 		paths = append(paths, path)
 	}
+	if rows.Err() != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading scan paths"})
+		return
+	}
 	c.JSON(http.StatusOK, paths)
 }
 
@@ -194,12 +198,21 @@ func (s *RESTServer) createScanPath(c *gin.Context) {
 	if req.DetectionMode == "" {
 		req.DetectionMode = "quick"
 	}
-	if req.MaxRetries == 0 {
+	// Validate and apply defaults for max_retries (1-100 range)
+	if req.MaxRetries <= 0 || req.MaxRetries > 100 {
 		req.MaxRetries = config.Get().DefaultMaxRetries
 	}
 	// If arr_path is empty, assume same path as local (no mapping needed)
 	if req.ArrPath == "" {
 		req.ArrPath = req.LocalPath
+	}
+	// Validate verification_timeout_hours if provided (1 hour to 1 year)
+	if req.VerificationTimeoutHours != nil {
+		hours := *req.VerificationTimeoutHours
+		if hours < 1 || hours > 8760 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "verification_timeout_hours must be between 1 and 8760"})
+			return
+		}
 	}
 
 	// Marshal detection args to JSON
@@ -224,6 +237,8 @@ func (s *RESTServer) createScanPath(c *gin.Context) {
 	}
 	if err := s.pathMapper.Reload(); err != nil {
 		logger.Errorf(errMsgReloadPathMappings, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Scan path created but path mapping update failed"})
+		return
 	}
 	c.Status(http.StatusCreated)
 }
@@ -237,6 +252,8 @@ func (s *RESTServer) deleteScanPath(c *gin.Context) {
 	}
 	if err := s.pathMapper.Reload(); err != nil {
 		logger.Errorf(errMsgReloadPathMappings, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Scan path deleted but path mapping update failed"})
+		return
 	}
 	c.Status(http.StatusNoContent)
 }
@@ -348,7 +365,8 @@ func (s *RESTServer) updateScanPath(c *gin.Context) {
 		return
 	}
 
-	if req.MaxRetries == 0 {
+	// Validate and apply defaults for max_retries (1-100 range)
+	if req.MaxRetries <= 0 || req.MaxRetries > 100 {
 		req.MaxRetries = config.Get().DefaultMaxRetries
 	}
 	if req.DetectionMethod == "" {
@@ -360,6 +378,14 @@ func (s *RESTServer) updateScanPath(c *gin.Context) {
 	// If arr_path is empty, assume same path as local (no mapping needed)
 	if req.ArrPath == "" {
 		req.ArrPath = req.LocalPath
+	}
+	// Validate verification_timeout_hours if provided (1 hour to 1 year)
+	if req.VerificationTimeoutHours != nil {
+		hours := *req.VerificationTimeoutHours
+		if hours < 1 || hours > 8760 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "verification_timeout_hours must be between 1 and 8760"})
+			return
+		}
 	}
 
 	// Marshal detection args to JSON
@@ -387,6 +413,8 @@ func (s *RESTServer) updateScanPath(c *gin.Context) {
 	}
 	if err := s.pathMapper.Reload(); err != nil {
 		logger.Errorf(errMsgReloadPathMappings, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Scan path updated but path mapping update failed"})
+		return
 	}
 	c.Status(http.StatusOK)
 }

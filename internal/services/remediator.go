@@ -134,22 +134,23 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 		r.semaphore <- struct{}{}
 		defer func() { <-r.semaphore }()
 
-		// Trigger search directly (skip deletion)
+		// Extract episode IDs from metadata first - validates data before announcing search
+		episodeIDs := extractEpisodeIDs(metadata)
+
+		// Publish search started with episode context (skip deletion in retry)
 		if err := r.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.SearchStarted,
 			EventData: map[string]interface{}{
-				"file_path": filePath,
-				"media_id":  mediaID,
-				"path_id":   pathID,
+				"file_path":   filePath,
+				"media_id":    mediaID,
+				"path_id":     pathID,
+				"episode_ids": episodeIDs,
 			},
 		}); err != nil {
 			logger.Errorf("Failed to publish SearchStarted event: %v", err)
 		}
-
-		// Extract episode IDs from metadata for targeted search
-		episodeIDs := extractEpisodeIDs(metadata)
 
 		err := r.arrClient.TriggerSearch(mediaID, arrPath, episodeIDs)
 		if err != nil {
@@ -160,15 +161,15 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 
 		logger.Infof("Retry search triggered successfully for %s (media ID: %d)", filePath, mediaID)
 
-		// Publish search completed with enriched event data
+		// Publish search completed with enriched event data - critical event, use retry
 		eventData := r.buildSearchEventData(filePath, arrPath, mediaID, pathID, metadata, true)
-		if err := r.eventBus.Publish(domain.Event{
+		if err := r.eventBus.PublishWithRetry(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.SearchCompleted,
 			EventData:     eventData,
 		}); err != nil {
-			logger.Errorf("Failed to publish SearchCompleted event: %v", err)
+			logger.Errorf("Failed to publish SearchCompleted event after retries: %v", err)
 		}
 	}()
 }
@@ -276,21 +277,26 @@ func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath s
 	r.semaphore <- struct{}{}
 	defer func() { <-r.semaphore }()
 
-	// Publish deletion started
-	if err := r.eventBus.Publish(domain.Event{
-		AggregateID:   corruptionID,
-		AggregateType: "corruption",
-		EventType:     domain.DeletionStarted,
-	}); err != nil {
-		logger.Errorf("Failed to publish DeletionStarted event: %v", err)
-	}
-
-	// Find media
+	// Find media first - validates we can proceed before publishing DeletionStarted
 	mediaID, err := r.arrClient.FindMediaByPath(arrPath)
 	if err != nil {
 		logger.Errorf("Failed to find media for path %s: %v", arrPath, err)
 		r.publishError(corruptionID, domain.DeletionFailed, err.Error())
 		return
+	}
+
+	// Publish deletion started - now that we've validated we can proceed
+	if err := r.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DeletionStarted,
+		EventData: map[string]interface{}{
+			"file_path": filePath,
+			"arr_path":  arrPath,
+			"media_id":  mediaID,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish DeletionStarted event: %v", err)
 	}
 
 	// Delete file
@@ -301,8 +307,8 @@ func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath s
 		return
 	}
 
-	// Publish deletion completed
-	if err := r.eventBus.Publish(domain.Event{
+	// Publish deletion completed - critical event, use retry
+	if err := r.eventBus.PublishWithRetry(domain.Event{
 		AggregateID:   corruptionID,
 		AggregateType: "corruption",
 		EventType:     domain.DeletionCompleted,
@@ -311,7 +317,7 @@ func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath s
 			"metadata": metadata,
 		},
 	}); err != nil {
-		logger.Errorf("Failed to publish DeletionCompleted event: %v", err)
+		logger.Errorf("Failed to publish DeletionCompleted event after retries: %v", err)
 	}
 
 	// Trigger search
@@ -320,22 +326,23 @@ func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath s
 
 // triggerSearch initiates the search for a replacement file
 func (r *RemediatorService) triggerSearch(corruptionID, filePath, arrPath string, pathID, mediaID int64, metadata map[string]interface{}) {
-	// Publish search started
+	// Extract episode IDs from metadata first - validates data before announcing search
+	episodeIDs := extractEpisodeIDs(metadata)
+
+	// Publish search started with episode context
 	if err := r.eventBus.Publish(domain.Event{
 		AggregateID:   corruptionID,
 		AggregateType: "corruption",
 		EventType:     domain.SearchStarted,
 		EventData: map[string]interface{}{
-			"file_path": filePath,
-			"media_id":  mediaID,
-			"path_id":   pathID,
+			"file_path":   filePath,
+			"media_id":    mediaID,
+			"path_id":     pathID,
+			"episode_ids": episodeIDs,
 		},
 	}); err != nil {
 		logger.Errorf("Failed to publish SearchStarted event: %v", err)
 	}
-
-	// Extract episode IDs from metadata for targeted search
-	episodeIDs := extractEpisodeIDs(metadata)
 
 	err := r.arrClient.TriggerSearch(mediaID, arrPath, episodeIDs)
 	if err != nil {
@@ -346,15 +353,15 @@ func (r *RemediatorService) triggerSearch(corruptionID, filePath, arrPath string
 
 	logger.Infof("Remediation completed successfully for %s", filePath)
 
-	// Publish search completed with enriched event data
+	// Publish search completed with enriched event data - critical event, use retry
 	eventData := r.buildSearchEventData(filePath, arrPath, mediaID, pathID, metadata, false)
-	if err := r.eventBus.Publish(domain.Event{
+	if err := r.eventBus.PublishWithRetry(domain.Event{
 		AggregateID:   corruptionID,
 		AggregateType: "corruption",
 		EventType:     domain.SearchCompleted,
 		EventData:     eventData,
 	}); err != nil {
-		logger.Errorf("Failed to publish SearchCompleted event: %v", err)
+		logger.Errorf("Failed to publish SearchCompleted event after retries: %v", err)
 	}
 }
 

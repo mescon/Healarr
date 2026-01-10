@@ -43,8 +43,8 @@ func (s *RESTServer) createNotification(c *gin.Context) {
 		return
 	}
 
-	// Set defaults
-	if req.ThrottleSeconds == 0 {
+	// Validate and set defaults for ThrottleSeconds (1-3600 seconds)
+	if req.ThrottleSeconds <= 0 || req.ThrottleSeconds > 3600 {
 		req.ThrottleSeconds = 5
 	}
 
@@ -146,7 +146,11 @@ func (s *RESTServer) getNotificationLog(c *gin.Context) {
 		return
 	}
 
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	// Use parseInt helper with bounds checking (consistent with pagination.go)
+	limit := parseInt(c.DefaultQuery("limit", "50"), 50)
+	if limit < 1 || limit > 500 {
+		limit = 50
+	}
 	entries, err := s.notifier.GetNotificationLog(id, limit)
 	if err != nil {
 		respondDatabaseError(c, err)

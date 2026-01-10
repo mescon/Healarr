@@ -159,6 +159,10 @@ func (s *RESTServer) getStatsHistory(c *gin.Context) {
 			"count": count,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, stats)
 }
 
@@ -194,6 +198,10 @@ func (s *RESTServer) getStatsTypes(c *gin.Context) {
 			"count": count,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, stats)
 }
 
@@ -228,6 +236,10 @@ func (s *RESTServer) getPathHealth(c *gin.Context) {
 			continue
 		}
 		paths = append(paths, p)
+	}
+	if err := pathRows.Err(); err != nil {
+		respondDatabaseError(c, err)
+		return
 	}
 
 	if len(paths) == 0 {

@@ -484,6 +484,11 @@ func (m *MockEventBus) Publish(event domain.Event) error {
 	return nil
 }
 
+// PublishWithRetry delegates to Publish for testing (no retry needed in tests).
+func (m *MockEventBus) PublishWithRetry(event domain.Event) error {
+	return m.Publish(event)
+}
+
 // Subscribe registers a handler for the given event type.
 func (m *MockEventBus) Subscribe(eventType domain.EventType, handler func(domain.Event)) {
 	m.mu.Lock()

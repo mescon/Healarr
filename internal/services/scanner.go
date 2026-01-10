@@ -539,8 +539,8 @@ func (s *ScannerService) ScanFile(localPath string) error {
 			return nil
 		}
 
-		// Emit event
-		err := s.eventBus.Publish(domain.Event{
+		// Emit event - critical entry point for remediation journey, use retry
+		err := s.eventBus.PublishWithRetry(domain.Event{
 			AggregateType: "corruption",
 			AggregateID:   uuid.New().String(),
 			EventType:     domain.CorruptionDetected,
@@ -1092,8 +1092,8 @@ func (s *ScannerService) handleTrueCorruption(ctx context.Context, progress *Sca
 		return action
 	}
 
-	// Emit corruption event for remediation
-	err := s.eventBus.Publish(domain.Event{
+	// Emit corruption event for remediation - critical entry point, use retry
+	err := s.eventBus.PublishWithRetry(domain.Event{
 		AggregateType: "corruption",
 		AggregateID:   uuid.New().String(),
 		EventType:     domain.CorruptionDetected,
@@ -1109,7 +1109,7 @@ func (s *ScannerService) handleTrueCorruption(ctx context.Context, progress *Sca
 		},
 	})
 	if err != nil {
-		logger.Errorf("Failed to publish corruption event: %v", err)
+		logger.Errorf("Failed to publish corruption event after retries: %v", err)
 	}
 
 	return scanContinue
@@ -1795,7 +1795,8 @@ func (s *ScannerService) emitRescanCorruption(f pendingRescanFile, healthErr *in
 		fileSize = info.Size()
 	}
 
-	if err := s.eventBus.Publish(domain.Event{
+	// Critical entry point for remediation journey, use retry
+	if err := s.eventBus.PublishWithRetry(domain.Event{
 		AggregateType: "corruption",
 		AggregateID:   uuid.New().String(),
 		EventType:     domain.CorruptionDetected,
@@ -1810,7 +1811,7 @@ func (s *ScannerService) emitRescanCorruption(f pendingRescanFile, healthErr *in
 			"dry_run":         dryRun,
 		},
 	}); err != nil {
-		logger.Errorf("Failed to publish corruption event for rescan: %v", err)
+		logger.Errorf("Failed to publish corruption event for rescan after retries: %v", err)
 	}
 }
 

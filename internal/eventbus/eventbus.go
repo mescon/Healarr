@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,10 +13,18 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
+// Retry configuration for PublishWithRetry
+const (
+	publishMaxRetries = 3
+	publishBaseDelay  = 100 * time.Millisecond
+	publishMaxDelay   = 2 * time.Second
+)
+
 // Publisher defines the interface for publishing events.
 // This interface enables testing with mock implementations.
 type Publisher interface {
 	Publish(event domain.Event) error
+	PublishWithRetry(event domain.Event) error
 	Subscribe(eventType domain.EventType, handler func(domain.Event))
 }
 
@@ -86,6 +95,39 @@ func (eb *EventBus) Publish(event domain.Event) error {
 	}
 
 	return nil
+}
+
+// PublishWithRetry publishes an event with retry logic for transient failures.
+// Use this for critical state-changing events where losing the event would cause
+// inconsistent state (e.g., DeletionCompleted, SearchCompleted, VerificationSuccess).
+// For informational events (DownloadProgress), use Publish() instead.
+func (eb *EventBus) PublishWithRetry(event domain.Event) error {
+	var lastErr error
+
+	for attempt := 0; attempt <= publishMaxRetries; attempt++ {
+		lastErr = eb.Publish(event)
+		if lastErr == nil {
+			return nil
+		}
+
+		// Don't retry marshal errors (data validation issue, not transient)
+		if strings.Contains(lastErr.Error(), "marshal") {
+			return lastErr
+		}
+
+		if attempt < publishMaxRetries {
+			// Exponential backoff: 100ms, 200ms, 400ms
+			delay := publishBaseDelay * time.Duration(1<<uint(attempt))
+			if delay > publishMaxDelay {
+				delay = publishMaxDelay
+			}
+			logger.Warnf("Event publish failed for %s (%s), retrying in %v (attempt %d/%d): %v",
+				event.AggregateID, event.EventType, delay, attempt+1, publishMaxRetries, lastErr)
+			time.Sleep(delay)
+		}
+	}
+
+	return fmt.Errorf("failed to publish event %s after %d retries: %w", event.EventType, publishMaxRetries, lastErr)
 }
 
 func (eb *EventBus) Subscribe(eventType domain.EventType, handler func(domain.Event)) {

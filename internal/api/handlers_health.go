@@ -72,6 +72,10 @@ func (s *RESTServer) checkArrInstancesHealth(ctx context.Context) arrHealthResul
 		}
 		instances = append(instances, arrInstance{url, decryptedKey})
 	}
+	if err := rows.Err(); err != nil {
+		logger.Errorf("Error iterating arr instances for health check: %v", err)
+		return result
+	}
 
 	result.total = len(instances)
 	if result.total == 0 {
@@ -101,11 +105,12 @@ func (s *RESTServer) checkArrInstancesHealth(ctx context.Context) arrHealthResul
 
 // checkSingleArrInstance checks if a single arr instance is online
 func (s *RESTServer) checkSingleArrInstance(ctx context.Context, client *http.Client, url, apiKey string) bool {
-	testURL := strings.TrimSuffix(url, "/") + "/api/v3/system/status?apikey=" + apiKey
+	testURL := strings.TrimSuffix(url, "/") + "/api/v3/system/status"
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
 	if err != nil {
 		return false
 	}
+	req.Header.Set("X-Api-Key", apiKey)
 
 	resp, err := client.Do(req)
 	if err != nil {

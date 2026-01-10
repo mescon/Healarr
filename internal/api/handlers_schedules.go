@@ -35,6 +35,10 @@ func (s *RESTServer) getSchedules(c *gin.Context) {
 			"enabled":         enabled,
 		})
 	}
+	if rows.Err() != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading schedules"})
+		return
+	}
 	c.JSON(http.StatusOK, schedules)
 }
 

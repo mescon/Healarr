@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -39,9 +40,13 @@ func getWebSocketUpgrader() websocket.Upgrader {
 				if origin == "" {
 					return true // No origin header = same-origin request
 				}
-				// Parse origin and compare host
-				host := r.Host
-				return strings.Contains(origin, host)
+				// Parse origin URL and compare host exactly (not substring match!)
+				// This prevents bypass attacks like "evil-app.com" matching "app.com"
+				parsedOrigin, err := url.Parse(origin)
+				if err != nil {
+					return false
+				}
+				return parsedOrigin.Host == r.Host
 			}
 			// Check against allowed origins
 			origin := r.Header.Get("Origin")

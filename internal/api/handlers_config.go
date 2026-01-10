@@ -351,6 +351,8 @@ func (s *RESTServer) importScanPaths(paths []importScanPath) (int, map[string]in
 			count++
 			if newID, idErr := result.LastInsertId(); idErr == nil {
 				pathIDs[path.LocalPath] = newID
+			} else {
+				logger.Warnf("Failed to get ID for imported scan path %s: %v (schedule import will use DB lookup)", path.LocalPath, idErr)
 			}
 		} else {
 			logger.Errorf("Failed to import scan path %s: %v", path.LocalPath, err)

@@ -940,9 +940,10 @@ func TestRemediatorService_ExecuteRemediation_FindMediaFails(t *testing.T) {
 	// Call executeRemediation directly
 	remediator.executeRemediation("test-id", "/test/path.mkv", "/arr/path.mkv", 1)
 
-	// Should have DeletionStarted and DeletionFailed
-	if mockEventBus.EventCount(domain.DeletionStarted) != 1 {
-		t.Errorf("Expected 1 DeletionStarted event, got %d", mockEventBus.EventCount(domain.DeletionStarted))
+	// Should only have DeletionFailed (no DeletionStarted since we fail before starting)
+	// DeletionStarted is now emitted AFTER FindMediaByPath succeeds to avoid false "started" events
+	if mockEventBus.EventCount(domain.DeletionStarted) != 0 {
+		t.Errorf("Expected 0 DeletionStarted events (fail-fast before starting), got %d", mockEventBus.EventCount(domain.DeletionStarted))
 	}
 	if mockEventBus.EventCount(domain.DeletionFailed) != 1 {
 		t.Errorf("Expected 1 DeletionFailed event, got %d", mockEventBus.EventCount(domain.DeletionFailed))

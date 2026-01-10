@@ -738,6 +738,142 @@ func TestEventBus_UserID(t *testing.T) {
 	}
 }
 
+// TestEventBus_PublishWithRetry_Success tests that PublishWithRetry works on first attempt.
+func TestEventBus_PublishWithRetry_Success(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	eb := NewEventBus(db)
+	defer eb.Shutdown()
+
+	event := domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   "retry-success-test",
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path": "/media/movies/test.mkv",
+		},
+	}
+
+	err := eb.PublishWithRetry(event)
+	if err != nil {
+		t.Fatalf("PublishWithRetry failed: %v", err)
+	}
+
+	// Verify event was persisted
+	events := getEventsByAggregate(t, db, "retry-success-test")
+	if len(events) != 1 {
+		t.Errorf("Expected 1 event in database, got %d", len(events))
+	}
+}
+
+// TestEventBus_PublishWithRetry_MarshalError tests that marshal errors are not retried.
+func TestEventBus_PublishWithRetry_MarshalError(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	eb := NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Create an event with a value that cannot be JSON marshaled
+	event := domain.Event{
+		AggregateType: "test",
+		AggregateID:   "retry-marshal-error-test",
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"unmarshalable": func() {}, // Functions cannot be JSON marshaled
+		},
+	}
+
+	start := time.Now()
+	err := eb.PublishWithRetry(event)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Error("Expected error when EventData contains unmarshalable value")
+	}
+
+	// Marshal errors should NOT be retried, so this should complete quickly
+	// (not wait for exponential backoff delays)
+	if elapsed > 50*time.Millisecond {
+		t.Errorf("Marshal error took too long (%v), should not have retried", elapsed)
+	}
+
+	// Verify the error message mentions marshaling
+	if err != nil && !containsString(err.Error(), "marshal") {
+		t.Errorf("Expected error about marshaling, got: %v", err)
+	}
+}
+
+// TestEventBus_PublishWithRetry_MaxRetriesExceeded tests behavior when all retries fail.
+func TestEventBus_PublishWithRetry_MaxRetriesExceeded(t *testing.T) {
+	db := newTestDB(t)
+
+	eb := NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Close the database to simulate persistent failure
+	db.Close()
+
+	event := domain.Event{
+		AggregateType: "test",
+		AggregateID:   "retry-max-exceeded-test",
+		EventType:     domain.CorruptionDetected,
+		EventData:     map[string]interface{}{},
+	}
+
+	err := eb.PublishWithRetry(event)
+	if err == nil {
+		t.Error("Expected error when database is closed")
+	}
+
+	// Verify the error message mentions retries
+	if err != nil && !containsString(err.Error(), "retries") {
+		t.Errorf("Expected error about retries, got: %v", err)
+	}
+}
+
+// TestEventBus_PublishWithRetry_WithSubscriber tests that subscribers receive events.
+func TestEventBus_PublishWithRetry_WithSubscriber(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	eb := NewEventBus(db)
+	defer eb.Shutdown()
+
+	var received []domain.Event
+	var mu sync.Mutex
+
+	eb.Subscribe(domain.VerificationSuccess, func(event domain.Event) {
+		mu.Lock()
+		received = append(received, event)
+		mu.Unlock()
+	})
+
+	event := domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   "retry-subscriber-test",
+		EventType:     domain.VerificationSuccess,
+		EventData: map[string]interface{}{
+			"verified": true,
+		},
+	}
+
+	err := eb.PublishWithRetry(event)
+	if err != nil {
+		t.Fatalf("PublishWithRetry failed: %v", err)
+	}
+
+	// Wait for async delivery
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	if len(received) != 1 {
+		t.Errorf("Expected 1 event, got %d", len(received))
+	}
+	mu.Unlock()
+}
+
 // containsString is a helper to check if a string contains a substring.
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

@@ -442,7 +442,9 @@ func (v *VerifierService) handleSearchCompleted(event domain.Event) {
 	// Get arr_path for queue monitoring
 	arrPath, err := v.pathMapper.ToArrPath(filePath)
 	if err != nil {
-		logger.Infof("[WARN] Could not map path %s to arr path: %v, falling back to file polling", filePath, err)
+		// Path mapping failed - typically means path not covered by scan_path config
+		// Fall back to simple file polling (no download queue/history monitoring)
+		logger.Warnf("Path mapping failed for %s: %v - using file polling fallback (no download progress tracking)", filePath, err)
 		v.wg.Add(1)
 		go func() {
 			defer v.wg.Done()
@@ -461,18 +463,19 @@ func (v *VerifierService) handleSearchCompleted(event domain.Event) {
 
 // monitorState tracks the state during download monitoring
 type monitorState struct {
-	corruptionID string
-	filePath     string
-	arrPath      string
-	mediaID      int64
-	metadata     map[string]interface{}
-	pollInterval time.Duration
-	timeout      time.Duration
-	startTime    time.Time
-	attempt      int
-	lastStatus   string
-	lastProgress float64
-	wasInQueue   bool
+	corruptionID    string
+	filePath        string
+	arrPath         string
+	mediaID         int64
+	metadata        map[string]interface{}
+	pollInterval    time.Duration
+	timeout         time.Duration
+	startTime       time.Time
+	attempt         int
+	lastStatus      string
+	lastProgress    float64
+	wasInQueue      bool
+	apiFailureCount int // Track consecutive API failures for ManuallyRemoved detection
 }
 
 // monitorAction represents actions from monitoring steps
@@ -512,12 +515,15 @@ func (v *VerifierService) handleQueueItem(state *monitorState, item integration.
 		state.lastProgress = item.Progress
 
 		eventData := buildProgressEventData(item, currentStatus, warningMsg)
-		_ = v.eventBus.Publish(domain.Event{
+		if err := v.eventBus.Publish(domain.Event{
 			AggregateID:   state.corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.DownloadProgress,
 			EventData:     eventData,
-		})
+		}); err != nil {
+			logger.Warnf("Failed to publish DownloadProgress event for %s: %v", state.corruptionID, err)
+			// Continue monitoring - progress events are informational
+		}
 	}
 
 	// Check history if import is in progress/completed
@@ -542,17 +548,10 @@ func (v *VerifierService) handleNoQueueItems(state *monitorState, elapsed time.D
 		return monitorStop
 	}
 
-	// If item was in queue but now gone, check if it was imported (but files not accessible yet)
-	// vs actually manually removed from *arr queue
+	// If item was in queue but now gone, check if it was imported vs manually removed
 	if state.wasInQueue {
-		// Double-check: if *arr history shows an import event, don't mark as ManuallyRemoved
-		// The files may not be accessible yet (NFS sync delay, path mapping issue, etc.)
-		if v.hasImportEventInHistory(state.arrPath, state.mediaID) {
-			logger.Debugf("Import event found in history for %s but files not accessible yet, continuing to wait", state.corruptionID)
-			// Continue monitoring - files should become accessible eventually
-		} else {
-			// No import event in history - item was actually manually removed
-			v.publishManuallyRemoved(state.corruptionID, state.lastStatus)
+		action := v.handleDisappearedQueueItem(state, elapsed)
+		if action == monitorStop {
 			return monitorStop
 		}
 	}
@@ -563,6 +562,54 @@ func (v *VerifierService) handleNoQueueItems(state *monitorState, elapsed time.D
 	}
 
 	return monitorContinue
+}
+
+// handleDisappearedQueueItem handles the case when an item was in queue but is now gone.
+// It checks if the item was imported (files may not be accessible yet) vs manually removed.
+func (v *VerifierService) handleDisappearedQueueItem(state *monitorState, elapsed time.Duration) monitorAction {
+	hasImport, err := v.hasImportEventInHistory(state.arrPath, state.mediaID)
+	if err != nil {
+		return v.handleHistoryAPIFailure(state, elapsed, err)
+	}
+
+	state.apiFailureCount = 0 // Reset on successful API call
+	if hasImport {
+		logger.Debugf("Import event found in history for %s but files not accessible yet, continuing to wait", state.corruptionID)
+		return monitorContinue
+	}
+
+	// No import event in history - item was actually manually removed
+	v.publishManuallyRemoved(state.corruptionID, state.lastStatus)
+	return monitorStop
+}
+
+// handleHistoryAPIFailure handles API failures when checking history for import events.
+func (v *VerifierService) handleHistoryAPIFailure(state *monitorState, elapsed time.Duration, err error) monitorAction {
+	state.apiFailureCount++
+	if state.apiFailureCount < 5 {
+		logger.Debugf("History API failed for %s (attempt %d/5), continuing to monitor: %v",
+			state.corruptionID, state.apiFailureCount, err)
+		return monitorContinue
+	}
+
+	// Too many consecutive API failures - emit timeout with specific reason
+	logger.Warnf("History API failed %d times for %s, cannot determine state: %v",
+		state.apiFailureCount, state.corruptionID, err)
+	if pubErr := v.eventBus.Publish(domain.Event{
+		AggregateID:   state.corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DownloadTimeout,
+		EventData: map[string]interface{}{
+			"reason":       "api_unavailable",
+			"last_error":   err.Error(),
+			"api_failures": state.apiFailureCount,
+			"message":      "Unable to determine state due to *arr API failures",
+			"elapsed":      elapsed.String(),
+		},
+	}); pubErr != nil {
+		logger.Errorf("Failed to publish API timeout event: %v", pubErr)
+	}
+	return monitorStop
 }
 
 // monitorDownloadProgress uses the *arr queue and history APIs to track download progress
@@ -708,12 +755,13 @@ func findImportEvent(historyItems []integration.HistoryItemInfo) *integration.Hi
 // hasImportEventInHistory checks if *arr history contains an import event.
 // This is separate from checkHistoryForImport which also verifies files exist on disk.
 // Use this to avoid false ManuallyRemoved states when import succeeded but files aren't accessible yet.
-func (v *VerifierService) hasImportEventInHistory(arrPath string, mediaID int64) bool {
+// Returns (found, error) - caller must handle error case to avoid false ManuallyRemoved on API failure.
+func (v *VerifierService) hasImportEventInHistory(arrPath string, mediaID int64) (bool, error) {
 	historyItems, err := v.getHistoryWithRetry(arrPath, mediaID, 20, 3)
 	if err != nil {
-		return false
+		return false, err
 	}
-	return findImportEvent(historyItems) != nil
+	return findImportEvent(historyItems) != nil, nil
 }
 
 // checkHistoryForImport checks *arr history for import completion
@@ -905,8 +953,8 @@ func (v *VerifierService) emitPartialReplacement(corruptionID string, existingPa
 	logger.Infof("Processing partial replacement for %s: %d of %d files found",
 		corruptionID, len(existingPaths), expectedCount)
 
-	// Emit a warning event about partial replacement
-	if err := v.eventBus.Publish(domain.Event{
+	// Emit a warning event about partial replacement - critical event, use retry
+	if err := v.eventBus.PublishWithRetry(domain.Event{
 		AggregateID:   corruptionID,
 		AggregateType: "corruption",
 		EventType:     domain.FileDetected,
@@ -919,7 +967,7 @@ func (v *VerifierService) emitPartialReplacement(corruptionID string, existingPa
 			"missing_count":       expectedCount - len(existingPaths),
 		},
 	}); err != nil {
-		logger.Errorf("Failed to publish FileDetected event for partial replacement: %v", err)
+		logger.Errorf("Failed to publish FileDetected event for partial replacement after retries: %v", err)
 	}
 
 	// Verify the files that DO exist
@@ -932,19 +980,19 @@ func (v *VerifierService) emitFilesDetected(corruptionID string, filePaths []str
 		return
 	}
 
-	// If single file, use simple path in event
+	// If single file, use simple path in event - critical event, use retry
 	if len(filePaths) == 1 {
-		if err := v.eventBus.Publish(domain.Event{
+		if err := v.eventBus.PublishWithRetry(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.FileDetected,
 			EventData:     map[string]interface{}{"file_path": filePaths[0]},
 		}); err != nil {
-			logger.Errorf("Failed to publish FileDetected event: %v", err)
+			logger.Errorf("Failed to publish FileDetected event after retries: %v", err)
 		}
 	} else {
-		// Multiple files (multi-episode replacement with individual episodes)
-		if err := v.eventBus.Publish(domain.Event{
+		// Multiple files (multi-episode replacement with individual episodes) - critical event, use retry
+		if err := v.eventBus.PublishWithRetry(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.FileDetected,
@@ -954,7 +1002,7 @@ func (v *VerifierService) emitFilesDetected(corruptionID string, filePaths []str
 				"file_count": len(filePaths),
 			},
 		}); err != nil {
-			logger.Errorf("Failed to publish FileDetected event: %v", err)
+			logger.Errorf("Failed to publish FileDetected event after retries: %v", err)
 		}
 		logger.Infof("Multi-episode replacement detected for %s: %d files to verify", corruptionID, len(filePaths))
 	}
@@ -1012,18 +1060,20 @@ func (v *VerifierService) verifyHealthMultiple(corruptionID string, filePaths []
 
 	if len(failedPaths) == 0 {
 		eventData := v.buildSuccessEventData(corruptionID, len(filePaths))
-		if err := v.eventBus.Publish(domain.Event{
+		// Terminal state event - critical, use retry
+		if err := v.eventBus.PublishWithRetry(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
 			EventType:     domain.VerificationSuccess,
 			EventData:     eventData,
 		}); err != nil {
-			logger.Errorf("Failed to publish VerificationSuccess event: %v", err)
+			logger.Errorf("Failed to publish VerificationSuccess event after retries: %v", err)
 		}
 		return
 	}
 
-	if err := v.eventBus.Publish(domain.Event{
+	// Terminal state event - critical, use retry
+	if err := v.eventBus.PublishWithRetry(domain.Event{
 		AggregateID:   corruptionID,
 		AggregateType: "corruption",
 		EventType:     domain.VerificationFailed,
@@ -1034,6 +1084,6 @@ func (v *VerifierService) verifyHealthMultiple(corruptionID string, filePaths []
 			"total_count":  len(filePaths),
 		},
 	}); err != nil {
-		logger.Errorf("Failed to publish VerificationFailed event: %v", err)
+		logger.Errorf("Failed to publish VerificationFailed event after retries: %v", err)
 	}
 }

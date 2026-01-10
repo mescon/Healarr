@@ -257,10 +257,20 @@ func (s *RESTServer) testArrConnection(c *gin.Context) {
 		baseURL = baseURL[:len(baseURL)-1]
 	}
 
-	targetURL := fmt.Sprintf("%s/api/v3/system/status?apikey=%s", baseURL, req.APIKey)
-	logger.Debugf("Testing connection to: %s/api/v3/system/status", baseURL)
+	targetURL := fmt.Sprintf("%s/api/v3/system/status", baseURL)
+	logger.Debugf("Testing connection to: %s", targetURL)
 
-	resp, err := client.Get(targetURL) // #nosec G107 -- URL is validated above
+	httpReq, err := http.NewRequest("GET", targetURL, nil) // #nosec G107 -- URL is validated above
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to create request: %v", err),
+		})
+		return
+	}
+	httpReq.Header.Set("X-Api-Key", req.APIKey)
+
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		logger.Debugf("Connection test failed: %v", err)
 		c.JSON(http.StatusOK, gin.H{

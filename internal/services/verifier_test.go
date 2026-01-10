@@ -846,7 +846,10 @@ func TestVerifierService_HasImportEventInHistory(t *testing.T) {
 
 		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
 
-		result := verifier.hasImportEventInHistory("/movies", 123)
+		result, err := verifier.hasImportEventInHistory("/movies", 123)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
 		if !result {
 			t.Error("Expected true when import event exists in history")
 		}
@@ -867,13 +870,16 @@ func TestVerifierService_HasImportEventInHistory(t *testing.T) {
 
 		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
 
-		result := verifier.hasImportEventInHistory("/movies", 123)
+		result, err := verifier.hasImportEventInHistory("/movies", 123)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
 		if result {
 			t.Error("Expected false when no import event in history")
 		}
 	})
 
-	t.Run("returns false when history API fails", func(t *testing.T) {
+	t.Run("returns error when history API fails", func(t *testing.T) {
 		eb := eventbus.NewEventBus(db)
 		defer eb.Shutdown()
 
@@ -885,7 +891,10 @@ func TestVerifierService_HasImportEventInHistory(t *testing.T) {
 
 		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
 
-		result := verifier.hasImportEventInHistory("/movies", 123)
+		result, err := verifier.hasImportEventInHistory("/movies", 123)
+		if err == nil {
+			t.Error("Expected error when history API fails")
+		}
 		if result {
 			t.Error("Expected false when history API fails")
 		}
