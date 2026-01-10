@@ -12,9 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - ArrServersSection, ScanPathsSection, SchedulesSection, NotificationsSection
   - Each section is self-contained with its own React Query hooks
   - Easier to maintain and extend individual configuration areas
-- **Reusable UI Components**: Added ConfirmDialog for consistent delete confirmations
+- **Confirmation Dialogs**: Replaced browser alerts with animated modal dialogs
   - Supports danger, warning, and info variants
-  - Animated modal with loading state support
+  - Focus management and keyboard navigation (Escape to close)
+  - Loading state support during async operations
+- **Skeleton Loaders**: Added loading placeholders for better perceived performance
+  - DataGrid shows skeleton rows while loading
+  - Smoother transitions when data is fetching
+- **Accessibility**: Improved keyboard navigation and screen reader support
+  - Dialogs trap focus and support Escape key
+  - Better ARIA labels throughout the UI
 
 ## [1.1.29] - 2026-01-10
 
