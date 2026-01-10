@@ -26,7 +26,13 @@ frontend/
 │   │   ├── Corruptions.tsx   # Corruption list + bulk actions
 │   │   ├── Scans.tsx         # Scan list + controls
 │   │   ├── ScanDetails.tsx   # Individual scan results
-│   │   ├── Config.tsx        # Settings (paths, instances, security)
+│   │   ├── Config.tsx        # Settings orchestrator (imports sections)
+│   │   ├── config/           # Config page sections (self-contained)
+│   │   │   ├── index.ts      # Barrel export
+│   │   │   ├── ArrServersSection.tsx
+│   │   │   ├── ScanPathsSection.tsx
+│   │   │   ├── SchedulesSection.tsx
+│   │   │   └── NotificationsSection.tsx
 │   │   ├── Logs.tsx          # Log viewer
 │   │   ├── Help.tsx          # Documentation/troubleshooting
 │   │   └── Login.tsx         # Authentication
@@ -37,12 +43,24 @@ frontend/
 │   │   ├── ui/               # Reusable UI components
 │   │   │   ├── Accordion.tsx
 │   │   │   ├── Card.tsx
+│   │   │   ├── ConfirmDialog.tsx  # Confirmation modal (danger/warning/info)
 │   │   │   └── ...
+│   │   ├── config/           # Shared config components
+│   │   │   ├── index.ts      # Barrel export
+│   │   │   ├── CollapsibleSection.tsx
+│   │   │   └── CronTimeBuilder.tsx
+│   │   ├── notifications/    # Shared notification components
+│   │   │   ├── index.ts      # Barrel export
+│   │   │   ├── ProviderSelect.tsx
+│   │   │   ├── ProviderFields.tsx
+│   │   │   ├── EventSelector.tsx
+│   │   │   └── ProviderIcon.tsx
 │   │   ├── charts/           # Chart components
 │   │   └── RemediationJourney.tsx  # Corruption workflow modal
 │   ├── lib/
 │   │   ├── api.ts            # API client (axios) with all endpoints
 │   │   ├── basePath.ts       # Reverse proxy path handling
+│   │   ├── formatters.ts     # Date/time formatting utilities
 │   │   └── utils.ts          # Utility functions
 │   ├── contexts/
 │   │   └── ThemeContext.tsx  # Dark/light theme
@@ -136,7 +154,8 @@ Main overview showing:
 
 ### Config (`Config.tsx`)
 
-Organized into sections:
+The Config page is a lightweight orchestrator that imports self-contained section components.
+Each section manages its own data fetching via React Query hooks.
 
 **Quick Actions Section:**
 - Scan All Paths button
@@ -144,21 +163,30 @@ Organized into sections:
 - Resume All Scans button
 - Cancel All Scans button
 
-**Tabs:**
-- **Display**: Theme, UI preferences
-- ***arr Servers**: Instance management with status indicators
-- **Scan Paths**: Directory configuration with per-path settings
-- **Schedules**: Cron schedule management
-- **Notifications**: Webhook configuration
-- **Advanced**: 
-  - Export/Import Config (JSON)
-  - Download Database Backup
-  - Server restart
+**Modular Sections (in `pages/config/`):**
+- **ArrServersSection**: *arr instance management with status indicators, test connection
+- **ScanPathsSection**: Directory configuration with per-path settings, accessibility checks
+- **SchedulesSection**: Cron schedule management with visual builder
+- **NotificationsSection**: Notification provider configuration with log viewer
+
+**Collapsible Sections (in `Config.tsx`):**
+- **Advanced Settings**: Export/Import Config (JSON), Download Database Backup, server restart
+- **About**: Version info, changelog, system status
 
 **Security Section:**
 - API Key display (click to select, copy button with HTTP fallback)
 - Password change form
 - Webhook URL format reference
+
+**Shared Components (in `components/config/`):**
+- **CollapsibleSection**: Animated accordion for grouping related settings
+- **CronTimeBuilder**: Visual cron expression builder
+
+**Shared Notification Components (in `components/notifications/`):**
+- **ProviderSelect**: Dropdown with provider icons and categories
+- **ProviderFields**: Dynamic form fields per provider type
+- **EventSelector**: Multi-select for notification events
+- **ProviderIcon**: Provider logo rendering with fallback
 
 ### Corruptions (`Corruptions.tsx`)
 
@@ -413,10 +441,37 @@ if (error) {
 
 ### Confirmation Dialogs
 
+Use the `ConfirmDialog` component for consistent, animated confirmations:
+
 ```tsx
-const handleDelete = () => {
-  if (confirm('Are you sure you want to delete this?')) {
-    deleteMutation.mutate(id);
-  }
+import ConfirmDialog from '../components/ui/ConfirmDialog';
+
+const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+const [itemToDelete, setItemToDelete] = useState<number | null>(null);
+
+const handleDeleteClick = (id: number) => {
+  setItemToDelete(id);
+  setShowDeleteConfirm(true);
 };
+
+const handleConfirmDelete = () => {
+  if (itemToDelete) {
+    deleteMutation.mutate(itemToDelete);
+  }
+  setShowDeleteConfirm(false);
+  setItemToDelete(null);
+};
+
+// In JSX:
+<ConfirmDialog
+  isOpen={showDeleteConfirm}
+  title="Delete Item"
+  message="Are you sure you want to delete this item? This action cannot be undone."
+  confirmLabel="Delete"
+  cancelLabel="Cancel"
+  variant="danger"  // 'danger' | 'warning' | 'info'
+  isLoading={deleteMutation.isPending}
+  onConfirm={handleConfirmDelete}
+  onCancel={() => setShowDeleteConfirm(false)}
+/>
 ```
