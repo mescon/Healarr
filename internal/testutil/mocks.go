@@ -2,6 +2,7 @@
 package testutil
 
 import (
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -11,6 +12,9 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 )
+
+// ErrMockAPIFailure is a standard error used in tests to simulate API failures.
+var ErrMockAPIFailure = errors.New("mock API failure")
 
 // ScanProgress mirrors services.ScanProgress for testing without creating an import cycle.
 // Only includes the JSON-exported fields needed for test assertions.
@@ -361,6 +365,28 @@ func (m *MockArrClient) GetMediaDetails(mediaID int64, arrPath string) (*integra
 		return m.GetMediaDetailsFunc(mediaID, arrPath)
 	}
 	return nil, nil
+}
+
+// SetHistoryHasImport configures the mock to return history indicating an import occurred.
+func (m *MockArrClient) SetHistoryHasImport(hasImport bool) {
+	if hasImport {
+		m.GetRecentHistoryForMediaByPathFunc = func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+			return []integration.HistoryItemInfo{
+				{EventType: "downloadFolderImported"},
+			}, nil
+		}
+	} else {
+		m.GetRecentHistoryForMediaByPathFunc = func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+			return []integration.HistoryItemInfo{}, nil
+		}
+	}
+}
+
+// SetHistoryError configures the mock to return an error when checking history.
+func (m *MockArrClient) SetHistoryError(err error) {
+	m.GetRecentHistoryForMediaByPathFunc = func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+		return nil, err
+	}
 }
 
 // MockPathMapper implements integration.PathMapper for testing.
