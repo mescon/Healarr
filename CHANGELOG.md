@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.27] - 2026-01-10
+
+### Added
+- **Full Notification Support in Setup Wizard**: All 21 notification providers now available
+  - Same feature parity as the Config page
+  - Provider selection with icons and categories
+  - Event selection for which notifications to receive
+  - Test notification button with result feedback
+- **Restore Pre-population**: Wizard fields now pre-fill after config/database restore
+  - Shows "Restored: X instances, Y paths, Z notifications" banner
+  - Values can be reviewed and modified before saving
+- **Shared Notification Components**: Reusable components for Config and Wizard
+  - ProviderSelect, ProviderFields, EventSelector, ProviderIcon
+  - Consistent UI across both pages
+
+### Improved
+- **Updated Logo**: New healarr.svg logo in sidebar, wizard, and login pages
+- **README.md**: Logo now displayed beside "Healarr" title with matching height
+
+### Fixed
+- **Setup Wizard Navigation**: Going back after setting password no longer causes error
+  - Previously showed "Setup already completed" when clicking Continue
+  - Now correctly skips to next step if password already set
+- **Subdirectory Deployment**: Fixed all absolute asset paths for reverse proxy support
+  - All icons now use `import.meta.env.BASE_URL` prefix
+  - Works correctly with HEALARR_BASE_PATH (e.g., /healarr/)
+  - Fixes broken notification icons when deployed behind a reverse proxy subdirectory
+
 ## [1.1.26] - 2026-01-09
 
 ### Added
