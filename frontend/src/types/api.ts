@@ -15,6 +15,9 @@ export interface DashboardStats {
     files_scanned_week: number;
     corruptions_today: number;
     success_rate: number;
+    last_scan_time?: string;         // ISO timestamp of most recent completed scan
+    last_scan_path?: string;         // Path that was scanned
+    last_scan_id?: number;           // ID for linking to scan details
 }
 
 export interface Corruption {
@@ -83,4 +86,16 @@ export interface PaginationMeta {
 export interface PaginatedResponse<T> {
     data: T[];
     pagination: PaginationMeta;
+}
+
+export interface PathHealth {
+    path_id: number;
+    local_path: string;
+    enabled: boolean;
+    last_scan_time?: string;
+    last_scan_id?: number;
+    active_corruptions: number;
+    total_corruptions: number;
+    resolved_count: number;
+    status: 'healthy' | 'warning' | 'critical' | 'unknown' | 'disabled';
 }

@@ -335,8 +335,9 @@ func (s *RESTServer) setupRoutes() {
 		// Onboarding/Setup endpoints (public, for first-time setup wizard)
 		api.GET("/setup/status", s.handleSetupStatus)
 		api.POST("/setup/dismiss", s.handleSetupDismiss)
-		api.POST("/setup/import", s.handleConfigImportPublic)     // Config import during setup
-		api.POST("/setup/restore", s.handleDatabaseRestorePublic) // Database restore during setup
+		api.POST("/setup/import", s.handleConfigImportPublic)          // Config import during setup
+		api.POST("/setup/restore", s.handleDatabaseRestorePublic)      // Database restore during setup
+		api.GET("/setup/notification-events", s.getNotificationEvents) // Static event list for wizard
 
 		// Protected endpoints (require password authentication)
 		protected := api.Group("")
@@ -389,6 +390,7 @@ func (s *RESTServer) setupRoutes() {
 			protected.GET("/stats/dashboard", s.getDashboardStats)
 			protected.GET("/stats/history", s.getStatsHistory)
 			protected.GET("/stats/types", s.getStatsTypes)
+			protected.GET("/stats/path-health", s.getPathHealth)
 			protected.GET("/corruptions", s.getCorruptions)
 			protected.GET("/config/schedules", s.getSchedules)
 			protected.POST("/config/schedules", s.addSchedule)

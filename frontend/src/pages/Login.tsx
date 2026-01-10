@@ -33,9 +33,11 @@ const Login = () => {
                 // Show wizard if: onboarding hasn't been dismissed (fresh install or reset)
                 // The wizard will skip password step if password already exists
                 if (setupStat && !setupStat.onboarding_dismissed) {
-                    // Clear any stale auth data from previous sessions
-                    // This prevents WebSocket errors with invalid tokens
-                    localStorage.removeItem('healarr_token');
+                    // Only clear token on truly fresh installs (no password set)
+                    // If password exists, user is resetting wizard and may have valid token
+                    if (!setupStat.has_password) {
+                        localStorage.removeItem('healarr_token');
+                    }
                     setShowWizard(true);
                 } else {
                     // Fall back to old behavior

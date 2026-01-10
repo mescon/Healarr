@@ -26,7 +26,10 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 		FilesScannedWeek              int      `json:"files_scanned_week"`
 		CorruptionsToday              int      `json:"corruptions_today"`
 		SuccessRate                   int      `json:"success_rate"`
-		Warnings                      []string `json:"warnings,omitempty"` // Query failures (partial results returned)
+		LastScanTime                  *string  `json:"last_scan_time,omitempty"` // Timestamp of most recent completed scan
+		LastScanPath                  *string  `json:"last_scan_path,omitempty"` // Path that was scanned
+		LastScanID                    *int     `json:"last_scan_id,omitempty"`   // ID for linking to scan details
+		Warnings                      []string `json:"warnings,omitempty"`       // Query failures (partial results returned)
 	}
 
 	var warnings []string
@@ -87,6 +90,30 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	`).Scan(&stats.CorruptionsToday); err != nil {
 		warnings = append(warnings, "failed to query corruptions today")
 		logger.Debugf("Failed to query corruptions today: %v", err)
+	}
+
+	// Query 4: Last completed scan info
+	var lastScanID sql.NullInt64
+	var lastScanTime, lastScanPath sql.NullString
+	if err := s.db.QueryRow(`
+		SELECT id, completed_at, path
+		FROM scans
+		WHERE status = 'completed' AND completed_at IS NOT NULL
+		ORDER BY completed_at DESC
+		LIMIT 1
+	`).Scan(&lastScanID, &lastScanTime, &lastScanPath); err != nil && err != sql.ErrNoRows {
+		warnings = append(warnings, "failed to query last scan")
+		logger.Debugf("Failed to query last scan: %v", err)
+	}
+	if lastScanID.Valid {
+		id := int(lastScanID.Int64)
+		stats.LastScanID = &id
+	}
+	if lastScanTime.Valid {
+		stats.LastScanTime = &lastScanTime.String
+	}
+	if lastScanPath.Valid {
+		stats.LastScanPath = &lastScanPath.String
 	}
 
 	// Calculate success rate
@@ -168,4 +195,106 @@ func (s *RESTServer) getStatsTypes(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, stats)
+}
+
+// PathHealth represents the health status of a configured scan path.
+type PathHealth struct {
+	PathID            int     `json:"path_id"`
+	LocalPath         string  `json:"local_path"`
+	Enabled           bool    `json:"enabled"`
+	LastScanTime      *string `json:"last_scan_time,omitempty"`
+	LastScanID        *int    `json:"last_scan_id,omitempty"`
+	ActiveCorruptions int     `json:"active_corruptions"` // Pending + in-progress + failed + manual
+	TotalCorruptions  int     `json:"total_corruptions"`  // All-time for this path
+	ResolvedCount     int     `json:"resolved_count"`
+	Status            string  `json:"status"` // "healthy", "warning", "critical", "unknown"
+}
+
+// getPathHealth returns health status for each configured scan path.
+// GET /api/stats/path-health
+func (s *RESTServer) getPathHealth(c *gin.Context) {
+	// Get all configured scan paths
+	pathRows, err := s.db.Query(`SELECT id, local_path, enabled FROM scan_paths ORDER BY local_path`)
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	defer pathRows.Close()
+
+	var paths []PathHealth
+	for pathRows.Next() {
+		var p PathHealth
+		if err := pathRows.Scan(&p.PathID, &p.LocalPath, &p.Enabled); err != nil {
+			continue
+		}
+		paths = append(paths, p)
+	}
+
+	if len(paths) == 0 {
+		c.JSON(http.StatusOK, []PathHealth{})
+		return
+	}
+
+	// For each path, get last scan and corruption stats
+	for i := range paths {
+		pathID := paths[i].PathID
+
+		// Get last completed scan for this path
+		var lastScanID sql.NullInt64
+		var lastScanTime sql.NullString
+		err := s.db.QueryRow(`
+			SELECT id, completed_at
+			FROM scans
+			WHERE path_id = ? AND status = 'completed' AND completed_at IS NOT NULL
+			ORDER BY completed_at DESC
+			LIMIT 1
+		`, pathID).Scan(&lastScanID, &lastScanTime)
+		if err == nil {
+			if lastScanID.Valid {
+				id := int(lastScanID.Int64)
+				paths[i].LastScanID = &id
+			}
+			if lastScanTime.Valid {
+				paths[i].LastScanTime = &lastScanTime.String
+			}
+		}
+
+		// Get corruption counts for this path
+		var active, total, resolved int
+		err = s.db.QueryRow(`
+			SELECT
+				COUNT(DISTINCT CASE WHEN current_state NOT IN ('VerificationSuccess', 'MaxRetriesReached', 'CorruptionIgnored') THEN corruption_id END),
+				COUNT(DISTINCT corruption_id),
+				COUNT(DISTINCT CASE WHEN current_state = 'VerificationSuccess' THEN corruption_id END)
+			FROM corruption_status
+			WHERE path_id = ?
+		`, pathID).Scan(&active, &total, &resolved)
+		if err == nil {
+			paths[i].ActiveCorruptions = active
+			paths[i].TotalCorruptions = total
+			paths[i].ResolvedCount = resolved
+		}
+
+		// Determine health status
+		paths[i].Status = determinePathHealthStatus(paths[i])
+	}
+
+	c.JSON(http.StatusOK, paths)
+}
+
+// determinePathHealthStatus calculates the health status based on corruption counts and scan recency.
+func determinePathHealthStatus(p PathHealth) string {
+	if !p.Enabled {
+		return "disabled"
+	}
+	if p.LastScanTime == nil {
+		return "unknown" // Never scanned
+	}
+	if p.ActiveCorruptions > 5 {
+		return "critical"
+	}
+	if p.ActiveCorruptions > 0 {
+		return "warning"
+	}
+	return "healthy"
 }

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.29] - 2026-01-10
 
+### Fixed
+- **WebSocket Stability**: Fixed disconnect/reconnect on every menu navigation
+  - Connection now stays stable during route changes
+  - Only reconnects when actually disconnected or token changes
+
 ### Improved
 - **Tux Icon**: Converted to inline SVG matching Docker, Apple, and Windows icons
   - Uses `fill="currentColor"` for proper CSS color inheritance

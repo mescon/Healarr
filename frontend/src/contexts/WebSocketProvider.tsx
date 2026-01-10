@@ -44,13 +44,19 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
             return;
         }
 
+        // If already connected with same token, don't reconnect
+        // This prevents unnecessary disconnect/reconnect on navigation
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            return;
+        }
+
         // Use base path aware WebSocket URL
         const wsUrl = `${getWebSocketUrl()}?token=${token}`;
 
         console.log('Connecting to WebSocket:', wsUrl);
 
-        // Close existing connection if any
-        if (wsRef.current) {
+        // Close existing connection if any (e.g., connecting or closing state)
+        if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
             wsRef.current.close();
         }
 
@@ -139,6 +145,11 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
 
         wsRef.current = ws;
     }, [queryClient]);
+
+    // Keep connectRef in sync with connect function for use in onclose handler
+    useEffect(() => {
+        connectRef.current = connect;
+    }, [connect]);
 
     useEffect(() => {
         // Don't auto-connect on initial mount!

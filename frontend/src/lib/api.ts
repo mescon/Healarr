@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { DashboardStats, Corruption, Remediation, PaginatedResponse, Scan } from '../types/api';
+import type { DashboardStats, Corruption, Remediation, PaginatedResponse, Scan, PathHealth } from '../types/api';
 import { getApiBasePath, getRouterBasePath } from './basePath';
 
 // Create axios instance with dynamic base URL for reverse proxy support
@@ -34,6 +34,11 @@ api.interceptors.response.use(
 
 export const getDashboardStats = async (): Promise<DashboardStats> => {
     const { data } = await api.get<DashboardStats>('/stats/dashboard');
+    return data;
+};
+
+export const getPathHealth = async (): Promise<PathHealth[]> => {
+    const { data } = await api.get<PathHealth[]>('/stats/path-health');
     return data;
 };
 
@@ -498,6 +503,12 @@ export const testNotification = async (notification: NotificationConfig): Promis
 
 export const getNotificationEvents = async (): Promise<EventGroup[]> => {
     const { data } = await api.get<EventGroup[]>('/config/notifications/events');
+    return data;
+};
+
+// Public version for setup wizard (doesn't require authentication)
+export const getNotificationEventsPublic = async (): Promise<EventGroup[]> => {
+    const { data } = await api.get<EventGroup[]>('/setup/notification-events');
     return data;
 };
 

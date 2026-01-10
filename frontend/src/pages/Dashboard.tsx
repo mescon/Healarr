@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ShieldCheck, AlertOctagon, Loader2, X, Clock, AlertTriangle, EyeOff, CheckCircle2, FileSearch, TrendingUp, HandMetal, Play, ChevronDown, ScanSearch, PlayCircle } from 'lucide-react';
+import { ShieldCheck, AlertOctagon, Loader2, X, Clock, AlertTriangle, EyeOff, CheckCircle2, FileSearch, TrendingUp, HandMetal, Play, ChevronDown, ScanSearch, PlayCircle, AlertCircle, ArrowRight } from 'lucide-react';
 import clsx from 'clsx';
 import { useQuery } from '@tanstack/react-query';
-import { getDashboardStats, getActiveScans, cancelScan, getScanPaths, triggerScan, triggerScanAll, type ScanProgress, type ScanPath } from '../lib/api';
+import { getDashboardStats, getActiveScans, cancelScan, getScanPaths, triggerScan, triggerScanAll, getPathHealth, type ScanProgress, type ScanPath } from '../lib/api';
+import type { PathHealth } from '../types/api';
+import { FolderOpen, FolderCheck, FolderX, FolderSearch, FolderMinus } from 'lucide-react';
 import ActivityChart from '../components/charts/ActivityChart';
 import TypeDistributionChart from '../components/charts/TypeDistributionChart';
 import { useWebSocket } from '../contexts/WebSocketProvider';
@@ -39,23 +41,96 @@ const StatCard = ({ title, value, subtitle, icon: Icon, color, delay, onClick }:
 );
 
 // Mini stat card for the status breakdown section
-const MiniStatCard = ({ title, value, icon: Icon, colorClass, onClick }: { title: string, value: number, icon: React.ElementType, colorClass: string, onClick?: () => void }) => (
-    <div 
-        onClick={onClick}
-        className={clsx(
-            "flex items-center gap-3 p-4 rounded-xl bg-slate-100 dark:bg-slate-800/30 border border-slate-200 dark:border-slate-700/30 hover:bg-slate-200 dark:hover:bg-slate-800/50 transition-colors",
-            onClick && "cursor-pointer"
-        )}
-    >
-        <div className={clsx("p-2 rounded-lg", colorClass.replace('text-', 'bg-').replace('400', '500/20'))}>
-            <Icon className={clsx("w-5 h-5", colorClass)} />
+// urgent: highlights the card when value > 0 (for action-required items)
+const MiniStatCard = ({ title, value, icon: Icon, colorClass, onClick, urgent }: { title: string, value: number, icon: React.ElementType, colorClass: string, onClick?: () => void, urgent?: boolean }) => {
+    const isUrgent = urgent && value > 0;
+    return (
+        <div
+            onClick={onClick}
+            className={clsx(
+                "flex items-center gap-3 p-4 rounded-xl border transition-colors",
+                onClick && "cursor-pointer",
+                isUrgent
+                    ? "bg-red-500/10 dark:bg-red-500/10 border-red-500/30 dark:border-red-500/30 hover:bg-red-500/20 dark:hover:bg-red-500/20"
+                    : "bg-slate-100 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700/30 hover:bg-slate-200 dark:hover:bg-slate-800/50"
+            )}
+        >
+            <div className={clsx("p-2 rounded-lg", colorClass.replace('text-', 'bg-').replace('400', '500/20'))}>
+                <Icon className={clsx("w-5 h-5", colorClass)} />
+            </div>
+            <div>
+                <p className="text-2xl font-bold text-slate-900 dark:text-white">{value}</p>
+                <p className="text-xs text-slate-600 dark:text-slate-400">{title}</p>
+            </div>
         </div>
-        <div>
-            <p className="text-2xl font-bold text-slate-900 dark:text-white">{value}</p>
-            <p className="text-xs text-slate-600 dark:text-slate-400">{title}</p>
+    );
+};
+
+const getPathStatusIcon = (status: PathHealth['status']) => {
+    switch (status) {
+        case 'healthy': return FolderCheck;
+        case 'warning': return FolderOpen;
+        case 'critical': return FolderX;
+        case 'disabled': return FolderMinus;
+        default: return FolderSearch;
+    }
+};
+
+const getPathStatusColor = (status: PathHealth['status']) => {
+    switch (status) {
+        case 'healthy': return 'text-emerald-500';
+        case 'warning': return 'text-amber-500';
+        case 'critical': return 'text-red-500';
+        case 'disabled': return 'text-slate-400';
+        default: return 'text-slate-500';
+    }
+};
+
+const getPathStatusBg = (status: PathHealth['status']) => {
+    switch (status) {
+        case 'healthy': return 'bg-emerald-500/10 border-emerald-500/20';
+        case 'warning': return 'bg-amber-500/10 border-amber-500/20';
+        case 'critical': return 'bg-red-500/10 border-red-500/20';
+        case 'disabled': return 'bg-slate-500/10 border-slate-500/20';
+        default: return 'bg-slate-500/10 border-slate-500/20';
+    }
+};
+
+const PathHealthCard = ({ path, formatTimeAgo, onClick }: { path: PathHealth; formatTimeAgo: (date: string) => string; onClick: () => void }) => {
+    const Icon = getPathStatusIcon(path.status);
+    const colorClass = getPathStatusColor(path.status);
+    const bgClass = getPathStatusBg(path.status);
+    const pathName = path.local_path.split('/').pop() || path.local_path;
+
+    return (
+        <div
+            onClick={onClick}
+            className={clsx(
+                "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all hover:scale-[1.02]",
+                bgClass
+            )}
+        >
+            <div className={clsx("p-2 rounded-lg", bgClass)}>
+                <Icon className={clsx("w-5 h-5", colorClass)} />
+            </div>
+            <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-900 dark:text-white truncate" title={path.local_path}>
+                    {pathName}
+                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {path.last_scan_time ? formatTimeAgo(path.last_scan_time) : 'Never scanned'}
+                </p>
+            </div>
+            <div className="text-right">
+                {path.active_corruptions > 0 ? (
+                    <p className="text-sm font-semibold text-red-500">{path.active_corruptions} active</p>
+                ) : (
+                    <p className="text-sm text-slate-500">{path.resolved_count} resolved</p>
+                )}
+            </div>
         </div>
-    </div>
-);
+    );
+};
 
 const ActiveScansTable = () => {
     const [scans, setScans] = useState<Record<string, ScanProgress>>({});
@@ -375,11 +450,45 @@ const Dashboard = () => {
         // Polling removed - WebSocket invalidates queries on events
     });
 
+    const { data: pathHealth } = useQuery({
+        queryKey: ['pathHealth'],
+        queryFn: getPathHealth,
+    });
+
     if (isLoading) {
         return <div className="text-slate-900 dark:text-white">Loading dashboard...</div>;
     }
 
+    // Success rate is only meaningful when there are completed remediation attempts
+    const hasRemediationData = (stats?.resolved_corruptions ?? 0) + (stats?.orphaned_corruptions ?? 0) > 0;
     const successRate = stats?.success_rate ?? 100;
+    const successRateDisplay = hasRemediationData ? `${successRate}%` : 'N/A';
+
+    // Format relative time for last scan (e.g., "3h ago", "2 days ago")
+    const formatTimeAgo = (isoDate: string): string => {
+        const date = new Date(isoDate);
+        const now = new Date();
+        const diffMs = now.getTime() - date.getTime();
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+
+        if (diffMins < 1) return 'just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago`;
+        if (diffDays === 1) return 'yesterday';
+        if (diffDays < 7) return `${diffDays} days ago`;
+        return date.toLocaleDateString();
+    };
+
+    // Last scan display values
+    const lastScanDisplay = stats?.last_scan_time
+        ? formatTimeAgo(stats.last_scan_time)
+        : 'Never';
+    const lastScanPath = stats?.last_scan_path
+        ? stats.last_scan_path.split('/').pop() || stats.last_scan_path
+        : 'No scans yet';
+    const hasLastScan = !!stats?.last_scan_time;
 
     return (
         <div className="space-y-6">
@@ -413,6 +522,48 @@ const Dashboard = () => {
             </div>
 
             <ActiveScansTable />
+
+            {/* Action Required Banner - shows when items need attention */}
+            {((stats?.manual_intervention_corruptions ?? 0) > 0 || (stats?.orphaned_corruptions ?? 0) > 0) && (
+                <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="rounded-2xl border border-red-500/30 bg-red-500/10 dark:bg-red-500/10 p-4"
+                >
+                    <div className="flex items-center gap-3 mb-3">
+                        <div className="p-2 rounded-lg bg-red-500/20">
+                            <AlertCircle className="w-5 h-5 text-red-500" />
+                        </div>
+                        <h2 className="text-lg font-semibold text-red-600 dark:text-red-400">Action Required</h2>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                        {(stats?.manual_intervention_corruptions ?? 0) > 0 && (
+                            <button
+                                onClick={() => navigate('/corruptions?status=manual_intervention')}
+                                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/50 dark:bg-slate-800/50 border border-red-500/20 hover:border-red-500/40 hover:bg-white/80 dark:hover:bg-slate-800/80 transition-colors cursor-pointer"
+                            >
+                                <HandMetal className="w-4 h-4 text-orange-500" />
+                                <span className="text-sm text-slate-700 dark:text-slate-200">
+                                    <strong>{stats?.manual_intervention_corruptions}</strong> need manual intervention
+                                </span>
+                                <ArrowRight className="w-4 h-4 text-slate-400" />
+                            </button>
+                        )}
+                        {(stats?.orphaned_corruptions ?? 0) > 0 && (
+                            <button
+                                onClick={() => navigate('/corruptions?status=orphaned')}
+                                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/50 dark:bg-slate-800/50 border border-red-500/20 hover:border-red-500/40 hover:bg-white/80 dark:hover:bg-slate-800/80 transition-colors cursor-pointer"
+                            >
+                                <AlertTriangle className="w-4 h-4 text-red-500" />
+                                <span className="text-sm text-slate-700 dark:text-slate-200">
+                                    <strong>{stats?.orphaned_corruptions}</strong> reached max retries
+                                </span>
+                                <ArrowRight className="w-4 h-4 text-slate-400" />
+                            </button>
+                        )}
+                    </div>
+                </motion.div>
+            )}
 
             {/* Corruption Status Breakdown */}
             <motion.div
@@ -451,6 +602,7 @@ const Dashboard = () => {
                         icon={HandMetal}
                         colorClass="text-orange-400"
                         onClick={() => navigate('/corruptions?status=manual_intervention')}
+                        urgent
                     />
                     <MiniStatCard
                         title="Resolved"
@@ -465,6 +617,7 @@ const Dashboard = () => {
                         icon={AlertTriangle}
                         colorClass="text-red-400"
                         onClick={() => navigate('/corruptions?status=orphaned')}
+                        urgent
                     />
                     <MiniStatCard
                         title="Ignored"
@@ -479,13 +632,16 @@ const Dashboard = () => {
             {/* Main Stats Row */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <StatCard
-                    title="Files Scanned Today"
-                    value={stats?.files_scanned_today?.toLocaleString() || "0"}
-                    subtitle={`${stats?.files_scanned_week?.toLocaleString() || 0} this week`}
+                    title="Last Scan"
+                    value={lastScanDisplay}
+                    subtitle={lastScanPath}
                     icon={FileSearch}
-                    color="bg-blue-500"
+                    color={hasLastScan ? "bg-blue-500" : "bg-slate-500"}
                     delay={0.15}
-                    onClick={() => navigate('/scans')}
+                    onClick={() => hasLastScan && stats?.last_scan_id
+                        ? navigate(`/scans/${stats.last_scan_id}`)
+                        : navigate('/scans')
+                    }
                 />
                 <StatCard
                     title="Corruptions Today"
@@ -507,13 +663,46 @@ const Dashboard = () => {
                 />
                 <StatCard
                     title="Success Rate"
-                    value={`${successRate}%`}
-                    subtitle="remediation success"
+                    value={successRateDisplay}
+                    subtitle={hasRemediationData ? "remediation success" : "no remediations yet"}
                     icon={TrendingUp}
-                    color={successRate >= 90 ? "bg-emerald-500" : successRate >= 70 ? "bg-amber-500" : "bg-red-500"}
+                    color={hasRemediationData ? (successRate >= 90 ? "bg-emerald-500" : successRate >= 70 ? "bg-amber-500" : "bg-red-500") : "bg-slate-500"}
                     delay={0.3}
                 />
             </div>
+
+            {/* Path Health Section */}
+            {pathHealth && pathHealth.length > 0 && (
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.35 }}
+                    className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6"
+                >
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Library Health</h2>
+                        <button
+                            onClick={() => navigate('/config')}
+                            className="text-sm text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 transition-colors cursor-pointer"
+                        >
+                            Manage Paths →
+                        </button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                        {pathHealth.map((path) => (
+                            <PathHealthCard
+                                key={path.path_id}
+                                path={path}
+                                formatTimeAgo={formatTimeAgo}
+                                onClick={() => path.last_scan_id
+                                    ? navigate(`/scans/${path.last_scan_id}`)
+                                    : navigate(`/corruptions?path_id=${path.path_id}`)
+                                }
+                            />
+                        ))}
+                    </div>
+                </motion.div>
+            )}
 
             {/* Analytics Section */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

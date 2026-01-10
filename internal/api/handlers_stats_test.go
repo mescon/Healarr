@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,7 +70,8 @@ func setupStatsTestDB(t *testing.T) (*sql.DB, func()) {
 
 		CREATE TABLE scan_paths (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			path TEXT NOT NULL UNIQUE,
+			local_path TEXT NOT NULL UNIQUE,
+			arr_path TEXT,
 			enabled BOOLEAN DEFAULT 1
 		);
 
@@ -979,5 +981,330 @@ func TestGetDashboardStats_DBError_WithWarnings(t *testing.T) {
 	warnings, ok := stats["warnings"].([]interface{})
 	if !ok || len(warnings) == 0 {
 		t.Error("Expected warnings in response for partial query failure")
+	}
+}
+
+func TestGetDashboardStats_LastScan_NoScans(t *testing.T) {
+	db, cleanup := setupStatsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	server := createStatsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/stats/dashboard", server.getDashboardStats)
+
+	req, _ := http.NewRequest("GET", "/stats/dashboard", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var stats map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	// With no scans, last_scan fields should be null/missing
+	if _, ok := stats["last_scan_time"]; ok {
+		t.Error("last_scan_time should be omitted when no completed scans exist")
+	}
+	if _, ok := stats["last_scan_path"]; ok {
+		t.Error("last_scan_path should be omitted when no completed scans exist")
+	}
+	if _, ok := stats["last_scan_id"]; ok {
+		t.Error("last_scan_id should be omitted when no completed scans exist")
+	}
+}
+
+func TestGetDashboardStats_LastScan_WithCompletedScan(t *testing.T) {
+	db, cleanup := setupStatsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Insert an older completed scan
+	_, err := db.Exec(`
+		INSERT INTO scans (path, status, started_at, completed_at, files_scanned)
+		VALUES (?, 'completed', '2026-01-09 10:00:00', '2026-01-09 10:30:00', 100)
+	`, "/test/older-path")
+	if err != nil {
+		t.Fatalf("Failed to insert older scan: %v", err)
+	}
+
+	// Insert a newer completed scan
+	_, err = db.Exec(`
+		INSERT INTO scans (path, status, started_at, completed_at, files_scanned)
+		VALUES (?, 'completed', '2026-01-10 10:00:00', '2026-01-10 10:30:00', 200)
+	`, "/test/newer-path")
+	if err != nil {
+		t.Fatalf("Failed to insert newer scan: %v", err)
+	}
+
+	// Insert a running scan (should not be returned as last scan)
+	_, err = db.Exec(`
+		INSERT INTO scans (path, status, started_at, files_scanned)
+		VALUES (?, 'running', '2026-01-10 11:00:00', 50)
+	`, "/test/running-path")
+	if err != nil {
+		t.Fatalf("Failed to insert running scan: %v", err)
+	}
+
+	server := createStatsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/stats/dashboard", server.getDashboardStats)
+
+	req, _ := http.NewRequest("GET", "/stats/dashboard", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var stats map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	// Should return the most recent completed scan (not running)
+	if stats["last_scan_path"] != "/test/newer-path" {
+		t.Errorf("last_scan_path = %v, want /test/newer-path", stats["last_scan_path"])
+	}
+	// Just check that last_scan_time contains the expected date, format may vary
+	lastScanTime, ok := stats["last_scan_time"].(string)
+	if !ok || !strings.Contains(lastScanTime, "2026-01-10") {
+		t.Errorf("last_scan_time = %v, want to contain 2026-01-10", stats["last_scan_time"])
+	}
+	if stats["last_scan_id"].(float64) != 2 {
+		t.Errorf("last_scan_id = %v, want 2", stats["last_scan_id"])
+	}
+}
+
+// ============================================================================
+// Path Health Tests
+// ============================================================================
+
+func TestGetPathHealth_NoPaths(t *testing.T) {
+	db, cleanup := setupStatsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	server := createStatsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/stats/path-health", server.getPathHealth)
+
+	req, _ := http.NewRequest("GET", "/stats/path-health", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var paths []PathHealth
+	if err := json.Unmarshal(w.Body.Bytes(), &paths); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if len(paths) != 0 {
+		t.Errorf("Expected 0 paths, got %d", len(paths))
+	}
+}
+
+func TestGetPathHealth_WithPaths(t *testing.T) {
+	db, cleanup := setupStatsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Insert scan paths
+	_, err := db.Exec(`INSERT INTO scan_paths (local_path, enabled) VALUES ('/movies', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO scan_paths (local_path, enabled) VALUES ('/tv', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO scan_paths (local_path, enabled) VALUES ('/disabled', 0)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	server := createStatsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/stats/path-health", server.getPathHealth)
+
+	req, _ := http.NewRequest("GET", "/stats/path-health", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var paths []PathHealth
+	if err := json.Unmarshal(w.Body.Bytes(), &paths); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if len(paths) != 3 {
+		t.Fatalf("Expected 3 paths, got %d", len(paths))
+	}
+
+	// Paths should be sorted by local_path
+	if paths[0].LocalPath != "/disabled" {
+		t.Errorf("Expected first path to be /disabled, got %s", paths[0].LocalPath)
+	}
+	if paths[0].Status != "disabled" {
+		t.Errorf("Expected disabled path to have status 'disabled', got %s", paths[0].Status)
+	}
+
+	// Enabled paths with no scans should have "unknown" status
+	if paths[1].LocalPath != "/movies" {
+		t.Errorf("Expected second path to be /movies, got %s", paths[1].LocalPath)
+	}
+	if paths[1].Status != "unknown" {
+		t.Errorf("Expected path with no scans to have status 'unknown', got %s", paths[1].Status)
+	}
+}
+
+func TestGetPathHealth_WithScansAndCorruptions(t *testing.T) {
+	db, cleanup := setupStatsTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Insert scan paths
+	_, err := db.Exec(`INSERT INTO scan_paths (local_path, enabled) VALUES ('/healthy', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO scan_paths (local_path, enabled) VALUES ('/warning', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO scan_paths (local_path, enabled) VALUES ('/critical', 1)`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	// Insert completed scans for each path
+	_, err = db.Exec(`INSERT INTO scans (path_id, path, status, completed_at) VALUES (1, '/healthy', 'completed', '2026-01-10 10:00:00')`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO scans (path_id, path, status, completed_at) VALUES (2, '/warning', 'completed', '2026-01-10 09:00:00')`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO scans (path_id, path, status, completed_at) VALUES (3, '/critical', 'completed', '2026-01-10 08:00:00')`)
+	if err != nil {
+		t.Fatalf("Failed to insert scan: %v", err)
+	}
+
+	// Add 2 active corruptions to /warning path (path_id=2)
+	seedStatsEvent(t, db, "warn-1", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/warning/file1.mkv",
+		"path_id":   2,
+	}, time.Now())
+	seedStatsEvent(t, db, "warn-2", domain.CorruptionDetected, map[string]interface{}{
+		"file_path": "/warning/file2.mkv",
+		"path_id":   2,
+	}, time.Now())
+
+	// Add 6 active corruptions to /critical path (path_id=3) - triggers critical status
+	for i := 1; i <= 6; i++ {
+		seedStatsEvent(t, db, "crit-"+string(rune('0'+i)), domain.CorruptionDetected, map[string]interface{}{
+			"file_path": "/critical/file.mkv",
+			"path_id":   3,
+		}, time.Now())
+	}
+
+	server := createStatsTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/stats/path-health", server.getPathHealth)
+
+	req, _ := http.NewRequest("GET", "/stats/path-health", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var paths []PathHealth
+	if err := json.Unmarshal(w.Body.Bytes(), &paths); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if len(paths) != 3 {
+		t.Fatalf("Expected 3 paths, got %d", len(paths))
+	}
+
+	// Find paths by name and check their status
+	var healthy, warning, critical *PathHealth
+	for i := range paths {
+		switch paths[i].LocalPath {
+		case "/healthy":
+			healthy = &paths[i]
+		case "/warning":
+			warning = &paths[i]
+		case "/critical":
+			critical = &paths[i]
+		}
+	}
+
+	if healthy == nil || healthy.Status != "healthy" {
+		t.Errorf("Expected /healthy to have status 'healthy', got %v", healthy)
+	}
+	if healthy != nil && healthy.ActiveCorruptions != 0 {
+		t.Errorf("Expected /healthy to have 0 active corruptions, got %d", healthy.ActiveCorruptions)
+	}
+
+	if warning == nil || warning.Status != "warning" {
+		t.Errorf("Expected /warning to have status 'warning', got %v", warning)
+	}
+	if warning != nil && warning.ActiveCorruptions != 2 {
+		t.Errorf("Expected /warning to have 2 active corruptions, got %d", warning.ActiveCorruptions)
+	}
+
+	if critical == nil || critical.Status != "critical" {
+		t.Errorf("Expected /critical to have status 'critical', got %v", critical)
+	}
+	if critical != nil && critical.ActiveCorruptions != 6 {
+		t.Errorf("Expected /critical to have 6 active corruptions, got %d", critical.ActiveCorruptions)
+	}
+
+	// Verify last scan info is populated
+	if healthy != nil && healthy.LastScanTime == nil {
+		t.Error("Expected /healthy to have last_scan_time")
+	}
+	if healthy != nil && healthy.LastScanID == nil {
+		t.Error("Expected /healthy to have last_scan_id")
 	}
 }

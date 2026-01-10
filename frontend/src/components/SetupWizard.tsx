@@ -37,7 +37,7 @@ import api, {
     getArrRootFolders,
     createNotification,
     testNotification,
-    getNotificationEvents,
+    getNotificationEventsPublic,
     getArrInstances,
     getScanPaths,
     getNotifications,
@@ -245,7 +245,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
     // Load notification events when reaching notifications step
     useEffect(() => {
         if (step === 'notifications' && eventGroups.length === 0) {
-            getNotificationEvents()
+            getNotificationEventsPublic()
                 .then(setEventGroups)
                 .catch(err => console.error('Failed to load notification events:', err));
         }
