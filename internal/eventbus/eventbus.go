@@ -154,6 +154,25 @@ func (eb *EventBus) Subscribe(eventType domain.EventType, handler func(domain.Ev
 	}()
 }
 
+// RepublishToSubscribers sends an already-persisted event to in-memory subscribers
+// without re-persisting to the database. Used by the event replay service to
+// deliver events that were persisted but not processed before a restart.
+func (eb *EventBus) RepublishToSubscribers(event domain.Event) error {
+	eb.mu.RLock()
+	defer eb.mu.RUnlock()
+
+	if subscribers, ok := eb.subscribers[event.EventType]; ok {
+		for _, ch := range subscribers {
+			select {
+			case ch <- event:
+			default:
+				logger.Warnf("Subscriber buffer full for replayed event %s (%s)", event.AggregateID, event.EventType)
+			}
+		}
+	}
+	return nil
+}
+
 // Shutdown stops all subscriber goroutines and waits for them to finish
 func (eb *EventBus) Shutdown() {
 	close(eb.stopChan)

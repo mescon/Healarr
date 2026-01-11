@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"sync"
 	"time"
 
@@ -453,10 +454,36 @@ func (h *HealthMonitorService) publishSearchExhausted(item arrSyncItem) error {
 	})
 }
 
+// publishNeedsAttentionForOrphan publishes a search exhausted event for items
+// where the arr instance no longer exists (path config changed or instance deleted)
+func (h *HealthMonitorService) publishNeedsAttentionForOrphan(item arrSyncItem) {
+	if err := h.eventBus.Publish(domain.Event{
+		AggregateID:   item.corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.SearchExhausted,
+		EventData: map[string]interface{}{
+			"file_path":       item.filePath,
+			"path_id":         item.pathID,
+			"reason":          "arr_instance_unavailable",
+			"recovery_action": "arr_sync",
+			"note":            "No arr instance found for this path - instance may have been deleted or path configuration changed",
+		},
+	}); err != nil {
+		logger.Errorf("Health monitor: failed to publish SearchExhausted for orphaned item %s: %v", item.corruptionID, err)
+	}
+}
+
 // processSyncItem processes a single item during arr state sync
 func (h *HealthMonitorService) processSyncItem(item arrSyncItem) (synced, exhausted bool) {
 	hasFile, err := h.checkArrHasFile(item.filePath, item.mediaID)
 	if err != nil {
+		// Check if the arr instance for this path no longer exists
+		if strings.Contains(err.Error(), "no instance found") {
+			logger.Infof("Health monitor: orphaned item (no arr instance): %s", item.filePath)
+			// Mark as NeedsAttention - the arr instance was deleted or path config changed
+			h.publishNeedsAttentionForOrphan(item)
+			return false, true
+		}
 		logger.Debugf("Health monitor: failed to check arr for %s: %v", item.filePath, err)
 		return false, false
 	}

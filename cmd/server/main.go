@@ -133,6 +133,7 @@ type serviceDeps struct {
 	healthMonitorService *services.HealthMonitorService
 	recoveryService      *services.RecoveryService
 	schedulerService     *services.SchedulerService
+	eventReplayService   *services.EventReplayService
 	notifierService      *notifier.Notifier
 	metricsService       *metrics.MetricsService
 	stopCheckpoint       func()
@@ -232,7 +233,7 @@ func initCoreServices(
 	arrClient integration.ArrClient, cfg *config.Config,
 ) (*services.ScannerService, *services.RemediatorService, *services.VerifierService,
 	*services.MonitorService, *services.HealthMonitorService, *services.RecoveryService,
-	*services.SchedulerService) {
+	*services.SchedulerService, *services.EventReplayService) {
 	logger.Infof("Initializing core services...")
 
 	scannerService := services.NewScannerService(sqlDB, eb, healthChecker, pathMapper)
@@ -256,8 +257,11 @@ func initCoreServices(
 	schedulerService := services.NewSchedulerService(sqlDB, scannerService)
 	logger.Infof("✓ Scheduler Service (cron-based scans)")
 
+	eventReplayService := services.NewEventReplayService(sqlDB, eb)
+	logger.Infof("✓ Event Replay Service (replays unprocessed events on startup)")
+
 	return scannerService, remediatorService, verifierService, monitorService,
-		healthMonitorService, recoveryService, schedulerService
+		healthMonitorService, recoveryService, schedulerService, eventReplayService
 }
 
 // initNotifierAndMetrics initializes the notification and metrics services.
@@ -296,6 +300,13 @@ func startBackgroundServices(deps *serviceDeps) {
 	logger.Infof("Starting Scheduler Service...")
 	deps.schedulerService.Start()
 	logger.Infof("✓ All background services started")
+
+	// Replay unprocessed events AFTER subscribers are ready but BEFORE recovery.
+	// This ensures events that were persisted but not processed before a restart
+	// are delivered to their intended subscribers.
+	if err := deps.eventReplayService.ReplayUnprocessedEvents(); err != nil {
+		logger.Errorf("Failed to replay unprocessed events: %v", err)
+	}
 
 	// Resume any interrupted scans and start rescan worker
 	logger.Infof("Checking for interrupted scans to resume...")
@@ -429,7 +440,7 @@ func main() {
 	// Initialize core services
 	scannerService, remediatorService, verifierService,
 		monitorService, healthMonitorService, recoveryService,
-		schedulerService := initCoreServices(repo.DB, eb, healthChecker, pathMapper, arrClient, cfg)
+		schedulerService, eventReplayService := initCoreServices(repo.DB, eb, healthChecker, pathMapper, arrClient, cfg)
 
 	// Initialize notification and metrics
 	notifierService, metricsService := initNotifierAndMetrics(repo.DB, eb)
@@ -448,6 +459,7 @@ func main() {
 		healthMonitorService: healthMonitorService,
 		recoveryService:      recoveryService,
 		schedulerService:     schedulerService,
+		eventReplayService:   eventReplayService,
 		notifierService:      notifierService,
 		metricsService:       metricsService,
 		stopCheckpoint:       stopCheckpoint,
