@@ -1129,3 +1129,914 @@ func TestVerifyAndComplete_WithPathMapper(t *testing.T) {
 		t.Error("Expected VerificationSuccess event")
 	}
 }
+
+// =============================================================================
+// recoverEarlyRemediationState tests
+// =============================================================================
+
+func TestRecoverEarlyRemediationState_RemediationQueued(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-rq",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "RemediationQueued",
+	}
+
+	result := rs.recoverEarlyRemediationState(item)
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got %q", result)
+	}
+
+	select {
+	case e := <-eventReceived:
+		if e.EventType != domain.RetryScheduled {
+			t.Errorf("Expected RetryScheduled event, got %s", e.EventType)
+		}
+		if e.EventData["original_state"] != "RemediationQueued" {
+			t.Errorf("Expected original_state to be RemediationQueued, got %v", e.EventData["original_state"])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected RetryScheduled event")
+	}
+}
+
+func TestRecoverEarlyRemediationState_DeletionStarted_FileHealthy(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.VerificationSuccess, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	// File is healthy - should emit VerificationSuccess
+	mockDetector := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, mockDetector, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-ds",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DeletionStarted",
+	}
+
+	result := rs.recoverEarlyRemediationState(item)
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got %q", result)
+	}
+
+	select {
+	case e := <-eventReceived:
+		if e.EventType != domain.VerificationSuccess {
+			t.Errorf("Expected VerificationSuccess event, got %s", e.EventType)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected VerificationSuccess event")
+	}
+}
+
+func TestRecoverEarlyRemediationState_DeletionStarted_FileGone(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	// File is gone/corrupt - should emit RetryScheduled
+	mockDetector := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return false, &integration.HealthCheckError{Message: "file not found"}
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, mockDetector, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-ds2",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DeletionStarted",
+	}
+
+	result := rs.recoverEarlyRemediationState(item)
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got %q", result)
+	}
+
+	select {
+	case e := <-eventReceived:
+		if e.EventType != domain.RetryScheduled {
+			t.Errorf("Expected RetryScheduled event, got %s", e.EventType)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected RetryScheduled event")
+	}
+}
+
+func TestRecoverEarlyRemediationState_DeletionCompleted_WithMediaID(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// For DeletionCompleted with media_id, expect SearchStarted
+	eventReceived := make(chan domain.Event, 2)
+	eb.Subscribe(domain.SearchStarted, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-dc",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DeletionCompleted",
+		MediaID:      123,
+	}
+
+	result := rs.recoverEarlyRemediationState(item)
+
+	if result != "recovered" && result != "skipped" {
+		t.Errorf("Expected 'recovered' or 'skipped', got %q", result)
+	}
+
+	select {
+	case e := <-eventReceived:
+		if e.EventType != domain.SearchStarted {
+			t.Errorf("Expected SearchStarted event, got %s", e.EventType)
+		}
+	case <-time.After(500 * time.Millisecond):
+		// SearchStarted may be followed by SearchCompleted or SearchFailed
+		// depending on arrClient availability
+	}
+}
+
+func TestRecoverEarlyRemediationState_DeletionCompleted_NoMediaID(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// For DeletionCompleted without media_id, should fall back to RetryScheduled
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-dc2",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DeletionCompleted",
+		MediaID:      0, // No media ID
+	}
+
+	result := rs.recoverEarlyRemediationState(item)
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got %q", result)
+	}
+
+	select {
+	case e := <-eventReceived:
+		if e.EventType != domain.RetryScheduled {
+			t.Errorf("Expected RetryScheduled event, got %s", e.EventType)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected RetryScheduled event")
+	}
+}
+
+// =============================================================================
+// recoverFailedState tests
+// =============================================================================
+
+func TestRecoverFailedState_UnderMaxRetries(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-fs",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "SearchFailed",
+		RetryCount:   1,
+		MaxRetries:   3,
+	}
+
+	result := rs.recoverFailedState(item)
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got %q", result)
+	}
+
+	select {
+	case e := <-eventReceived:
+		if e.EventType != domain.RetryScheduled {
+			t.Errorf("Expected RetryScheduled event, got %s", e.EventType)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected RetryScheduled event")
+	}
+}
+
+func TestRecoverFailedState_MaxRetriesReached(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.MaxRetriesReached, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-mrr",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DeletionFailed",
+		RetryCount:   3,
+		MaxRetries:   3,
+	}
+
+	result := rs.recoverFailedState(item)
+
+	if result != "exhausted" {
+		t.Errorf("Expected 'exhausted', got %q", result)
+	}
+
+	select {
+	case e := <-eventReceived:
+		if e.EventType != domain.MaxRetriesReached {
+			t.Errorf("Expected MaxRetriesReached event, got %s", e.EventType)
+		}
+		if e.EventData["retry_count"] != 3 {
+			t.Errorf("Expected retry_count to be 3, got %v", e.EventData["retry_count"])
+		}
+		if e.EventData["max_retries"] != 3 {
+			t.Errorf("Expected max_retries to be 3, got %v", e.EventData["max_retries"])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected MaxRetriesReached event")
+	}
+}
+
+func TestRecoverFailedState_AllFailedStates(t *testing.T) {
+	testCases := []struct {
+		state string
+	}{
+		{"DeletionFailed"},
+		{"SearchFailed"},
+		{"VerificationFailed"},
+		{"DownloadTimeout"},
+		{"DownloadFailed"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.state, func(t *testing.T) {
+			db := setupRecoveryTestDB(t)
+			defer db.Close()
+
+			eb := eventbus.NewEventBus(db)
+			defer eb.Shutdown()
+
+			eventReceived := make(chan domain.Event, 1)
+			eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+				select {
+				case eventReceived <- e:
+				default:
+				}
+			})
+
+			rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+			item := staleItem{
+				CorruptionID: "test-uuid-" + tc.state,
+				FilePath:     "/media/test.mkv",
+				PathID:       1,
+				CurrentState: tc.state,
+				RetryCount:   0,
+				MaxRetries:   3,
+			}
+
+			result := rs.recoverFailedState(item)
+
+			if result != "recovered" {
+				t.Errorf("Expected 'recovered' for %s, got %q", tc.state, result)
+			}
+
+			select {
+			case <-eventReceived:
+				// Success
+			case <-time.After(500 * time.Millisecond):
+				t.Errorf("Expected RetryScheduled event for %s", tc.state)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// emitRetryScheduled tests
+// =============================================================================
+
+func TestEmitRetryScheduled(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-rs",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "SearchFailed",
+	}
+
+	result := rs.emitRetryScheduled(item)
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got %q", result)
+	}
+
+	select {
+	case e := <-eventReceived:
+		if e.EventType != domain.RetryScheduled {
+			t.Errorf("Expected RetryScheduled event, got %s", e.EventType)
+		}
+		if e.AggregateID != "test-uuid-rs" {
+			t.Errorf("Expected AggregateID 'test-uuid-rs', got %q", e.AggregateID)
+		}
+		if e.EventData["file_path"] != "/media/test.mkv" {
+			t.Errorf("Expected file_path '/media/test.mkv', got %v", e.EventData["file_path"])
+		}
+		if e.EventData["recovery_action"] != "startup_recovery" {
+			t.Errorf("Expected recovery_action 'startup_recovery', got %v", e.EventData["recovery_action"])
+		}
+		if e.EventData["original_state"] != "SearchFailed" {
+			t.Errorf("Expected original_state 'SearchFailed', got %v", e.EventData["original_state"])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected RetryScheduled event")
+	}
+}
+
+// =============================================================================
+// emitSearchNeeded tests
+// =============================================================================
+
+func TestEmitSearchNeeded_NoMediaID(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-sn",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DeletionCompleted",
+		MediaID:      0, // No media ID
+	}
+
+	result := rs.emitSearchNeeded(item)
+
+	// Without media_id, should fall back to RetryScheduled
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got %q", result)
+	}
+
+	select {
+	case e := <-eventReceived:
+		if e.EventType != domain.RetryScheduled {
+			t.Errorf("Expected RetryScheduled event, got %s", e.EventType)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected RetryScheduled event")
+	}
+}
+
+func TestEmitSearchNeeded_WithMediaID_NoArrClient(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.SearchStarted, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-sn2",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DeletionCompleted",
+		MediaID:      123,
+	}
+
+	result := rs.emitSearchNeeded(item)
+
+	// Without arrClient, should still emit SearchStarted but won't trigger actual search
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got %q", result)
+	}
+
+	select {
+	case e := <-eventReceived:
+		if e.EventType != domain.SearchStarted {
+			t.Errorf("Expected SearchStarted event, got %s", e.EventType)
+		}
+		if e.EventData["media_id"] != int64(123) {
+			t.Errorf("Expected media_id 123, got %v", e.EventData["media_id"])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected SearchStarted event")
+	}
+}
+
+func TestEmitSearchNeeded_WithArrClient_Success(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	searchCompletedReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.SearchCompleted, func(e domain.Event) {
+		select {
+		case searchCompletedReceived <- e:
+		default:
+		}
+	})
+
+	// Mock arr client that succeeds
+	mockArr := &testutil.MockArrClient{
+		TriggerSearchFunc: func(mediaID int64, arrPath string, episodeIDs []int64) error {
+			return nil
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, mockArr, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-sn3",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DeletionCompleted",
+		MediaID:      123,
+	}
+
+	result := rs.emitSearchNeeded(item)
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got %q", result)
+	}
+
+	select {
+	case e := <-searchCompletedReceived:
+		if e.EventType != domain.SearchCompleted {
+			t.Errorf("Expected SearchCompleted event, got %s", e.EventType)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected SearchCompleted event")
+	}
+}
+
+func TestEmitSearchNeeded_WithArrClient_Failure(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	searchFailedReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.SearchFailed, func(e domain.Event) {
+		select {
+		case searchFailedReceived <- e:
+		default:
+		}
+	})
+
+	// Mock arr client that fails
+	mockArr := &testutil.MockArrClient{
+		TriggerSearchFunc: func(mediaID int64, arrPath string, episodeIDs []int64) error {
+			return errors.New("search trigger failed")
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, mockArr, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-sn4",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DeletionCompleted",
+		MediaID:      123,
+	}
+
+	result := rs.emitSearchNeeded(item)
+
+	if result != "skipped" {
+		t.Errorf("Expected 'skipped', got %q", result)
+	}
+
+	select {
+	case e := <-searchFailedReceived:
+		if e.EventType != domain.SearchFailed {
+			t.Errorf("Expected SearchFailed event, got %s", e.EventType)
+		}
+		if e.EventData["error"] != "search trigger failed" {
+			t.Errorf("Expected error message 'search trigger failed', got %v", e.EventData["error"])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected SearchFailed event")
+	}
+}
+
+// =============================================================================
+// emitMaxRetriesReached tests
+// =============================================================================
+
+func TestEmitMaxRetriesReached(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.MaxRetriesReached, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-mr",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "SearchFailed",
+		RetryCount:   5,
+		MaxRetries:   5,
+	}
+
+	result := rs.emitMaxRetriesReached(item)
+
+	if result != "exhausted" {
+		t.Errorf("Expected 'exhausted', got %q", result)
+	}
+
+	select {
+	case e := <-eventReceived:
+		if e.EventType != domain.MaxRetriesReached {
+			t.Errorf("Expected MaxRetriesReached event, got %s", e.EventType)
+		}
+		if e.AggregateID != "test-uuid-mr" {
+			t.Errorf("Expected AggregateID 'test-uuid-mr', got %q", e.AggregateID)
+		}
+		if e.EventData["retry_count"] != 5 {
+			t.Errorf("Expected retry_count 5, got %v", e.EventData["retry_count"])
+		}
+		if e.EventData["max_retries"] != 5 {
+			t.Errorf("Expected max_retries 5, got %v", e.EventData["max_retries"])
+		}
+		if e.EventData["original_state"] != "SearchFailed" {
+			t.Errorf("Expected original_state 'SearchFailed', got %v", e.EventData["original_state"])
+		}
+		if e.EventData["recovery_action"] != "startup_recovery" {
+			t.Errorf("Expected recovery_action 'startup_recovery', got %v", e.EventData["recovery_action"])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected MaxRetriesReached event")
+	}
+}
+
+// =============================================================================
+// isEarlyRemediationState and isFailedState tests
+// =============================================================================
+
+func TestIsEarlyRemediationState(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	tests := []struct {
+		state    string
+		expected bool
+	}{
+		{"RemediationQueued", true},
+		{"DeletionStarted", true},
+		{"DeletionCompleted", true},
+		{"SearchStarted", false},
+		{"DownloadProgress", false},
+		{"VerificationSuccess", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.state, func(t *testing.T) {
+			result := rs.isEarlyRemediationState(tt.state)
+			if result != tt.expected {
+				t.Errorf("isEarlyRemediationState(%q) = %v, want %v", tt.state, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsFailedState(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	tests := []struct {
+		state    string
+		expected bool
+	}{
+		{"DeletionFailed", true},
+		{"SearchFailed", true},
+		{"VerificationFailed", true},
+		{"DownloadTimeout", true},
+		{"DownloadFailed", true},
+		{"SearchStarted", false},
+		{"DownloadProgress", false},
+		{"VerificationSuccess", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.state, func(t *testing.T) {
+			result := rs.isFailedState(tt.state)
+			if result != tt.expected {
+				t.Errorf("isFailedState(%q) = %v, want %v", tt.state, result, tt.expected)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// recoverPostSearchState tests
+// =============================================================================
+
+func TestRecoverPostSearchState_FileExistsAndHealthy(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.VerificationSuccess, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	mockDetector := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, mockDetector, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-pss",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      0, // No media ID to avoid arr checks
+	}
+
+	result := rs.recoverPostSearchState(item)
+
+	if result != "recovered" {
+		t.Errorf("Expected 'recovered', got %q", result)
+	}
+
+	select {
+	case <-eventReceived:
+		// Success
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected VerificationSuccess event")
+	}
+}
+
+func TestRecoverPostSearchState_FileNotFound(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	eventReceived := make(chan domain.Event, 1)
+	eb.Subscribe(domain.SearchExhausted, func(e domain.Event) {
+		select {
+		case eventReceived <- e:
+		default:
+		}
+	})
+
+	mockDetector := &testutil.MockHealthChecker{
+		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			return false, &integration.HealthCheckError{Message: "file not found"}
+		},
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, mockDetector, 24*time.Hour)
+
+	item := staleItem{
+		CorruptionID: "test-uuid-pss2",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		MediaID:      0, // No media ID
+		LastUpdated:  time.Now().Add(-48 * time.Hour),
+	}
+
+	result := rs.recoverPostSearchState(item)
+
+	if result != "exhausted" {
+		t.Errorf("Expected 'exhausted', got %q", result)
+	}
+
+	select {
+	case <-eventReceived:
+		// Success
+	case <-time.After(500 * time.Millisecond):
+		t.Error("Expected SearchExhausted event")
+	}
+}
+
+// =============================================================================
+// recoverItem routing tests
+// =============================================================================
+
+func TestRecoverItem_RoutesToCorrectHandler(t *testing.T) {
+	tests := []struct {
+		state          string
+		expectedAction string
+		setupMock      func() *testutil.MockHealthChecker
+	}{
+		{
+			state:          "RemediationQueued",
+			expectedAction: "recovered", // Routes to recoverEarlyRemediationState
+			setupMock:      nil,
+		},
+		{
+			state:          "DeletionFailed",
+			expectedAction: "recovered", // Routes to recoverFailedState (retry < max)
+			setupMock:      nil,
+		},
+		{
+			state:          "DownloadProgress",
+			expectedAction: "exhausted", // Routes to recoverPostSearchState
+			setupMock: func() *testutil.MockHealthChecker {
+				return &testutil.MockHealthChecker{
+					CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+						return false, &integration.HealthCheckError{Message: "file not found"}
+					},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.state, func(t *testing.T) {
+			db := setupRecoveryTestDB(t)
+			defer db.Close()
+
+			eb := eventbus.NewEventBus(db)
+			defer eb.Shutdown()
+
+			var detector *testutil.MockHealthChecker
+			if tt.setupMock != nil {
+				detector = tt.setupMock()
+			}
+
+			rs := NewRecoveryService(db, eb, nil, nil, detector, 24*time.Hour)
+
+			item := staleItem{
+				CorruptionID: "test-uuid-routing",
+				FilePath:     "/media/test.mkv",
+				PathID:       1,
+				CurrentState: tt.state,
+				RetryCount:   0,
+				MaxRetries:   3,
+				LastUpdated:  time.Now().Add(-48 * time.Hour),
+			}
+
+			result := rs.recoverItem(item)
+
+			if result != tt.expectedAction {
+				t.Errorf("recoverItem(%q) = %q, want %q", tt.state, result, tt.expectedAction)
+			}
+		})
+	}
+}
