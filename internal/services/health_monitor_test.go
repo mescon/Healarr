@@ -1649,3 +1649,53 @@ func TestHealthMonitorService_CheckDatabaseHealth_HighOpenConnections(t *testing
 	// checkDatabaseHealth checks DB stats - we just verify it doesn't panic
 	h.checkDatabaseHealth()
 }
+
+// TestPublishNeedsAttentionForOrphan tests publishing SearchExhausted for orphaned items
+func TestPublishNeedsAttentionForOrphan(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Track received events
+	received := make(chan domain.Event, 10)
+	eb.Subscribe(domain.SearchExhausted, func(event domain.Event) {
+		received <- event
+	})
+
+	// Give subscriber time to start
+	time.Sleep(50 * time.Millisecond)
+
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
+
+	item := arrSyncItem{
+		corruptionID: "test-orphan-id",
+		filePath:     "/test/orphan/file.mkv",
+		pathID:       123,
+		mediaID:      456,
+	}
+
+	// Call publishNeedsAttentionForOrphan
+	h.publishNeedsAttentionForOrphan(item)
+
+	// Should receive SearchExhausted event
+	select {
+	case event := <-received:
+		if event.AggregateID != "test-orphan-id" {
+			t.Errorf("Expected aggregate ID test-orphan-id, got %s", event.AggregateID)
+		}
+		if event.EventType != domain.SearchExhausted {
+			t.Errorf("Expected event type SearchExhausted, got %s", event.EventType)
+		}
+		reason, _ := event.GetString("reason")
+		if reason != "arr_instance_unavailable" {
+			t.Errorf("Expected reason arr_instance_unavailable, got %s", reason)
+		}
+	case <-time.After(time.Second):
+		t.Error("Timed out waiting for SearchExhausted event")
+	}
+}

@@ -888,3 +888,75 @@ func findSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+// TestRepublishToSubscribers tests the RepublishToSubscribers method
+func TestRepublishToSubscribers(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	eb := NewEventBus(db)
+	defer eb.Shutdown()
+
+	received := make(chan domain.Event, 10)
+	eb.Subscribe(domain.CorruptionDetected, func(event domain.Event) {
+		received <- event
+	})
+
+	// Give subscriber time to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Create an event (simulating one that was already persisted)
+	event := domain.Event{
+		ID:            123,
+		AggregateID:   "test-aggregate",
+		AggregateType: "Corruption",
+		EventType:     domain.CorruptionDetected,
+		EventData:     map[string]interface{}{"file_path": "/test/file.mkv"},
+		CreatedAt:     time.Now().UTC(),
+	}
+
+	// Republish to subscribers (should not persist to DB)
+	if err := eb.RepublishToSubscribers(event); err != nil {
+		t.Fatalf("RepublishToSubscribers failed: %v", err)
+	}
+
+	// Should receive the event
+	select {
+	case recv := <-received:
+		if recv.AggregateID != "test-aggregate" {
+			t.Errorf("Expected aggregate ID test-aggregate, got %s", recv.AggregateID)
+		}
+	case <-time.After(time.Second):
+		t.Error("Timed out waiting for republished event")
+	}
+
+	// Verify event was NOT persisted to DB (ID should remain unchanged)
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM events").Scan(&count)
+	if err != nil {
+		t.Fatalf("Failed to count events: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("Expected 0 events in DB (republish should not persist), got %d", count)
+	}
+}
+
+// TestRepublishToSubscribers_NoSubscribers tests republishing when no subscribers exist
+func TestRepublishToSubscribers_NoSubscribers(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	eb := NewEventBus(db)
+	defer eb.Shutdown()
+
+	event := domain.Event{
+		ID:          123,
+		AggregateID: "test-aggregate",
+		EventType:   domain.CorruptionDetected,
+	}
+
+	// Should not error even with no subscribers
+	if err := eb.RepublishToSubscribers(event); err != nil {
+		t.Errorf("RepublishToSubscribers should not error with no subscribers: %v", err)
+	}
+}
