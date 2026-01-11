@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/mescon/Healarr/internal/domain"
@@ -129,14 +130,11 @@ func (r *RecoveryService) findStaleItems() ([]staleItem, error) {
 	allStates = append(allStates, postSearchStates...)
 	allStates = append(allStates, failedStates...)
 
-	// Build placeholders for IN clause
-	placeholders := ""
+	// Build placeholders for IN clause using parameterized query pattern.
+	// Security: placeholders only contains "?" characters, actual values passed via args.
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(allStates)), ", ")
 	args := make([]interface{}, 0, len(allStates)+1)
-	for i, state := range allStates {
-		if i > 0 {
-			placeholders += ", "
-		}
-		placeholders += "?"
+	for _, state := range allStates {
 		args = append(args, state)
 	}
 	args = append(args, cutoffTime)
