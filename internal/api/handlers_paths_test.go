@@ -1556,3 +1556,183 @@ func TestValidateScanPath_EmptyDirectory(t *testing.T) {
 	assert.Equal(t, float64(0), response["file_count"])
 	assert.Nil(t, response["error"])
 }
+
+// =============================================================================
+// Path Mapper Reload Error Tests
+// =============================================================================
+
+// setupPathsTestServerWithPathMapper creates a test server with a custom path mapper
+func setupPathsTestServerWithPathMapper(t *testing.T, db *sql.DB, pm *testutil.MockPathMapper) (*gin.Engine, string, func()) {
+	t.Helper()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	eb := eventbus.NewEventBus(db)
+	hub := NewWebSocketHub(eb)
+
+	s := &RESTServer{
+		router:     r,
+		db:         db,
+		eventBus:   eb,
+		hub:        hub,
+		pathMapper: pm,
+	}
+
+	// Setup API key for authentication
+	apiKey, err := auth.GenerateAPIKey()
+	require.NoError(t, err)
+	encryptedKey, err := crypto.Encrypt(apiKey)
+	require.NoError(t, err)
+	_, err = db.Exec("INSERT INTO settings (key, value) VALUES ('api_key', ?)", encryptedKey)
+	require.NoError(t, err)
+
+	// Register routes with authentication
+	api := r.Group("/api")
+	protected := api.Group("")
+	protected.Use(s.authMiddleware())
+	{
+		protected.GET("/config/paths", s.getScanPaths)
+		protected.POST("/config/paths", s.createScanPath)
+		protected.PUT("/config/paths/:id", s.updateScanPath)
+		protected.DELETE("/config/paths/:id", s.deleteScanPath)
+	}
+
+	cleanup := func() {
+		hub.Shutdown()
+		eb.Shutdown()
+	}
+
+	return r, apiKey, cleanup
+}
+
+func TestCreateScanPath_PathMapperReloadError(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create arr instance first
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	_, err := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	require.NoError(t, err)
+
+	// Create mock path mapper that returns error on Reload
+	mockPM := &testutil.MockPathMapper{
+		ReloadFunc: func() error {
+			return fmt.Errorf("mock reload error")
+		},
+	}
+
+	router, apiKey, serverCleanup := setupPathsTestServerWithPathMapper(t, db, mockPM)
+	defer serverCleanup()
+
+	body := bytes.NewBufferString(`{
+		"local_path": "/media/test",
+		"arr_path": "/test",
+		"arr_instance_id": 1,
+		"enabled": true,
+		"auto_remediate": true
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/paths", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should return 500 because path mapper reload failed
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Contains(t, response["error"], "path mapping update failed")
+}
+
+func TestUpdateScanPath_PathMapperReloadError(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create arr instance first
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	arrResult, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := arrResult.LastInsertId()
+
+	// Create initial path
+	result, err := db.Exec(`INSERT INTO scan_paths
+		(local_path, arr_path, arr_instance_id, enabled, auto_remediate)
+		VALUES (?, ?, ?, ?, ?)`,
+		"/old/path", "/old/arr", arrID, true, false)
+	require.NoError(t, err)
+	id, _ := result.LastInsertId()
+
+	// Create mock path mapper that returns error on Reload
+	mockPM := &testutil.MockPathMapper{
+		ReloadFunc: func() error {
+			return fmt.Errorf("mock reload error")
+		},
+	}
+
+	router, apiKey, serverCleanup := setupPathsTestServerWithPathMapper(t, db, mockPM)
+	defer serverCleanup()
+
+	body := bytes.NewBufferString(fmt.Sprintf(`{
+		"local_path": "/new/path",
+		"arr_path": "/new/arr",
+		"arr_instance_id": %d,
+		"enabled": false,
+		"auto_remediate": true
+	}`, arrID))
+
+	req, _ := http.NewRequest("PUT", fmt.Sprintf("/api/config/paths/%d", id), body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should return 500 because path mapper reload failed
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Contains(t, response["error"], "path mapping update failed")
+}
+
+func TestDeleteScanPath_PathMapperReloadError(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create arr instance first
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	arrResult, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := arrResult.LastInsertId()
+
+	// Create path to delete
+	result, err := db.Exec(`INSERT INTO scan_paths (local_path, arr_path, arr_instance_id, enabled)
+		VALUES (?, ?, ?, ?)`, "/to/delete", "/to/delete", arrID, true)
+	require.NoError(t, err)
+	id, _ := result.LastInsertId()
+
+	// Create mock path mapper that returns error on Reload
+	mockPM := &testutil.MockPathMapper{
+		ReloadFunc: func() error {
+			return fmt.Errorf("mock reload error")
+		},
+	}
+
+	router, apiKey, serverCleanup := setupPathsTestServerWithPathMapper(t, db, mockPM)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("DELETE", fmt.Sprintf("/api/config/paths/%d", id), nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should return 500 because path mapper reload failed
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Contains(t, response["error"], "path mapping update failed")
+}
