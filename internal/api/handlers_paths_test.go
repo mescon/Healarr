@@ -328,6 +328,103 @@ func TestCreateScanPath_InvalidJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+func TestCreateScanPath_InvalidVerificationTimeout(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create arr instance first
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	result, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := result.LastInsertId()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	testCases := []struct {
+		name    string
+		timeout int
+	}{
+		{"zero", 0},
+		{"negative", -1},
+		{"too_large", 8761},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := bytes.NewBufferString(fmt.Sprintf(`{
+				"local_path": "/media/test-%s",
+				"arr_instance_id": %d,
+				"enabled": true,
+				"verification_timeout_hours": %d
+			}`, tc.name, arrID, tc.timeout))
+
+			req, _ := http.NewRequest("POST", "/api/config/paths", body)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-API-Key", apiKey)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "verification_timeout_hours must be between 1 and 8760")
+		})
+	}
+}
+
+func TestCreateScanPath_MaxRetriesDefaults(t *testing.T) {
+	// Ensure config is initialized for this test
+	config.SetForTesting(&config.Config{
+		DefaultMaxRetries: 3,
+	})
+
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create arr instance first
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	result, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := result.LastInsertId()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	testCases := []struct {
+		name       string
+		maxRetries int
+	}{
+		{"zero", 0},
+		{"negative", -5},
+		{"too_large", 150},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := bytes.NewBufferString(fmt.Sprintf(`{
+				"local_path": "/media/retry-%s",
+				"arr_instance_id": %d,
+				"enabled": true,
+				"max_retries": %d
+			}`, tc.name, arrID, tc.maxRetries))
+
+			req, _ := http.NewRequest("POST", "/api/config/paths", body)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-API-Key", apiKey)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusCreated, w.Code)
+
+			// Verify default was applied (not the invalid value)
+			var actualRetries int
+			db.QueryRow("SELECT max_retries FROM scan_paths WHERE local_path = ?",
+				fmt.Sprintf("/media/retry-%s", tc.name)).Scan(&actualRetries)
+			// Should use default (3) instead of invalid value
+			assert.Equal(t, 3, actualRetries, "Invalid max_retries should use default value")
+		})
+	}
+}
+
 // =============================================================================
 // updateScanPath Tests
 // =============================================================================
