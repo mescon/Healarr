@@ -2040,3 +2040,181 @@ func TestRecoverItem_RoutesToCorrectHandler(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// Error path tests (database closed)
+// =============================================================================
+
+func TestEmitRetryScheduled_PublishError(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	eb := eventbus.NewEventBus(db)
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	// Close the database to cause publish to fail
+	db.Close()
+	eb.Shutdown()
+
+	item := staleItem{
+		CorruptionID: "test-uuid-err",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "SearchFailed",
+	}
+
+	result := rs.emitRetryScheduled(item)
+
+	if result != "skipped" {
+		t.Errorf("Expected 'skipped' on publish error, got %q", result)
+	}
+}
+
+func TestEmitMaxRetriesReached_PublishError(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	eb := eventbus.NewEventBus(db)
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	// Close the database to cause publish to fail
+	db.Close()
+	eb.Shutdown()
+
+	item := staleItem{
+		CorruptionID: "test-uuid-err",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "SearchFailed",
+		RetryCount:   5,
+		MaxRetries:   5,
+	}
+
+	result := rs.emitMaxRetriesReached(item)
+
+	if result != "skipped" {
+		t.Errorf("Expected 'skipped' on publish error, got %q", result)
+	}
+}
+
+func TestEmitVerificationSuccess_PublishError(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	eb := eventbus.NewEventBus(db)
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	// Close the database to cause publish to fail
+	db.Close()
+	eb.Shutdown()
+
+	item := staleItem{
+		CorruptionID: "test-uuid-err",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+	}
+
+	result := rs.emitVerificationSuccess(item, "/local/media/test.mkv")
+
+	if result != "skipped" {
+		t.Errorf("Expected 'skipped' on publish error, got %q", result)
+	}
+}
+
+func TestEmitSearchExhausted_PublishError(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	eb := eventbus.NewEventBus(db)
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	// Close the database to cause publish to fail
+	db.Close()
+	eb.Shutdown()
+
+	item := staleItem{
+		CorruptionID: "test-uuid-err",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DownloadProgress",
+		LastUpdated:  time.Now().Add(-48 * time.Hour),
+	}
+
+	result := rs.emitSearchExhausted(item, "item_vanished")
+
+	if result != "skipped" {
+		t.Errorf("Expected 'skipped' on publish error, got %q", result)
+	}
+}
+
+func TestEmitSearchNeeded_PublishError(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	eb := eventbus.NewEventBus(db)
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	// Close the database to cause publish to fail
+	db.Close()
+	eb.Shutdown()
+
+	item := staleItem{
+		CorruptionID: "test-uuid-err",
+		FilePath:     "/media/test.mkv",
+		PathID:       1,
+		CurrentState: "DeletionCompleted",
+		MediaID:      123,
+	}
+
+	result := rs.emitSearchNeeded(item)
+
+	if result != "skipped" {
+		t.Errorf("Expected 'skipped' on publish error, got %q", result)
+	}
+}
+
+// =============================================================================
+// findStaleItems edge cases
+// =============================================================================
+
+func TestFindStaleItems_AllStateCategories(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	oldTime := time.Now().Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
+
+	// Insert items from each category
+	testItems := []struct {
+		id    string
+		state string
+	}{
+		{"early-1", "RemediationQueued"},
+		{"early-2", "DeletionStarted"},
+		{"early-3", "DeletionCompleted"},
+		{"post-1", "DownloadProgress"},
+		{"post-2", "SearchCompleted"},
+		{"failed-1", "DeletionFailed"},
+		{"failed-2", "SearchFailed"},
+		{"failed-3", "VerificationFailed"},
+	}
+
+	for _, ti := range testItems {
+		_, err := db.Exec(`
+			INSERT INTO corruption_status (corruption_id, current_state, file_path, path_id, retry_count, last_updated_at, detected_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, ti.id, ti.state, "/media/"+ti.id+".mkv", 1, 0, oldTime, oldTime)
+		if err != nil {
+			t.Fatalf("Failed to insert test data: %v", err)
+		}
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	items, err := rs.findStaleItems()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if len(items) != len(testItems) {
+		t.Errorf("Expected %d items, got %d", len(testItems), len(items))
+	}
+}

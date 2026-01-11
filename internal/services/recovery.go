@@ -173,7 +173,7 @@ func (r *RecoveryService) findStaleItems() ([]staleItem, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), recoveryQueryTimeout)
 	defer cancel()
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.db.QueryContext(ctx, query, args...) //NOSONAR - placeholders are "?" only, values passed via args
 	if err != nil {
 		return nil, err
 	}
