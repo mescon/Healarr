@@ -242,10 +242,33 @@ pollWithQueueMonitoring() - PRIMARY METHOD
 
 - **Purpose**: Send webhooks for important events
 - **Subscribes To**: `CorruptionDetected`, `VerificationSuccess`, `VerificationFailed`, `MaxRetriesReached`, `DownloadFailed`
-- **Configuration**: 
+- **Configuration**:
   - Global notification configs in DB
   - Per-instance webhook URLs (takes precedence)
 - **Supported Types**: Discord, Slack, custom HTTP webhook
+
+### RecoveryService
+
+- **Purpose**: Recover items stuck in intermediate states on startup
+- **Runs**: Once during application startup (after all other services subscribe to events)
+- **Publishes**: `RetryScheduled`, `SearchStarted`, `SearchCompleted`, `SearchFailed`, `MaxRetriesReached`, `VerificationSuccess`, `SearchExhausted`
+- **Key Behavior**:
+  - Finds items stuck in non-terminal states older than `staleThreshold` (default: 24h)
+  - Routes items to appropriate recovery handler based on state category:
+    1. **Early remediation states** (`RemediationQueued`, `DeletionStarted`, `DeletionCompleted`): Re-trigger remediation flow
+    2. **Post-search states** (`SearchStarted`, `SearchCompleted`, `DownloadProgress`, etc.): Verify if file exists and is healthy
+    3. **Failed states** (`DeletionFailed`, `SearchFailed`, `VerificationFailed`, etc.): Schedule retry if under max retries, else mark exhausted
+- **Critical for Autonomous Operation**:
+  - Handles restart scenarios where in-memory retry timers (`time.AfterFunc`) were lost
+  - Prevents items from being permanently stuck due to missed events
+  - Completes remediation cycles that were interrupted mid-flight
+
+```
+Startup Sequence:
+  1. All services start and subscribe to events
+  2. RecoveryService.Run() executes
+  3. ScannerService.ResumeInterruptedScans()
+```
 
 ## Integration Layer
 
