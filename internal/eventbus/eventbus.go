@@ -88,8 +88,13 @@ func (eb *EventBus) Publish(event domain.Event) error {
 			select {
 			case ch <- event:
 			default:
-				// Non-blocking, drop if buffer full to prevent blocking the publisher
-				// In a production system, we might want metrics here
+				// Non-blocking send failed - buffer is full
+				// This is a warning condition: the event IS persisted to DB (so not lost),
+				// but the in-memory subscriber won't process it immediately.
+				// The EventReplayService will catch unprocessed CorruptionDetected events on restart.
+				// For other event types, RecoveryService handles stale items.
+				logger.Warnf("EventBus: subscriber buffer full for %s (%s) - event persisted to DB but in-memory delivery skipped",
+					event.AggregateID, event.EventType)
 			}
 		}
 	}

@@ -23,6 +23,13 @@ const verifierQueryTimeout = 10 * time.Second
 // logMsgDownloadMonitorShutdown is the log message format for shutdown during download monitoring.
 const logMsgDownloadMonitorShutdown = "Verifier: stopping download monitoring for %s due to shutdown"
 
+// maxConcurrentVerifications limits concurrent verification goroutines to prevent resource exhaustion
+// when processing many corruptions simultaneously (Issue 6: verifier resource exhaustion).
+const maxConcurrentVerifications = 50
+
+// verificationSemaphoreTimeout is the maximum time to wait for a verification slot.
+const verificationSemaphoreTimeout = 5 * time.Minute
+
 // VerificationMeta stores quality/release info captured from history for VerificationSuccess events
 type VerificationMeta struct {
 	Quality        string
@@ -45,6 +52,9 @@ type VerifierService struct {
 	shutdownCh chan struct{}
 	wg         sync.WaitGroup
 
+	// Concurrency limiter to prevent resource exhaustion (Issue 6)
+	semaphore chan struct{}
+
 	// State tracking for event deduplication
 	lastStateMu sync.RWMutex
 	lastState   map[string]string // corruptionID -> last known state
@@ -62,6 +72,7 @@ func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecke
 		arrClient:  arrClient,
 		db:         db,
 		shutdownCh: make(chan struct{}),
+		semaphore:  make(chan struct{}, maxConcurrentVerifications),
 		lastState:  make(map[string]string),
 		verifyMeta: make(map[string]*VerificationMeta),
 	}
@@ -431,11 +442,9 @@ func (v *VerifierService) handleSearchCompleted(event domain.Event) {
 	// If media_id is missing, fall back to simple polling
 	if mediaID == 0 {
 		logger.Warnf("Missing media_id in SearchCompleted event for %s, falling back to file polling", corruptionID)
-		v.wg.Add(1)
-		go func() {
-			defer v.wg.Done()
+		v.startVerificationWithSemaphore(corruptionID, func() {
 			v.pollForFileWithBackoff(corruptionID, filePath, 0, nil, 0)
-		}()
+		})
 		return
 	}
 
@@ -445,19 +454,49 @@ func (v *VerifierService) handleSearchCompleted(event domain.Event) {
 		// Path mapping failed - typically means path not covered by scan_path config
 		// Fall back to simple file polling (no download queue/history monitoring)
 		logger.Warnf("Path mapping failed for %s: %v - using file polling fallback (no download progress tracking)", filePath, err)
-		v.wg.Add(1)
-		go func() {
-			defer v.wg.Done()
+		v.startVerificationWithSemaphore(corruptionID, func() {
 			v.pollForFileWithBackoff(corruptionID, filePath, mediaID, metadata, pathID)
-		}()
+		})
 		return
 	}
 
 	// Start queue-aware verification
+	v.startVerificationWithSemaphore(corruptionID, func() {
+		v.monitorDownloadProgress(corruptionID, filePath, arrPath, mediaID, metadata, pathID)
+	})
+}
+
+// startVerificationWithSemaphore launches a verification goroutine with concurrency limiting.
+// This prevents resource exhaustion when processing many corruptions simultaneously.
+func (v *VerifierService) startVerificationWithSemaphore(corruptionID string, verifyFunc func()) {
 	v.wg.Add(1)
 	go func() {
 		defer v.wg.Done()
-		v.monitorDownloadProgress(corruptionID, filePath, arrPath, mediaID, metadata, pathID)
+
+		// Acquire semaphore with timeout
+		select {
+		case v.semaphore <- struct{}{}:
+			defer func() { <-v.semaphore }()
+		case <-time.After(verificationSemaphoreTimeout):
+			logger.Warnf("Verifier: timeout acquiring semaphore for %s after %v - verification queue full",
+				corruptionID, verificationSemaphoreTimeout)
+			// Emit DownloadTimeout so recovery can pick it up later
+			v.eventBus.Publish(domain.Event{
+				AggregateID:   corruptionID,
+				AggregateType: "corruption",
+				EventType:     domain.DownloadTimeout,
+				EventData: map[string]interface{}{
+					"reason": "verification_queue_full",
+					"note":   "Too many concurrent verifications, will retry on next recovery cycle",
+				},
+			})
+			return
+		case <-v.shutdownCh:
+			logger.Debugf("Verifier: shutdown while waiting for semaphore for %s", corruptionID)
+			return
+		}
+
+		verifyFunc()
 	}()
 }
 

@@ -2,6 +2,7 @@ package services
 
 import (
 	"database/sql"
+	"time"
 
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/domain"
@@ -13,6 +14,11 @@ import (
 // maxConcurrentRemediations limits how many remediations can run simultaneously
 // to avoid overwhelming *arr APIs and download clients
 const maxConcurrentRemediations = 5
+
+// semaphoreAcquireTimeout is the maximum time to wait for a semaphore slot.
+// This prevents indefinite blocking if all slots are stuck (Issue 5: deadlock prevention).
+// Set to 2 minutes to allow time for HTTP timeouts (30s) plus processing.
+const semaphoreAcquireTimeout = 2 * time.Minute
 
 type RemediatorService struct {
 	eventBus   eventbus.Publisher
@@ -130,9 +136,17 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 	}
 
 	go func() {
-		// Acquire semaphore to limit concurrent remediations
-		r.semaphore <- struct{}{}
-		defer func() { <-r.semaphore }()
+		// Acquire semaphore with timeout to limit concurrent remediations
+		// and prevent indefinite blocking if slots are stuck
+		select {
+		case r.semaphore <- struct{}{}:
+			defer func() { <-r.semaphore }()
+		case <-time.After(semaphoreAcquireTimeout):
+			logger.Warnf("Remediator: timeout acquiring semaphore for retry search %s after %v - all slots busy",
+				corruptionID, semaphoreAcquireTimeout)
+			r.publishError(corruptionID, domain.SearchFailed, "remediation queue full, will retry later")
+			return
+		}
 
 		// Extract episode IDs from metadata first - validates data before announcing search
 		episodeIDs := extractEpisodeIDs(metadata)
@@ -273,9 +287,17 @@ func (r *RemediatorService) executeDryRun(corruptionID, filePath, arrPath string
 
 // executeRemediation performs the actual deletion and search trigger
 func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath string, pathID int64) {
-	// Acquire semaphore to limit concurrent remediations
-	r.semaphore <- struct{}{}
-	defer func() { <-r.semaphore }()
+	// Acquire semaphore with timeout to limit concurrent remediations
+	// and prevent indefinite blocking if slots are stuck
+	select {
+	case r.semaphore <- struct{}{}:
+		defer func() { <-r.semaphore }()
+	case <-time.After(semaphoreAcquireTimeout):
+		logger.Warnf("Remediator: timeout acquiring semaphore for %s after %v - all slots busy",
+			corruptionID, semaphoreAcquireTimeout)
+		r.publishError(corruptionID, domain.DeletionFailed, "remediation queue full, will retry later")
+		return
+	}
 
 	// Find media first - validates we can proceed before publishing DeletionStarted
 	mediaID, err := r.arrClient.FindMediaByPath(arrPath)

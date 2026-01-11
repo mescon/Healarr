@@ -36,6 +36,7 @@ func setupRecoveryTestDB(t *testing.T) *sql.DB {
 			current_state TEXT NOT NULL,
 			file_path TEXT NOT NULL,
 			path_id INTEGER,
+			retry_count INTEGER DEFAULT 0,
 			last_updated_at TEXT NOT NULL,
 			detected_at TEXT NOT NULL
 		);
@@ -54,7 +55,8 @@ func setupRecoveryTestDB(t *testing.T) *sql.DB {
 			local_path TEXT NOT NULL,
 			arr_path TEXT NOT NULL,
 			instance_id INTEGER,
-			enabled BOOLEAN DEFAULT 1
+			enabled BOOLEAN DEFAULT 1,
+			max_retries INTEGER DEFAULT 3
 		);
 	`)
 	if err != nil {
