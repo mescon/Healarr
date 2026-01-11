@@ -321,6 +321,36 @@ func TestGetWebSocketUpgrader_NoCORS_SameOrigin(t *testing.T) {
 	}
 }
 
+func TestGetWebSocketUpgrader_NoCORS_InvalidOrigin(t *testing.T) {
+	// Clear CORS setting to enable same-origin checking
+	os.Unsetenv("HEALARR_CORS_ORIGIN")
+
+	upgrader := getWebSocketUpgrader()
+
+	// Request with an invalid origin URL that can't be parsed
+	req := httptest.NewRequest("GET", "/ws", nil)
+	req.Host = "localhost:8080"
+	req.Header.Set("Origin", "://invalid-url")
+	if upgrader.CheckOrigin(req) {
+		t.Error("Invalid origin URL should be rejected")
+	}
+}
+
+func TestGetWebSocketUpgrader_NoCORS_DifferentHost(t *testing.T) {
+	// Clear CORS setting to enable same-origin checking
+	os.Unsetenv("HEALARR_CORS_ORIGIN")
+
+	upgrader := getWebSocketUpgrader()
+
+	// Request with a valid origin but different host
+	req := httptest.NewRequest("GET", "/ws", nil)
+	req.Host = "localhost:8080"
+	req.Header.Set("Origin", "http://evil.com:8080")
+	if upgrader.CheckOrigin(req) {
+		t.Error("Different host origin should be rejected")
+	}
+}
+
 func TestWebSocketHub_EventBroadcast(t *testing.T) {
 	db, cleanup := setupTestDBForWebSocket(t)
 	defer cleanup()
