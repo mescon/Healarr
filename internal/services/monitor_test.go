@@ -2160,3 +2160,275 @@ func TestMonitorService_HandleFailure_DBSchemaError_PublishesSystemHealthDegrade
 	// Since getRetryCount fails first, we don't reach SystemHealthDegraded
 	// This test exercises the getRetryCount error logging path
 }
+
+// =============================================================================
+// handleStuckRemediation tests (BUG-3 fix)
+// =============================================================================
+
+func TestMonitorService_StuckRemediation_TriggersRetry(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	testutil.SeedScanPath(db, 1, "/media/movies", "/movies", true, false)
+	_, _ = db.Exec(`UPDATE scan_paths SET max_retries = 5 WHERE id = 1`)
+
+	corruptionID := "test-stuck-001"
+	testutil.SeedEvent(db, domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   corruptionID,
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path": "/movies/Stuck Movie/movie.mkv",
+			"path_id":   int64(1),
+		},
+	})
+
+	mockClock := testutil.NewMockClock()
+	monitor := NewMonitorService(eb, db, mockClock)
+	monitor.Start()
+
+	// Track RetryScheduled events
+	var mu sync.Mutex
+	var retryEvents []domain.Event
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+		mu.Lock()
+		retryEvents = append(retryEvents, e)
+		mu.Unlock()
+	})
+
+	// Send StuckRemediation event
+	eb.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.StuckRemediation,
+		EventData: map[string]interface{}{
+			"file_path":       "/movies/Stuck Movie/movie.mkv",
+			"last_event_time": "2024-01-01T12:00:00Z",
+			"threshold_hours": 24,
+		},
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// StuckRemediation should trigger IMMEDIATE retry (no timer)
+	if mockClock.PendingCount() != 0 {
+		t.Errorf("Expected immediate retry (no pending timers), got %d", mockClock.PendingCount())
+	}
+
+	if len(retryEvents) != 1 {
+		t.Errorf("Expected 1 RetryScheduled event, got %d", len(retryEvents))
+		return
+	}
+
+	// Verify retry has correct context
+	if fp, ok := retryEvents[0].GetString("file_path"); !ok || fp != "/movies/Stuck Movie/movie.mkv" {
+		t.Errorf("Expected file_path '/movies/Stuck Movie/movie.mkv', got %q", fp)
+	}
+	if reason, ok := retryEvents[0].GetString("reason"); !ok || reason != "stuck_remediation_recovery" {
+		t.Errorf("Expected reason 'stuck_remediation_recovery', got %q", reason)
+	}
+}
+
+func TestMonitorService_StuckRemediation_MaxRetriesReached(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	testutil.SeedScanPath(db, 1, "/media/movies", "/movies", true, false)
+	_, _ = db.Exec(`UPDATE scan_paths SET max_retries = 2 WHERE id = 1`)
+
+	corruptionID := "test-stuck-maxed"
+	testutil.SeedEvent(db, domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   corruptionID,
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path": "/movies/Stuck/movie.mkv",
+			"path_id":   int64(1),
+		},
+	})
+
+	// Add 2 failures to reach max
+	testutil.SeedEvent(db, domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   corruptionID,
+		EventType:     domain.DeletionFailed,
+		EventData:     map[string]interface{}{"error": "fail 1"},
+	})
+	testutil.SeedEvent(db, domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   corruptionID,
+		EventType:     domain.SearchFailed,
+		EventData:     map[string]interface{}{"error": "fail 2"},
+	})
+
+	mockClock := testutil.NewMockClock()
+	monitor := NewMonitorService(eb, db, mockClock)
+	monitor.Start()
+
+	// Track events
+	var mu sync.Mutex
+	var retryEvents []domain.Event
+	var maxRetriesEvents []domain.Event
+
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+		mu.Lock()
+		retryEvents = append(retryEvents, e)
+		mu.Unlock()
+	})
+	eb.Subscribe(domain.MaxRetriesReached, func(e domain.Event) {
+		mu.Lock()
+		maxRetriesEvents = append(maxRetriesEvents, e)
+		mu.Unlock()
+	})
+
+	// Send StuckRemediation event - should trigger MaxRetriesReached instead of retry
+	eb.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.StuckRemediation,
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(retryEvents) != 0 {
+		t.Errorf("Expected no RetryScheduled events when at max retries, got %d", len(retryEvents))
+	}
+	if len(maxRetriesEvents) != 1 {
+		t.Errorf("Expected 1 MaxRetriesReached event, got %d", len(maxRetriesEvents))
+	}
+}
+
+func TestMonitorService_StuckRemediation_MissingContext(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockClock := testutil.NewMockClock()
+	monitor := NewMonitorService(eb, db, mockClock)
+	monitor.Start()
+
+	// Track RetryScheduled events
+	var mu sync.Mutex
+	var retryEvents []domain.Event
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+		mu.Lock()
+		retryEvents = append(retryEvents, e)
+		mu.Unlock()
+	})
+
+	// Send StuckRemediation for non-existent corruption
+	eb.Publish(domain.Event{
+		AggregateID:   "non-existent-corruption",
+		AggregateType: "corruption",
+		EventType:     domain.StuckRemediation,
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should not crash and should not schedule retry
+	if len(retryEvents) != 0 {
+		t.Errorf("Expected no RetryScheduled events for missing context, got %d", len(retryEvents))
+	}
+}
+
+func TestMonitorService_SubscribesToStuckRemediation(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockClock := testutil.NewMockClock()
+	monitor := NewMonitorService(eb, db, mockClock)
+
+	// Before Start(), handler should not be called
+	config.SetForTesting(config.NewTestConfig())
+	testutil.SeedScanPath(db, 1, "/media/movies", "/movies", true, false)
+	_, _ = db.Exec(`UPDATE scan_paths SET max_retries = 5 WHERE id = 1`)
+
+	corruptionID := "test-subscribe"
+	testutil.SeedEvent(db, domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   corruptionID,
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path": "/movies/Test/movie.mkv",
+			"path_id":   int64(1),
+		},
+	})
+
+	var mu sync.Mutex
+	var retryEvents []domain.Event
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+		mu.Lock()
+		retryEvents = append(retryEvents, e)
+		mu.Unlock()
+	})
+
+	// Publish before Start - should not trigger handler
+	eb.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.StuckRemediation,
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	beforeStart := len(retryEvents)
+	mu.Unlock()
+
+	// Now Start the monitor
+	monitor.Start()
+
+	// Publish after Start - should trigger handler
+	eb.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.StuckRemediation,
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	afterStart := len(retryEvents)
+	mu.Unlock()
+
+	// After Start, we should see a new retry event
+	if afterStart <= beforeStart {
+		t.Errorf("Expected retry events after Start(), got before=%d, after=%d", beforeStart, afterStart)
+	}
+}

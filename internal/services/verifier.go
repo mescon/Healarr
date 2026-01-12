@@ -34,7 +34,13 @@ const verificationSemaphoreTimeout = 5 * time.Minute
 // errMsgShutdownInProgress is the error message used when operations are aborted due to shutdown.
 const errMsgShutdownInProgress = "shutdown in progress"
 
-// VerificationMeta stores quality and release info captured from history for VerificationSuccess events.
+// historyRetryInterval is the interval between history API retries when waiting for import.
+const historyRetryInterval = 10 * time.Second
+
+// historyRetryMaxAttempts is the maximum number of history API retries (12 * 10s = 2 min).
+const historyRetryMaxAttempts = 12
+
+// VerificationMeta stores quality/release info captured from history for VerificationSuccess events.
 type VerificationMeta struct {
 	Quality        string
 	ReleaseGroup   string
@@ -67,20 +73,25 @@ type VerifierService struct {
 	// Verification metadata - stores quality/release info from history for enriching VerificationSuccess
 	verifyMetaMu sync.RWMutex
 	verifyMeta   map[string]*VerificationMeta // corruptionID -> metadata
+
+	// Active verification cancellation - prevents multiple goroutines per corruption (BUG-2 fix)
+	activeVerifyMu sync.Mutex
+	activeVerify   map[string]context.CancelFunc // corruptionID -> cancel function
 }
 
 // NewVerifierService creates a new VerifierService with the given dependencies.
 func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper, arrClient integration.ArrClient, db *sql.DB) *VerifierService {
 	return &VerifierService{
-		eventBus:   eb,
-		detector:   detector,
-		pathMapper: pm,
-		arrClient:  arrClient,
-		db:         db,
-		shutdownCh: make(chan struct{}),
-		semaphore:  make(chan struct{}, maxConcurrentVerifications),
-		lastState:  make(map[string]string),
-		verifyMeta: make(map[string]*VerificationMeta),
+		eventBus:     eb,
+		detector:     detector,
+		pathMapper:   pm,
+		arrClient:    arrClient,
+		db:           db,
+		shutdownCh:   make(chan struct{}),
+		semaphore:    make(chan struct{}, maxConcurrentVerifications),
+		lastState:    make(map[string]string),
+		verifyMeta:   make(map[string]*VerificationMeta),
+		activeVerify: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -124,6 +135,34 @@ func (v *VerifierService) clearVerifyMeta(corruptionID string) {
 	v.verifyMetaMu.Lock()
 	delete(v.verifyMeta, corruptionID)
 	v.verifyMetaMu.Unlock()
+}
+
+// cancelExistingVerification cancels any existing verification for a corruptionID.
+// Returns true if an existing verification was cancelled.
+func (v *VerifierService) cancelExistingVerification(corruptionID string) bool {
+	v.activeVerifyMu.Lock()
+	defer v.activeVerifyMu.Unlock()
+	if cancel, exists := v.activeVerify[corruptionID]; exists {
+		cancel()
+		delete(v.activeVerify, corruptionID)
+		logger.Debugf("Cancelled existing verification goroutine for %s", corruptionID)
+		return true
+	}
+	return false
+}
+
+// registerVerification registers a new verification context for cancellation tracking.
+func (v *VerifierService) registerVerification(corruptionID string, cancel context.CancelFunc) {
+	v.activeVerifyMu.Lock()
+	v.activeVerify[corruptionID] = cancel
+	v.activeVerifyMu.Unlock()
+}
+
+// unregisterVerification removes a verification from cancellation tracking.
+func (v *VerifierService) unregisterVerification(corruptionID string) {
+	v.activeVerifyMu.Lock()
+	delete(v.activeVerify, corruptionID)
+	v.activeVerifyMu.Unlock()
 }
 
 // queueAction represents the result of processing a queue item.
@@ -314,6 +353,22 @@ func (v *VerifierService) waitWithShutdown(d time.Duration) bool {
 	}
 }
 
+// waitWithContext performs an interruptible sleep that returns true if shutdown/cancellation was requested.
+// This version also checks context cancellation for goroutine cleanup when a new retry starts.
+func (v *VerifierService) waitWithContext(ctx context.Context, d time.Duration) bool {
+	if ctx == nil {
+		return v.waitWithShutdown(d)
+	}
+	select {
+	case <-ctx.Done():
+		return true
+	case <-v.shutdownCh:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
 // storeImportMetadata stores quality/release info from a history import item.
 func (v *VerifierService) storeImportMetadata(corruptionID string, existingPaths []string, importItem *integration.HistoryItemInfo) {
 	meta := &VerificationMeta{
@@ -434,6 +489,10 @@ func (v *VerifierService) isShuttingDown() bool {
 func (v *VerifierService) handleSearchCompleted(event domain.Event) {
 	corruptionID := event.AggregateID
 
+	// Cancel any existing verification goroutine for this corruption (BUG-2 fix)
+	// This prevents multiple goroutines from running for the same item on retries
+	v.cancelExistingVerification(corruptionID)
+
 	// Use type-safe event data parsing
 	data, ok := event.ParseSearchCompletedEventData()
 	if !ok {
@@ -446,11 +505,15 @@ func (v *VerifierService) handleSearchCompleted(event domain.Event) {
 	metadata := data.Metadata
 	pathID := data.PathID
 
+	// Create cancellable context for this verification
+	ctx, cancel := context.WithCancel(context.Background())
+	v.registerVerification(corruptionID, cancel)
+
 	// If media_id is missing, fall back to simple polling
 	if mediaID == 0 {
 		logger.Warnf("Missing media_id in SearchCompleted event for %s, falling back to file polling", corruptionID)
-		v.startVerificationWithSemaphore(corruptionID, func() {
-			v.pollForFileWithBackoff(corruptionID, filePath, 0, nil, 0)
+		v.startVerificationWithSemaphore(ctx, corruptionID, func(ctx context.Context) {
+			v.pollForFileWithBackoff(ctx, corruptionID, filePath, 0, nil, 0)
 		})
 		return
 	}
@@ -461,34 +524,39 @@ func (v *VerifierService) handleSearchCompleted(event domain.Event) {
 		// Path mapping failed - typically means path not covered by scan_path config
 		// Fall back to simple file polling (no download queue/history monitoring)
 		logger.Warnf("Path mapping failed for %s: %v - using file polling fallback (no download progress tracking)", filePath, err)
-		v.startVerificationWithSemaphore(corruptionID, func() {
-			v.pollForFileWithBackoff(corruptionID, filePath, mediaID, metadata, pathID)
+		v.startVerificationWithSemaphore(ctx, corruptionID, func(ctx context.Context) {
+			v.pollForFileWithBackoff(ctx, corruptionID, filePath, mediaID, metadata, pathID)
 		})
 		return
 	}
 
 	// Start queue-aware verification
-	v.startVerificationWithSemaphore(corruptionID, func() {
-		v.monitorDownloadProgress(corruptionID, filePath, arrPath, mediaID, metadata, pathID)
+	v.startVerificationWithSemaphore(ctx, corruptionID, func(ctx context.Context) {
+		v.monitorDownloadProgress(ctx, corruptionID, filePath, arrPath, mediaID, metadata, pathID)
 	})
 }
 
 // startVerificationWithSemaphore launches a verification goroutine with concurrency limiting.
 // This prevents resource exhaustion when processing many corruptions simultaneously.
-func (v *VerifierService) startVerificationWithSemaphore(corruptionID string, verifyFunc func()) {
+// The context is used for cancellation when a new verification starts for the same corruptionID.
+func (v *VerifierService) startVerificationWithSemaphore(ctx context.Context, corruptionID string, verifyFunc func(context.Context)) {
 	v.wg.Add(1)
 	go func() {
 		defer v.wg.Done()
+		defer v.unregisterVerification(corruptionID)
 
-		// Acquire semaphore with timeout
+		// Acquire semaphore with timeout, respecting context cancellation
 		select {
 		case v.semaphore <- struct{}{}:
 			defer func() { <-v.semaphore }()
+		case <-ctx.Done():
+			logger.Debugf("Verifier: context cancelled while waiting for semaphore for %s", corruptionID)
+			return
 		case <-time.After(verificationSemaphoreTimeout):
 			logger.Warnf("Verifier: timeout acquiring semaphore for %s after %v - verification queue full",
 				corruptionID, verificationSemaphoreTimeout)
 			// Emit DownloadTimeout so recovery can pick it up later
-			v.eventBus.Publish(domain.Event{
+			if err := v.eventBus.Publish(domain.Event{
 				AggregateID:   corruptionID,
 				AggregateType: "corruption",
 				EventType:     domain.DownloadTimeout,
@@ -496,19 +564,22 @@ func (v *VerifierService) startVerificationWithSemaphore(corruptionID string, ve
 					"reason": "verification_queue_full",
 					"note":   "Too many concurrent verifications, will retry on next recovery cycle",
 				},
-			})
+			}); err != nil {
+				logger.Errorf("Failed to publish DownloadTimeout event: %v", err)
+			}
 			return
 		case <-v.shutdownCh:
 			logger.Debugf("Verifier: shutdown while waiting for semaphore for %s", corruptionID)
 			return
 		}
 
-		verifyFunc()
+		verifyFunc(ctx)
 	}()
 }
 
 // monitorState tracks the state during download monitoring
 type monitorState struct {
+	ctx             context.Context
 	corruptionID    string
 	filePath        string
 	arrPath         string
@@ -613,6 +684,43 @@ func (v *VerifierService) handleNoQueueItems(state *monitorState, elapsed time.D
 // handleDisappearedQueueItem handles the case when an item was in queue but is now gone.
 // It checks if the item was imported (files may not be accessible yet) vs manually removed.
 func (v *VerifierService) handleDisappearedQueueItem(state *monitorState, elapsed time.Duration) monitorAction {
+	// BUG-1 FIX: If download was near complete (importPending or 100%), the history API may not
+	// have registered the import yet due to timing. Retry multiple times before giving up.
+	downloadWasComplete := state.lastStatus == "importPending" ||
+		state.lastStatus == "importing" ||
+		state.lastStatus == "imported" ||
+		state.lastProgress >= 99
+
+	if downloadWasComplete {
+		logger.Debugf("Download was complete for %s (status: %s, progress: %.1f%%), waiting for history API to catch up",
+			state.corruptionID, state.lastStatus, state.lastProgress)
+
+		// Retry history check multiple times with delay (BUG-1 fix)
+		for i := 0; i < historyRetryMaxAttempts; i++ {
+			// Check for shutdown/cancellation between retries
+			if v.waitWithContext(state.ctx, historyRetryInterval) {
+				return monitorStop
+			}
+
+			hasImport, err := v.hasImportEventInHistory(state.arrPath, state.mediaID)
+			if err != nil {
+				logger.Debugf("History retry %d/%d for %s failed: %v",
+					i+1, historyRetryMaxAttempts, state.corruptionID, err)
+				continue
+			}
+
+			if hasImport {
+				logger.Infof("Import event found in history for %s after %d retries",
+					state.corruptionID, i+1)
+				return monitorContinue // Will be picked up by checkHistoryForImport
+			}
+		}
+
+		logger.Warnf("Download was complete for %s but no import event found after %d retries - may be a race condition or actual removal",
+			state.corruptionID, historyRetryMaxAttempts)
+	}
+
+	// Standard check for non-complete downloads
 	hasImport, err := v.hasImportEventInHistory(state.arrPath, state.mediaID)
 	if err != nil {
 		return v.handleHistoryAPIFailure(state, elapsed, err)
@@ -659,11 +767,12 @@ func (v *VerifierService) handleHistoryAPIFailure(state *monitorState, elapsed t
 }
 
 // monitorDownloadProgress uses the *arr queue and history APIs to track download progress
-func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPath string, mediaID int64, metadata map[string]interface{}, pathID int64) {
+func (v *VerifierService) monitorDownloadProgress(ctx context.Context, corruptionID, filePath, arrPath string, mediaID int64, metadata map[string]interface{}, pathID int64) {
 	defer v.clearLastState(corruptionID)
 
 	cfg := config.Get()
 	state := &monitorState{
+		ctx:          ctx,
 		corruptionID: corruptionID,
 		filePath:     filePath,
 		arrPath:      arrPath,
@@ -687,6 +796,12 @@ func (v *VerifierService) monitorDownloadProgress(corruptionID, filePath, arrPat
 // executeMonitorIteration performs a single iteration of download monitoring.
 // Returns monitorStop if monitoring should end, monitorContinue to keep polling.
 func (v *VerifierService) executeMonitorIteration(state *monitorState) monitorAction {
+	// Check for context cancellation (happens when a new retry starts for same corruption)
+	if state.ctx != nil && state.ctx.Err() != nil {
+		logger.Debugf("Verifier: context cancelled for %s, stopping old goroutine", state.corruptionID)
+		return monitorStop
+	}
+
 	if v.isShuttingDown() {
 		logger.Infof(logMsgDownloadMonitorShutdown, state.corruptionID)
 		return monitorStop
@@ -718,7 +833,7 @@ func (v *VerifierService) handleActiveDownload(state *monitorState, queueItem in
 	if v.handleQueueItem(state, queueItem) == monitorStop {
 		return monitorStop
 	}
-	if v.waitWithShutdown(state.pollInterval) {
+	if v.waitWithContext(state.ctx, state.pollInterval) {
 		logger.Infof(logMsgDownloadMonitorShutdown, state.corruptionID)
 		return monitorStop
 	}
@@ -736,7 +851,7 @@ func (v *VerifierService) handleInactiveDownload(state *monitorState, elapsed ti
 	if state.attempt%10 == 0 {
 		logger.Debugf("Verification poll #%d for %s, no queue activity, next check in %s", state.attempt, state.corruptionID, backoff)
 	}
-	if v.waitWithShutdown(backoff) {
+	if v.waitWithContext(state.ctx, backoff) {
 		logger.Infof(logMsgDownloadMonitorShutdown, state.corruptionID)
 		return monitorStop
 	}
@@ -914,7 +1029,7 @@ func (v *VerifierService) getHistoryWithRetry(arrPath string, mediaID int64, lim
 }
 
 // pollForFileWithBackoff is the fallback method when *arr tracking isn't available
-func (v *VerifierService) pollForFileWithBackoff(corruptionID string, referencePath string, mediaID int64, metadata map[string]interface{}, pathID int64) {
+func (v *VerifierService) pollForFileWithBackoff(ctx context.Context, corruptionID string, referencePath string, mediaID int64, metadata map[string]interface{}, pathID int64) {
 	cfg := config.Get()
 
 	initialInterval := cfg.VerificationInterval
@@ -927,6 +1042,12 @@ func (v *VerifierService) pollForFileWithBackoff(corruptionID string, referenceP
 	attempt := 0
 
 	for {
+		// Check for context cancellation (happens when a new retry starts)
+		if ctx != nil && ctx.Err() != nil {
+			logger.Debugf("Verifier: context cancelled for %s, stopping old goroutine", corruptionID)
+			return
+		}
+
 		// Check for shutdown
 		if v.isShuttingDown() {
 			logger.Infof("Verifier: stopping file polling for %s due to shutdown", corruptionID)
@@ -945,9 +1066,9 @@ func (v *VerifierService) pollForFileWithBackoff(corruptionID string, referenceP
 			logger.Debugf("Verification poll #%d for %s, next check in %s", attempt, corruptionID, currentInterval)
 		}
 
-		// Interruptible sleep for graceful shutdown
-		if v.waitWithShutdown(currentInterval) {
-			logger.Infof("Verifier: stopping file polling for %s due to shutdown", corruptionID)
+		// Interruptible sleep for graceful shutdown and context cancellation
+		if v.waitWithContext(ctx, currentInterval) {
+			logger.Infof("Verifier: stopping file polling for %s due to shutdown/cancellation", corruptionID)
 			return
 		}
 		attempt++
