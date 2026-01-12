@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -925,7 +926,7 @@ func TestVerifierService_PollForFileWithBackoff(t *testing.T) {
 
 		done := make(chan struct{})
 		go func() {
-			verifier.pollForFileWithBackoff("test-shutdown", "/nonexistent/file.mkv", 0, nil, 0)
+			verifier.pollForFileWithBackoff(context.Background(), "test-shutdown", "/nonexistent/file.mkv", 0, nil, 0)
 			close(done)
 		}()
 
@@ -973,7 +974,7 @@ func TestVerifierService_MonitorDownloadProgress_FailedState(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		verifier.monitorDownloadProgress("test-failed", "/test.mkv", "/movies", 123, nil, 0)
+		verifier.monitorDownloadProgress(context.Background(), "test-failed", "/test.mkv", "/movies", 123, nil, 0)
 		close(done)
 	}()
 
@@ -1025,7 +1026,7 @@ func TestVerifierService_MonitorDownloadProgress_IgnoredState(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		verifier.monitorDownloadProgress("test-ignored", "/test.mkv", "/movies", 456, nil, 0)
+		verifier.monitorDownloadProgress(context.Background(), "test-ignored", "/test.mkv", "/movies", 456, nil, 0)
 		close(done)
 	}()
 
@@ -1078,7 +1079,7 @@ func TestVerifierService_MonitorDownloadProgress_ShutdownDuringMonitoring(t *tes
 
 	verifier := NewVerifierService(eb, nil, nil, mockArr, db)
 
-	go verifier.monitorDownloadProgress("test-shutdown", "/test.mkv", "/movies", 789, nil, 0)
+	go verifier.monitorDownloadProgress(context.Background(), "test-shutdown", "/test.mkv", "/movies", 789, nil, 0)
 
 	// Wait for first API call to confirm monitoring started
 	select {
@@ -1138,7 +1139,7 @@ func TestVerifierService_MonitorDownloadProgress_ImportBlocked(t *testing.T) {
 
 	verifier := NewVerifierService(eb, nil, nil, mockArr, db)
 
-	go verifier.monitorDownloadProgress("test-blocked", "/test.mkv", "/movies", 321, nil, 0)
+	go verifier.monitorDownloadProgress(context.Background(), "test-blocked", "/test.mkv", "/movies", 321, nil, 0)
 
 	// Wait for first API call
 	select {
@@ -1258,7 +1259,7 @@ func TestVerifierService_MonitorDownloadProgress_Timeout(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		verifier.monitorDownloadProgress("test-timeout", "/test.mkv", "/movies", 456, nil, 0)
+		verifier.monitorDownloadProgress(context.Background(), "test-timeout", "/test.mkv", "/movies", 456, nil, 0)
 		close(done)
 	}()
 
@@ -1341,7 +1342,7 @@ func TestVerifierService_MonitorDownloadProgress_HistoryImportDetected(t *testin
 
 	done := make(chan struct{})
 	go func() {
-		verifier.monitorDownloadProgress("test-history", "/test.mkv", "/movies", 789, nil, 0)
+		verifier.monitorDownloadProgress(context.Background(), "test-history", "/test.mkv", "/movies", 789, nil, 0)
 		close(done)
 	}()
 

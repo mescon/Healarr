@@ -38,6 +38,7 @@ func (m *MonitorService) Start() {
 	m.eventBus.Subscribe(domain.SearchFailed, m.handleFailure)
 	m.eventBus.Subscribe(domain.VerificationFailed, m.handleFailure)
 	m.eventBus.Subscribe(domain.DownloadTimeout, m.handleFailure)
+	m.eventBus.Subscribe(domain.StuckRemediation, m.handleStuckRemediation)
 }
 
 func (m *MonitorService) handleFailure(event domain.Event) {
@@ -90,6 +91,57 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 			logger.Errorf("Failed to publish RetryScheduled event for %s: %v", corruptionID, err)
 		}
 	})
+}
+
+// handleStuckRemediation handles items that have been stuck in progress for too long
+// Unlike regular failures, stuck items get an immediate retry without exponential backoff
+// since they've already been waiting for the stuck threshold duration (default 24h)
+func (m *MonitorService) handleStuckRemediation(event domain.Event) {
+	corruptionID := event.AggregateID
+
+	// Check if we've already hit max retries
+	retryCount, maxRetries, err := m.getRetryCount(corruptionID)
+	if err != nil {
+		logger.Errorf("Failed to get retry count for stuck remediation %s: %v", corruptionID, err)
+		return
+	}
+
+	if retryCount >= maxRetries {
+		logger.Infof("Stuck remediation %s has reached max retries (%d), not scheduling retry", corruptionID, maxRetries)
+		if err := m.eventBus.Publish(domain.Event{
+			AggregateID:   corruptionID,
+			AggregateType: "corruption",
+			EventType:     domain.MaxRetriesReached,
+		}); err != nil {
+			logger.Errorf("Failed to publish MaxRetriesReached event for %s: %v", corruptionID, err)
+		}
+		return
+	}
+
+	// Get context for retry
+	filePath, pathID, err := m.getCorruptionContext(corruptionID)
+	if err != nil {
+		logger.Errorf("Failed to get context for stuck remediation %s: %v", corruptionID, err)
+		return
+	}
+
+	logger.Infof("Scheduling retry for stuck remediation: %s (file: %s, retry %d/%d)",
+		corruptionID, filePath, retryCount+1, maxRetries)
+
+	// Immediate retry - stuck items have already been waiting long enough
+	if err := m.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.RetryScheduled,
+		EventData: map[string]interface{}{
+			"file_path":      filePath,
+			"path_id":        pathID,
+			"auto_remediate": true,
+			"reason":         "stuck_remediation_recovery",
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish RetryScheduled event for stuck remediation %s: %v", corruptionID, err)
+	}
 }
 
 // getCorruptionContext retrieves the file_path and path_id from the original CorruptionDetected event
