@@ -2709,3 +2709,183 @@ func TestExtractInt(t *testing.T) {
 		})
 	}
 }
+
+// Tests for new message formatters added in v1.1.32
+
+func TestFmtDownloadFailed(t *testing.T) {
+	tests := []struct {
+		name     string
+		ctx      messageContext
+		contains []string
+	}{
+		{
+			name: "basic message",
+			ctx: messageContext{
+				FileName: "Movie.2024.mkv",
+			},
+			contains: []string{"Download failed", "Movie.2024.mkv"},
+		},
+		{
+			name: "with error message",
+			ctx: messageContext{
+				FileName: "Show.S01E01.mkv",
+				ErrorMsg: "No seeders available",
+			},
+			contains: []string{"No seeders available"},
+		},
+		{
+			name: "with reason",
+			ctx: messageContext{
+				FileName: "Show.S01E01.mkv",
+				Reason:   "Tracker offline",
+			},
+			contains: []string{"Reason:", "Tracker offline"},
+		},
+		{
+			name: "with both error and reason",
+			ctx: messageContext{
+				FileName: "Show.S01E01.mkv",
+				ErrorMsg: "Connection timeout",
+				Reason:   "Network issues",
+			},
+			contains: []string{"Connection timeout", "Network issues"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := fmtDownloadFailed(tt.ctx)
+			for _, s := range tt.contains {
+				if !strings.Contains(result, s) {
+					t.Errorf("Expected %q in message, got: %s", s, result)
+				}
+			}
+		})
+	}
+}
+
+func TestFmtSystemHealthDegraded(t *testing.T) {
+	tests := []struct {
+		name     string
+		ctx      messageContext
+		contains []string
+	}{
+		{
+			name:     "basic message",
+			ctx:      messageContext{},
+			contains: []string{"System health degraded"},
+		},
+		{
+			name: "with error message",
+			ctx: messageContext{
+				ErrorMsg: "Database connection failed",
+			},
+			contains: []string{"Database connection failed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := fmtSystemHealthDegraded(tt.ctx)
+			for _, s := range tt.contains {
+				if !strings.Contains(result, s) {
+					t.Errorf("Expected %q in message, got: %s", s, result)
+				}
+			}
+		})
+	}
+}
+
+func TestFmtInstanceUnhealthy(t *testing.T) {
+	tests := []struct {
+		name     string
+		ctx      messageContext
+		contains []string
+	}{
+		{
+			name:     "basic message",
+			ctx:      messageContext{},
+			contains: []string{"Arr instance unreachable"},
+		},
+		{
+			name: "with reason",
+			ctx: messageContext{
+				Reason: "Sonarr is not responding",
+			},
+			contains: []string{"Sonarr is not responding"},
+		},
+		{
+			name: "with error message",
+			ctx: messageContext{
+				ErrorMsg: "HTTP 503 Service Unavailable",
+			},
+			contains: []string{"HTTP 503 Service Unavailable"},
+		},
+		{
+			name: "with both reason and error",
+			ctx: messageContext{
+				Reason:   "Connection refused",
+				ErrorMsg: "dial tcp: connection refused",
+			},
+			contains: []string{"Connection refused", "dial tcp: connection refused"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := fmtInstanceUnhealthy(tt.ctx)
+			for _, s := range tt.contains {
+				if !strings.Contains(result, s) {
+					t.Errorf("Expected %q in message, got: %s", s, result)
+				}
+			}
+		})
+	}
+}
+
+func TestGetEventGroups_IncludesNewEvents(t *testing.T) {
+	groups := GetEventGroups()
+
+	requiredEvents := []string{"DownloadFailed", "InstanceUnhealthy"}
+	found := make(map[string]bool)
+
+	for _, group := range groups {
+		for _, event := range group.Events {
+			found[event.Name] = true
+		}
+	}
+
+	for _, event := range requiredEvents {
+		if !found[event] {
+			t.Errorf("Expected %s in event groups", event)
+		}
+	}
+}
+
+func TestMessageFormatters_IncludesNewFormatters(t *testing.T) {
+	newFormatters := []string{
+		"DownloadFailed",
+		"SystemHealthDegraded",
+		"InstanceUnhealthy",
+	}
+
+	for _, eventType := range newFormatters {
+		if _, ok := messageFormatters[eventType]; !ok {
+			t.Errorf("Expected messageFormatters to include %s", eventType)
+		}
+	}
+}
+
+func TestEventTitles_IncludesNewEvents(t *testing.T) {
+	newEvents := []string{
+		"DownloadFailed",
+		"SystemHealthDegraded",
+		"InstanceUnhealthy",
+	}
+
+	for _, eventType := range newEvents {
+		if _, ok := eventTitles[eventType]; !ok {
+			t.Errorf("Expected eventTitles to include %s", eventType)
+		}
+	}
+}
