@@ -816,13 +816,48 @@ func (v *VerifierService) checkHistoryForImport(corruptionID, arrPath string, me
 		return false
 	}
 
-	allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, referencePath)
-	if err != nil || len(allPaths) == 0 {
+	// BUG FIX: GetAllFilePaths API error was silently returning false (same as "no import")
+	// This caused false ManuallyRemoved events. Add retry logic to distinguish API errors.
+	allPaths, err := v.getFilePathsWithRetry(mediaID, metadata, referencePath, 3)
+	if err != nil {
+		// API error after retries - don't treat as "no import"
+		// Return false but log clearly that this is an API error, not a confirmed no-import
+		logger.Warnf("GetAllFilePaths failed for %s after retries: %v - cannot confirm import status", corruptionID, err)
+		return false
+	}
+	if len(allPaths) == 0 {
+		// No paths found (not an error) - this is a valid "no import" response
 		return false
 	}
 
 	existingPaths := v.convertAndVerifyPaths(allPaths)
 	return v.handleImportPaths(corruptionID, existingPaths, allPaths, importItem)
+}
+
+// getFilePathsWithRetry attempts to fetch file paths with retries
+// This fixes the bug where a single API failure was treated as "no import found"
+func (v *VerifierService) getFilePathsWithRetry(mediaID int64, metadata map[string]interface{}, referencePath string, maxRetries int) ([]string, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if v.isShuttingDown() {
+			return nil, fmt.Errorf("shutdown in progress")
+		}
+
+		allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, referencePath)
+		if err == nil {
+			return allPaths, nil
+		}
+
+		lastErr = err
+		if attempt < maxRetries-1 {
+			backoff := time.Duration(1<<uint(attempt)) * time.Second
+			logger.Debugf("GetAllFilePaths failed (attempt %d/%d), retrying in %v: %v", attempt+1, maxRetries, backoff, err)
+			if v.waitWithShutdown(backoff) {
+				return nil, fmt.Errorf("shutdown in progress")
+			}
+		}
+	}
+	return nil, fmt.Errorf("GetAllFilePaths failed after %d attempts: %w", maxRetries, lastErr)
 }
 
 // handleImportPaths processes import paths and emits appropriate events.
