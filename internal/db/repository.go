@@ -25,10 +25,12 @@ const RetryDelay = 100 * time.Millisecond
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// Repository provides database access methods for the application.
 type Repository struct {
 	DB *sql.DB
 }
 
+// NewRepository creates a new Repository with the database at the given path.
 func NewRepository(dbPath string) (*Repository, error) {
 	// Ensure directory exists with restricted permissions (owner only)
 	dir := filepath.Dir(dbPath)
@@ -139,6 +141,7 @@ func (r *Repository) checkIntegrity() error {
 	return nil
 }
 
+// Close closes the database connection.
 func (r *Repository) Close() error {
 	return r.DB.Close()
 }

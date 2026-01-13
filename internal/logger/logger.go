@@ -12,6 +12,7 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
+// LogLevel represents the severity level of a log message.
 type LogLevel string
 
 const (
@@ -57,6 +58,7 @@ func SetLevel(level string) {
 	log.Printf("Log level set to: %s", minLevel)
 }
 
+// LogEntry represents a single log message with metadata for streaming to clients.
 type LogEntry struct {
 	Timestamp string   `json:"timestamp"`
 	Level     LogLevel `json:"level"`
@@ -107,6 +109,7 @@ func GetLogDir() string {
 	return ""
 }
 
+// Subscribe returns a channel that receives all log entries for real-time streaming.
 func Subscribe() chan LogEntry {
 	mu.Lock()
 	defer mu.Unlock()
@@ -115,6 +118,7 @@ func Subscribe() chan LogEntry {
 	return ch
 }
 
+// Unsubscribe removes a log listener channel and closes it.
 func Unsubscribe(ch chan LogEntry) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -139,6 +143,7 @@ func broadcast(entry LogEntry) {
 	}
 }
 
+// Log writes a formatted message at the specified level to stdout, file, and subscribers.
 func Log(level LogLevel, format string, v ...interface{}) {
 	// Filter messages below minimum level
 	if levelPriority(level) < levelPriority(minLevel) {
@@ -160,18 +165,22 @@ func Log(level LogLevel, format string, v ...interface{}) {
 	})
 }
 
+// Infof logs a formatted message at INFO level.
 func Infof(format string, v ...interface{}) {
 	Log(Info, format, v...)
 }
 
+// Errorf logs a formatted message at ERROR level.
 func Errorf(format string, v ...interface{}) {
 	Log(Error, format, v...)
 }
 
+// Debugf logs a formatted message at DEBUG level.
 func Debugf(format string, v ...interface{}) {
 	Log(Debug, format, v...)
 }
 
+// Warnf logs a formatted message at WARN level.
 func Warnf(format string, v ...interface{}) {
 	Log(Warn, format, v...)
 }

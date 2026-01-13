@@ -58,27 +58,35 @@ func validateMediaPath(path string) error {
 	return nil
 }
 
+// DetectionMethod specifies which tool to use for media file health checking.
 type DetectionMethod string
 
 const (
-	DetectionZeroByte  DetectionMethod = "zero_byte"
-	DetectionFFprobe   DetectionMethod = "ffprobe"
+	// DetectionZeroByte checks if a file has zero bytes (empty file).
+	DetectionZeroByte DetectionMethod = "zero_byte"
+	// DetectionFFprobe uses ffprobe/ffmpeg for media file validation.
+	DetectionFFprobe DetectionMethod = "ffprobe"
+	// DetectionMediaInfo uses MediaInfo for media file validation.
 	DetectionMediaInfo DetectionMethod = "mediainfo"
+	// DetectionHandBrake uses HandBrakeCLI for media file validation.
 	DetectionHandBrake DetectionMethod = "handbrake"
 )
 
-// Detection mode constants
 const (
-	ModeQuick    = "quick"    // Header-only analysis (fast)
-	ModeThorough = "thorough" // Full stream decoding (slow)
+	// ModeQuick performs header-only analysis (fast).
+	ModeQuick = "quick"
+	// ModeThorough performs full stream decoding (slow but comprehensive).
+	ModeThorough = "thorough"
 )
 
+// DetectionConfig specifies how to check media file health.
 type DetectionConfig struct {
 	Method DetectionMethod
 	Args   []string
 	Mode   string // "quick" or "thorough"
 }
 
+// CmdHealthChecker validates media files using external command-line tools.
 type CmdHealthChecker struct {
 	// Paths to binaries, can be configured
 	FFprobePath   string
@@ -108,6 +116,7 @@ func NewHealthCheckerWithPaths(ffprobePath, ffmpegPath, mediainfoPath, handbrake
 	}
 }
 
+// Check validates a media file using the default ffprobe detection method.
 func (hc *CmdHealthChecker) Check(path string, mode string) (bool, *HealthCheckError) {
 	// Legacy method - use default ffprobe detection
 	return hc.CheckWithConfig(path, DetectionConfig{
@@ -117,6 +126,7 @@ func (hc *CmdHealthChecker) Check(path string, mode string) (bool, *HealthCheckE
 	})
 }
 
+// CheckWithConfig validates a media file using the specified detection configuration.
 func (hc *CmdHealthChecker) CheckWithConfig(path string, config DetectionConfig) (bool, *HealthCheckError) {
 	// 0. Validate path to prevent command injection before any subprocess execution
 	if err := validateMediaPath(path); err != nil {
@@ -609,9 +619,7 @@ func (hc *CmdHealthChecker) runMediaInfo(path string, customArgs []string, mode 
 	return validateMediaInfoOutput(output)
 }
 
-// GetCommandPreview returns the exact command that would be executed for a given configuration.
-// This is useful for displaying to users so they know exactly what will run.
-// buildFFprobePreview builds the command preview for ffprobe/ffmpeg detection
+// buildFFprobePreview builds the command preview for ffprobe/ffmpeg detection.
 func (hc *CmdHealthChecker) buildFFprobePreview(mode string, customArgs []string, filePath string) string {
 	var args []string
 	if mode == ModeThorough {
@@ -652,6 +660,7 @@ func (hc *CmdHealthChecker) buildHandBrakePreview(mode string, customArgs []stri
 	return strings.Join(args, " ")
 }
 
+// GetCommandPreview returns the exact command that would be executed for a given configuration.
 func (hc *CmdHealthChecker) GetCommandPreview(method DetectionMethod, mode string, customArgs []string) string {
 	if mode == "" {
 		mode = ModeQuick

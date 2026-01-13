@@ -29,6 +29,7 @@ type Scheduler interface {
 	CleanupOrphanedSchedules() (int, error)
 }
 
+// SchedulerService manages scheduled scan jobs using cron expressions.
 type SchedulerService struct {
 	db      *sql.DB
 	scanner *ScannerService
@@ -37,6 +38,7 @@ type SchedulerService struct {
 	mu      sync.Mutex
 }
 
+// NewSchedulerService creates a new SchedulerService with the given database and scanner.
 func NewSchedulerService(db *sql.DB, scanner *ScannerService) *SchedulerService {
 	return &SchedulerService{
 		db:      db,
@@ -46,6 +48,7 @@ func NewSchedulerService(db *sql.DB, scanner *ScannerService) *SchedulerService 
 	}
 }
 
+// Start initializes the cron engine and loads schedules from the database.
 func (s *SchedulerService) Start() {
 	logger.Debugf("Scheduler: initializing cron engine...")
 	s.cron.Start()
@@ -55,10 +58,12 @@ func (s *SchedulerService) Start() {
 	}
 }
 
+// Stop stops the cron engine and all scheduled jobs.
 func (s *SchedulerService) Stop() {
 	s.cron.Stop()
 }
 
+// LoadSchedules loads all enabled schedules from the database and registers them with cron.
 func (s *SchedulerService) LoadSchedules() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -162,6 +167,7 @@ func (s *SchedulerService) addJob(scheduleID, scanPathID int, cronExpr string) e
 	return nil
 }
 
+// AddSchedule creates a new schedule for the given scan path with the specified cron expression.
 func (s *SchedulerService) AddSchedule(scanPathID int, cronExpr string) (int64, error) {
 	// Validate cron expression
 	if _, err := cron.ParseStandard(cronExpr); err != nil {
@@ -187,6 +193,7 @@ func (s *SchedulerService) AddSchedule(scanPathID int, cronExpr string) (int64, 
 	return id, nil
 }
 
+// DeleteSchedule removes a schedule by ID from the database and cron engine.
 func (s *SchedulerService) DeleteSchedule(id int) error {
 	_, err := s.db.Exec("DELETE FROM scan_schedules WHERE id = ?", id)
 	if err != nil {
@@ -231,6 +238,7 @@ func (s *SchedulerService) CleanupOrphanedSchedules() (int, error) {
 	return int(affected), nil
 }
 
+// UpdateSchedule updates a schedule's cron expression and enabled state.
 func (s *SchedulerService) UpdateSchedule(id int, cronExpr string, enabled bool) error {
 	// Validate cron expression if provided
 	if cronExpr != "" {

@@ -57,6 +57,7 @@ func getWebSocketUpgrader() websocket.Upgrader {
 
 var upgrader = getWebSocketUpgrader()
 
+// WebSocketHub manages WebSocket connections and broadcasts events to connected clients.
 type WebSocketHub struct {
 	clients    map[*websocket.Conn]bool
 	broadcast  chan interface{}
@@ -68,6 +69,7 @@ type WebSocketHub struct {
 	eventBus   *eventbus.EventBus
 }
 
+// NewWebSocketHub creates a new WebSocketHub and subscribes to relevant events.
 func NewWebSocketHub(eventBus *eventbus.EventBus) *WebSocketHub {
 	h := &WebSocketHub{
 		broadcast:  make(chan interface{}),
@@ -223,6 +225,7 @@ func (h *WebSocketHub) Shutdown() {
 	}
 }
 
+// HandleConnection upgrades an HTTP connection to WebSocket and manages its lifecycle.
 func (h *WebSocketHub) HandleConnection(c *gin.Context) {
 	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {

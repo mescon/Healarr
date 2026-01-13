@@ -80,6 +80,7 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 	}
 }
 
+// HTTPArrClient implements ArrClient for communicating with Sonarr/Radarr APIs.
 type HTTPArrClient struct {
 	db              *sql.DB
 	httpClient      *http.Client
@@ -87,6 +88,7 @@ type HTTPArrClient struct {
 	circuitBreakers *CircuitBreakerRegistry
 }
 
+// NewArrClient creates an HTTPArrClient with rate limiting and circuit breaker support.
 func NewArrClient(db *sql.DB) *HTTPArrClient {
 	cfg := config.Get()
 	return &HTTPArrClient{
@@ -115,6 +117,7 @@ func (c *HTTPArrClient) ResetAllCircuitBreakers() {
 	c.circuitBreakers.ResetAll()
 }
 
+// ArrInstance represents a configured Sonarr or Radarr instance.
 type ArrInstance struct {
 	ID     int64
 	Name   string

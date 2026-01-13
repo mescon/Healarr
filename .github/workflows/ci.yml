@@ -52,6 +52,15 @@ jobs:
           args: --timeout=5m
           only-new-issues: true
 
+  docstring-coverage:
+    name: Docstring Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check docstring coverage (80% threshold)
+        run: ./scripts/check-docstrings.sh 80
+
   test-frontend:
     name: Test Frontend (Node)
     runs-on: ubuntu-latest

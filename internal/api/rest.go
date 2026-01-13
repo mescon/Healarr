@@ -29,6 +29,7 @@ import (
 	"github.com/mescon/Healarr/internal/web"
 )
 
+// RESTServer provides the HTTP REST API for Healarr.
 type RESTServer struct {
 	router         *gin.Engine
 	httpServer     *http.Server
@@ -58,6 +59,7 @@ type ServerDeps struct {
 	Metrics    *metrics.MetricsService
 }
 
+// NewRESTServer creates a new REST server with the provided dependencies.
 func NewRESTServer(deps ServerDeps) *RESTServer {
 	// Set Gin to release mode for production (suppresses debug warnings)
 	gin.SetMode(gin.ReleaseMode)
@@ -444,6 +446,7 @@ func (s *RESTServer) setupRoutes() {
 	}
 }
 
+// Start begins listening for HTTP requests on the specified address.
 func (s *RESTServer) Start(addr string) error {
 	s.httpServer = &http.Server{
 		Addr:    addr,

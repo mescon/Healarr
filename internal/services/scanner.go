@@ -103,6 +103,7 @@ const (
 	batchThrottleDelay = 30 * time.Second
 )
 
+// ScanProgress represents the current state and progress of an active scan.
 type ScanProgress struct {
 	mu              sync.Mutex         `json:"-"` // Protects mutable fields during concurrent access
 	ID              string             `json:"id"`
@@ -167,6 +168,7 @@ type Scanner interface {
 	Shutdown()
 }
 
+// ScannerService manages file scanning operations for corruption detection.
 type ScannerService struct {
 	db          *sql.DB
 	eventBus    *eventbus.EventBus
@@ -187,6 +189,7 @@ type ScannerService struct {
 	scanPathCacheTime time.Time
 }
 
+// NewScannerService creates a new ScannerService with the given dependencies.
 func NewScannerService(db *sql.DB, eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper) *ScannerService {
 	return &ScannerService{
 		db:              db,
@@ -207,7 +210,7 @@ func (s *ScannerService) IsFileBeingScanned(localPath string) bool {
 	return s.filesInProgress[localPath]
 }
 
-// Shutdown gracefully stops all active scans by saving their state for later resumption
+// Shutdown gracefully stops all active scans by saving their state for later resumption.
 func (s *ScannerService) Shutdown() {
 	logger.Infof("Scanner: initiating graceful shutdown...")
 
@@ -264,7 +267,7 @@ func (s *ScannerService) Shutdown() {
 	logger.Infof("Scanner: shutdown complete")
 }
 
-// ResumeInterruptedScans checks for scans that were interrupted by shutdown and resumes them
+// ResumeInterruptedScans checks for scans that were interrupted by shutdown and resumes them.
 func (s *ScannerService) ResumeInterruptedScans() {
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
@@ -784,6 +787,7 @@ func (s *ScannerService) finalizeScan(scanID string, progress *ScanProgress, sca
 	}
 }
 
+// ScanPath scans all media files in the given directory path for corruption.
 func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1388,6 +1392,7 @@ func (s *ScannerService) emitProgress(p *ScanProgress) {
 	}
 }
 
+// GetActiveScans returns a copy of all currently active scan progress states.
 func (s *ScannerService) GetActiveScans() []ScanProgress {
 	s.mu.Lock()
 	defer s.mu.Unlock()

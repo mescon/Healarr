@@ -4,6 +4,7 @@ import (
 	"time"
 )
 
+// EventType represents the type of domain event in the event-sourced system.
 type EventType string
 
 const (
@@ -43,6 +44,8 @@ const (
 	InstanceHealthy   EventType = "InstanceHealthy"
 )
 
+// Event represents a domain event in the event-sourced architecture.
+// Events are immutable records of state changes, stored in the events table.
 type Event struct {
 	ID            int64                  `json:"id"`
 	AggregateType string                 `json:"aggregate_type"`

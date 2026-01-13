@@ -31,6 +31,8 @@ type Publisher interface {
 // Ensure EventBus implements Publisher
 var _ Publisher = (*EventBus)(nil)
 
+// EventBus provides publish-subscribe messaging for domain events.
+// Events are persisted to the database before being dispatched to subscribers.
 type EventBus struct {
 	db          *sql.DB
 	subscribers map[domain.EventType][]chan domain.Event
@@ -39,6 +41,7 @@ type EventBus struct {
 	wg          sync.WaitGroup
 }
 
+// NewEventBus creates a new EventBus with the given database connection.
 func NewEventBus(db *sql.DB) *EventBus {
 	return &EventBus{
 		db:          db,

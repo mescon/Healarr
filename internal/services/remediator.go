@@ -21,6 +21,7 @@ const maxConcurrentRemediations = 5
 // Set to 2 minutes to allow time for HTTP timeouts (30s) plus processing.
 const semaphoreAcquireTimeout = 2 * time.Minute
 
+// RemediatorService handles corruption events by deleting files and triggering searches.
 type RemediatorService struct {
 	eventBus   eventbus.Publisher
 	arrClient  integration.ArrClient
@@ -34,6 +35,7 @@ type RemediatorService struct {
 	mu         sync.Mutex // protects stopped flag
 }
 
+// NewRemediatorService creates a new RemediatorService with the given dependencies.
 func NewRemediatorService(eb eventbus.Publisher, arr integration.ArrClient, pm integration.PathMapper, db *sql.DB) *RemediatorService {
 	r := &RemediatorService{
 		eventBus:   eb,
@@ -46,6 +48,7 @@ func NewRemediatorService(eb eventbus.Publisher, arr integration.ArrClient, pm i
 	return r
 }
 
+// Start subscribes to corruption and retry events to begin remediation handling.
 func (r *RemediatorService) Start() {
 	r.eventBus.Subscribe(domain.CorruptionDetected, r.handleCorruptionDetected)
 	r.eventBus.Subscribe(domain.RetryScheduled, r.handleRetry)

@@ -7,17 +7,20 @@ import (
 	"sync"
 )
 
+// SQLPathMapper translates between local filesystem paths and *arr paths.
 type SQLPathMapper struct {
 	db       *sql.DB
 	mappings []PathMapping
 	mu       sync.RWMutex
 }
 
+// PathMapping defines a mapping between a local path and its *arr equivalent.
 type PathMapping struct {
 	LocalPath string
 	ArrPath   string
 }
 
+// NewPathMapper creates a SQLPathMapper and loads mappings from the database.
 func NewPathMapper(db *sql.DB) (*SQLPathMapper, error) {
 	pm := &SQLPathMapper{
 		db: db,

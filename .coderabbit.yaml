@@ -19,6 +19,11 @@ reviews:
         - Proper resource cleanup (defer, context timeouts)
         - Race conditions in concurrent code
         - Context propagation through function calls
+        - DOCUMENTATION: All exported functions, types, methods, and constants MUST have
+          doc comments that start with the identifier name. Flag any missing documentation
+          as a blocking issue. Example format:
+          // FunctionName does something specific.
+          func FunctionName() { }
     - path: "internal/db/**/*.go"
       instructions: |
         Additional focus for database code:

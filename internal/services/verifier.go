@@ -34,7 +34,7 @@ const verificationSemaphoreTimeout = 5 * time.Minute
 // errMsgShutdownInProgress is the error message used when operations are aborted due to shutdown.
 const errMsgShutdownInProgress = "shutdown in progress"
 
-// VerificationMeta stores quality/release info captured from history for VerificationSuccess events
+// VerificationMeta stores quality and release info captured from history for VerificationSuccess events.
 type VerificationMeta struct {
 	Quality        string
 	ReleaseGroup   string
@@ -45,6 +45,7 @@ type VerificationMeta struct {
 	NewFileSize    int64
 }
 
+// VerifierService monitors downloads and verifies replacement files after remediation.
 type VerifierService struct {
 	eventBus   *eventbus.EventBus
 	detector   integration.HealthChecker
@@ -68,6 +69,7 @@ type VerifierService struct {
 	verifyMeta   map[string]*VerificationMeta // corruptionID -> metadata
 }
 
+// NewVerifierService creates a new VerifierService with the given dependencies.
 func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper, arrClient integration.ArrClient, db *sql.DB) *VerifierService {
 	return &VerifierService{
 		eventBus:   eb,
@@ -406,6 +408,7 @@ func (v *VerifierService) getDurationMetrics(corruptionID string) (int64, int64)
 	return totalDuration, downloadDuration
 }
 
+// Start subscribes to events and begins the verification service.
 func (v *VerifierService) Start() {
 	v.eventBus.Subscribe(domain.SearchCompleted, v.handleSearchCompleted)
 }

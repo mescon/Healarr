@@ -77,15 +77,18 @@ type PushoverConfig struct {
 	Sound    string `json:"sound"`
 }
 
+// TelegramConfig holds configuration for Telegram notifications.
 type TelegramConfig struct {
 	BotToken string `json:"bot_token"`
 	ChatID   string `json:"chat_id"`
 }
 
+// SlackConfig holds configuration for Slack notifications.
 type SlackConfig struct {
 	WebhookURL string `json:"webhook_url"`
 }
 
+// EmailConfig holds configuration for email notifications.
 type EmailConfig struct {
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
@@ -96,59 +99,70 @@ type EmailConfig struct {
 	TLS      bool   `json:"tls"`
 }
 
+// GotifyConfig holds configuration for Gotify notifications.
 type GotifyConfig struct {
 	ServerURL string `json:"server_url"`
 	AppToken  string `json:"app_token"`
 	Priority  int    `json:"priority"` // 1-10
 }
 
+// NtfyConfig holds configuration for ntfy notifications.
 type NtfyConfig struct {
 	ServerURL string `json:"server_url"` // Default: https://ntfy.sh
 	Topic     string `json:"topic"`
 	Priority  int    `json:"priority"` // 1-5
 }
 
+// CustomConfig holds configuration for custom shoutrrr URL notifications.
 type CustomConfig struct {
 	URL string `json:"url"` // Raw shoutrrr URL
 }
 
+// WhatsAppConfig holds configuration for WhatsApp notifications.
 type WhatsAppConfig struct {
 	Phone  string `json:"phone"`   // Phone number with country code (e.g., +1234567890)
 	APIURL string `json:"api_url"` // WhatsApp API URL (e.g., CallMeBot or custom)
 	APIKey string `json:"api_key"` // API key for the service
 }
 
+// SignalConfig holds configuration for Signal notifications.
 type SignalConfig struct {
 	Number    string `json:"number"`    // Your registered Signal number (+1234567890)
 	Recipient string `json:"recipient"` // Recipient number or group ID
 	APIURL    string `json:"api_url"`   // Signal REST API URL (e.g., signal-cli-rest-api)
 }
 
+// BarkConfig holds configuration for Bark notifications.
 type BarkConfig struct {
 	DeviceKey string `json:"device_key"` // Bark device key
 	ServerURL string `json:"server_url"` // Bark server URL (optional, default: api.day.app)
 }
 
+// GoogleChatConfig holds configuration for Google Chat notifications.
 type GoogleChatConfig struct {
 	WebhookURL string `json:"webhook_url"` // Google Chat webhook URL
 }
 
+// IFTTTConfig holds configuration for IFTTT notifications.
 type IFTTTConfig struct {
 	WebhookKey string `json:"webhook_key"` // IFTTT webhook key
 	Event      string `json:"event"`       // IFTTT event name
 }
 
+// JoinConfig holds configuration for Join notifications.
 type JoinConfig struct {
 	APIKey  string `json:"api_key"` // Join API key
 	Devices string `json:"devices"` // Device IDs (comma-separated) or "group.all"
 }
 
+// MattermostConfig holds configuration for Mattermost notifications.
 type MattermostConfig struct {
 	WebhookURL string `json:"webhook_url"` // Mattermost incoming webhook URL
 	Channel    string `json:"channel"`     // Channel (optional)
 	Username   string `json:"username"`    // Bot username (optional)
 }
 
+// MatrixConfig holds configuration for Matrix notifications.
 type MatrixConfig struct {
 	HomeServer string `json:"home_server"` // Matrix homeserver URL
 	User       string `json:"user"`        // Matrix user ID (e.g., @user:matrix.org)
@@ -156,21 +170,25 @@ type MatrixConfig struct {
 	Rooms      string `json:"rooms"`       // Room IDs (comma-separated)
 }
 
+// PushbulletConfig holds configuration for Pushbullet notifications.
 type PushbulletConfig struct {
 	APIToken string `json:"api_token"` // Pushbullet access token
 	Targets  string `json:"targets"`   // Device/channel/email targets (optional)
 }
 
+// RocketchatConfig holds configuration for Rocket.Chat notifications.
 type RocketchatConfig struct {
 	WebhookURL string `json:"webhook_url"` // Rocketchat incoming webhook URL
 	Channel    string `json:"channel"`     // Channel (optional)
 	Username   string `json:"username"`    // Bot username (optional)
 }
 
+// TeamsConfig holds configuration for Microsoft Teams notifications.
 type TeamsConfig struct {
 	WebhookURL string `json:"webhook_url"` // Microsoft Teams webhook URL
 }
 
+// ZulipConfig holds configuration for Zulip notifications.
 type ZulipConfig struct {
 	BotEmail string `json:"bot_email"` // Zulip bot email
 	BotKey   string `json:"bot_key"`   // Zulip bot API key
@@ -179,6 +197,7 @@ type ZulipConfig struct {
 	Topic    string `json:"topic"`     // Zulip topic name
 }
 
+// GenericConfig holds configuration for generic webhook notifications.
 type GenericConfig struct {
 	WebhookURL    string `json:"webhook_url"`    // Target URL
 	Method        string `json:"method"`         // HTTP method (POST, GET, etc.)

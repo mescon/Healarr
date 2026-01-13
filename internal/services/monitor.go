@@ -14,6 +14,7 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
+// MonitorService handles failure events and schedules retries with exponential backoff.
 type MonitorService struct {
 	eventBus      *eventbus.EventBus
 	db            *sql.DB
@@ -41,6 +42,7 @@ func NewMonitorService(eb *eventbus.EventBus, db *sql.DB, clocks ...clock.Clock)
 	}
 }
 
+// Start subscribes to failure events and begins monitoring for retries.
 func (m *MonitorService) Start() {
 	// Failure events that trigger retry with exponential backoff
 	m.eventBus.Subscribe(domain.DeletionFailed, m.handleFailure)
