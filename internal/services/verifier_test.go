@@ -2503,6 +2503,199 @@ func TestVerifierService_HandleHistoryAPIFailure(t *testing.T) {
 	})
 }
 
+// =============================================================================
+// cancelExistingVerification tests
+// =============================================================================
+
+func TestVerifierService_CancelExistingVerification(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	t.Run("returns false when no existing verification", func(t *testing.T) {
+		v := NewVerifierService(eb, nil, nil, nil, db)
+
+		result := v.cancelExistingVerification("nonexistent-id")
+
+		if result {
+			t.Error("Expected false when no existing verification")
+		}
+	})
+
+	t.Run("returns true and cancels existing verification", func(t *testing.T) {
+		v := NewVerifierService(eb, nil, nil, nil, db)
+
+		// Register a verification
+		ctx, cancel := context.WithCancel(context.Background())
+		v.registerVerification("test-cancel-1", cancel)
+
+		// Verify it was registered
+		v.activeVerifyMu.Lock()
+		_, exists := v.activeVerify["test-cancel-1"]
+		v.activeVerifyMu.Unlock()
+		if !exists {
+			t.Fatal("Expected verification to be registered")
+		}
+
+		// Cancel it
+		result := v.cancelExistingVerification("test-cancel-1")
+
+		if !result {
+			t.Error("Expected true when canceling existing verification")
+		}
+
+		// Verify context was cancelled
+		select {
+		case <-ctx.Done():
+			// Good - context was cancelled
+		default:
+			t.Error("Expected context to be cancelled")
+		}
+
+		// Verify it was removed from map
+		v.activeVerifyMu.Lock()
+		_, stillExists := v.activeVerify["test-cancel-1"]
+		v.activeVerifyMu.Unlock()
+		if stillExists {
+			t.Error("Expected verification to be removed from map")
+		}
+	})
+
+	t.Run("handles multiple verifications independently", func(t *testing.T) {
+		v := NewVerifierService(eb, nil, nil, nil, db)
+
+		// Register two verifications
+		ctx1, cancel1 := context.WithCancel(context.Background())
+		ctx2, cancel2 := context.WithCancel(context.Background())
+		v.registerVerification("test-multi-1", cancel1)
+		v.registerVerification("test-multi-2", cancel2)
+
+		// Cancel only the first one
+		result := v.cancelExistingVerification("test-multi-1")
+		if !result {
+			t.Error("Expected true when canceling first verification")
+		}
+
+		// First context should be cancelled
+		select {
+		case <-ctx1.Done():
+			// Good
+		default:
+			t.Error("Expected ctx1 to be cancelled")
+		}
+
+		// Second context should still be active
+		select {
+		case <-ctx2.Done():
+			t.Error("ctx2 should not be cancelled")
+		default:
+			// Good - still active
+		}
+
+		// Clean up
+		cancel2()
+	})
+}
+
+// =============================================================================
+// waitWithContext tests
+// =============================================================================
+
+func TestVerifierService_WaitWithContext(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	t.Run("returns true on context cancellation", func(t *testing.T) {
+		v := NewVerifierService(eb, nil, nil, nil, db)
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Cancel context after short delay
+		go func() {
+			time.Sleep(25 * time.Millisecond)
+			cancel()
+		}()
+
+		start := time.Now()
+		result := v.waitWithContext(ctx, 1*time.Second)
+		elapsed := time.Since(start)
+
+		if !result {
+			t.Error("Expected true when context is cancelled")
+		}
+		if elapsed > 100*time.Millisecond {
+			t.Errorf("Expected early return on context cancel, took %v", elapsed)
+		}
+	})
+
+	t.Run("returns true on shutdown with context", func(t *testing.T) {
+		v := NewVerifierService(eb, nil, nil, nil, db)
+
+		ctx := context.Background()
+
+		// Signal shutdown after short delay
+		go func() {
+			time.Sleep(25 * time.Millisecond)
+			close(v.shutdownCh)
+		}()
+
+		start := time.Now()
+		result := v.waitWithContext(ctx, 1*time.Second)
+		elapsed := time.Since(start)
+
+		if !result {
+			t.Error("Expected true when shutdown signal received")
+		}
+		if elapsed > 100*time.Millisecond {
+			t.Errorf("Expected early return on shutdown, took %v", elapsed)
+		}
+	})
+
+	t.Run("returns false after timeout with context", func(t *testing.T) {
+		v := NewVerifierService(eb, nil, nil, nil, db)
+
+		ctx := context.Background()
+
+		start := time.Now()
+		result := v.waitWithContext(ctx, 50*time.Millisecond)
+		elapsed := time.Since(start)
+
+		if result {
+			t.Error("Expected false when wait completes normally")
+		}
+		if elapsed < 50*time.Millisecond {
+			t.Errorf("Expected wait to take at least 50ms, took %v", elapsed)
+		}
+	})
+
+	t.Run("falls back to waitWithShutdown when ctx is nil", func(t *testing.T) {
+		v := NewVerifierService(eb, nil, nil, nil, db)
+
+		start := time.Now()
+		//nolint:staticcheck // SA1012: Intentionally testing nil context fallback path
+		result := v.waitWithContext(nil, 50*time.Millisecond)
+		elapsed := time.Since(start)
+
+		if result {
+			t.Error("Expected false when wait completes normally with nil context")
+		}
+		if elapsed < 50*time.Millisecond {
+			t.Errorf("Expected wait to take at least 50ms with nil context, took %v", elapsed)
+		}
+	})
+}
+
 func TestVerifierService_HandleDisappearedQueueItem(t *testing.T) {
 	db, err := testutil.NewTestDB()
 	if err != nil {
@@ -2596,6 +2789,359 @@ func TestVerifierService_HandleDisappearedQueueItem(t *testing.T) {
 		}
 		if state.apiFailureCount != 1 {
 			t.Errorf("Expected apiFailureCount 1, got %d", state.apiFailureCount)
+		}
+	})
+
+	t.Run("retries history check when download was near complete", func(t *testing.T) {
+		// This test verifies the BUG-1 fix: when download was at 99%+ or importPending,
+		// we retry history check multiple times before giving up
+
+		retryCount := 0
+		mockArr := &testutil.MockArrClient{
+			GetRecentHistoryForMediaByPathFunc: func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+				retryCount++
+				// Simulate history API returning import event after a few retries
+				if retryCount >= 2 {
+					return []integration.HistoryItemInfo{
+						{EventType: "downloadFolderImported"},
+					}, nil
+				}
+				return []integration.HistoryItemInfo{}, nil
+			},
+		}
+		v := NewVerifierService(eb, mockHC, mockPM, mockArr, db)
+		defer v.Shutdown()
+
+		state := &monitorState{
+			ctx:             context.Background(),
+			corruptionID:    "retry-complete-test",
+			arrPath:         "/media/movies/complete.mkv",
+			mediaID:         123,
+			lastStatus:      "importPending", // Download was near complete
+			lastProgress:    100,
+			apiFailureCount: 0,
+		}
+
+		action := v.handleDisappearedQueueItem(state, 5*time.Minute)
+
+		// Should continue monitoring (import found after retries)
+		if action != monitorContinue {
+			t.Errorf("Expected monitorContinue when import found after retries, got %v", action)
+		}
+		if retryCount < 2 {
+			t.Errorf("Expected at least 2 history retries, got %d", retryCount)
+		}
+	})
+
+	t.Run("stops on context cancellation during retry loop", func(t *testing.T) {
+		callCount := 0
+		mockArr := &testutil.MockArrClient{
+			GetRecentHistoryForMediaByPathFunc: func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+				callCount++
+				return []integration.HistoryItemInfo{}, nil // No import found
+			},
+		}
+		v := NewVerifierService(eb, mockHC, mockPM, mockArr, db)
+		defer v.Shutdown()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		// Cancel immediately to trigger early exit from retry loop
+		cancel()
+
+		state := &monitorState{
+			ctx:             ctx,
+			corruptionID:    "cancel-retry-test",
+			arrPath:         "/media/movies/cancel.mkv",
+			mediaID:         456,
+			lastStatus:      "importing", // Near complete
+			lastProgress:    99.5,
+			apiFailureCount: 0,
+		}
+
+		action := v.handleDisappearedQueueItem(state, 5*time.Minute)
+
+		// Should stop due to context cancellation
+		if action != monitorStop {
+			t.Errorf("Expected monitorStop on context cancellation, got %v", action)
+		}
+	})
+}
+
+// =============================================================================
+// handleImportPaths tests
+// =============================================================================
+
+func TestVerifierService_HandleImportPaths(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
+			return true, nil // All files healthy
+		},
+	}
+
+	t.Run("returns true when all files exist", func(t *testing.T) {
+		v := NewVerifierService(eb, mockHC, nil, nil, db)
+
+		importItem := &integration.HistoryItemInfo{
+			EventType: "downloadFolderImported",
+			Quality:   "1080p",
+		}
+
+		result := v.handleImportPaths("test-all-exist", []string{"/a.mkv", "/b.mkv"}, []string{"/a.mkv", "/b.mkv"}, importItem)
+
+		if !result {
+			t.Error("Expected true when all files exist")
+		}
+	})
+
+	t.Run("returns true for partial replacement (some files exist)", func(t *testing.T) {
+		v := NewVerifierService(eb, mockHC, nil, nil, db)
+
+		importItem := &integration.HistoryItemInfo{
+			EventType: "episodeFileImported",
+		}
+
+		// Only 1 of 3 files exist
+		result := v.handleImportPaths("test-partial", []string{"/exists.mkv"}, []string{"/exists.mkv", "/missing1.mkv", "/missing2.mkv"}, importItem)
+
+		if !result {
+			t.Error("Expected true for partial replacement")
+		}
+	})
+
+	t.Run("returns false when no files exist", func(t *testing.T) {
+		v := NewVerifierService(eb, mockHC, nil, nil, db)
+
+		importItem := &integration.HistoryItemInfo{
+			EventType: "movieFileImported",
+		}
+
+		// No existing files
+		result := v.handleImportPaths("test-none-exist", []string{}, []string{"/missing1.mkv", "/missing2.mkv"}, importItem)
+
+		if result {
+			t.Error("Expected false when no files exist")
+		}
+	})
+}
+
+// =============================================================================
+// handleNoQueueItems tests
+// =============================================================================
+
+func TestVerifierService_HandleNoQueueItems(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+	}
+	mockPM := &testutil.MockPathMapper{
+		ToLocalPathFunc: func(arrPath string) (string, error) {
+			return arrPath, nil
+		},
+	}
+
+	t.Run("stops when import found in history with existing files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpFile := filepath.Join(tmpDir, "imported.mkv")
+		os.WriteFile(tmpFile, []byte("test"), 0644)
+
+		mockArr := &testutil.MockArrClient{
+			GetRecentHistoryForMediaByPathFunc: func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+				return []integration.HistoryItemInfo{
+					{EventType: "downloadFolderImported"},
+				}, nil
+			},
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				return []string{tmpFile}, nil
+			},
+		}
+		v := NewVerifierService(eb, mockHC, mockPM, mockArr, db)
+		defer v.Shutdown()
+
+		state := &monitorState{
+			ctx:          context.Background(),
+			corruptionID: "history-import-test",
+			arrPath:      "/media/test.mkv",
+			mediaID:      123,
+			filePath:     tmpFile,
+			timeout:      6 * time.Hour,
+		}
+
+		action := v.handleNoQueueItems(state, 30*time.Minute)
+
+		if action != monitorStop {
+			t.Errorf("Expected monitorStop when import found in history, got %v", action)
+		}
+	})
+
+	t.Run("continues when no import and wasInQueue is false", func(t *testing.T) {
+		mockArr := &testutil.MockArrClient{
+			GetRecentHistoryForMediaByPathFunc: func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error) {
+				return []integration.HistoryItemInfo{}, nil // No import
+			},
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				return []string{}, nil // No files
+			},
+		}
+		v := NewVerifierService(eb, mockHC, mockPM, mockArr, db)
+		defer v.Shutdown()
+
+		state := &monitorState{
+			ctx:          context.Background(),
+			corruptionID: "no-import-test",
+			arrPath:      "/media/test.mkv",
+			mediaID:      456,
+			filePath:     "/nonexistent.mkv",
+			wasInQueue:   false,
+			timeout:      6 * time.Hour,
+		}
+
+		action := v.handleNoQueueItems(state, 30*time.Minute)
+
+		if action != monitorContinue {
+			t.Errorf("Expected monitorContinue when no import and not in queue, got %v", action)
+		}
+	})
+}
+
+// =============================================================================
+// startVerificationWithSemaphore tests
+// =============================================================================
+
+func TestVerifierService_StartVerificationWithSemaphore(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	t.Run("executes verification function when semaphore acquired", func(t *testing.T) {
+		v := NewVerifierService(eb, nil, nil, nil, db)
+
+		executed := make(chan bool, 1)
+		ctx := context.Background()
+
+		v.startVerificationWithSemaphore(ctx, "test-exec-1", func(ctx context.Context) {
+			executed <- true
+		})
+
+		select {
+		case <-executed:
+			// Good - function was executed
+		case <-time.After(500 * time.Millisecond):
+			t.Error("Verification function was not executed")
+		}
+
+		// Wait for goroutine cleanup
+		v.wg.Wait()
+	})
+
+	t.Run("stops when context cancelled while waiting for semaphore", func(t *testing.T) {
+		v := NewVerifierService(eb, nil, nil, nil, db)
+
+		// Fill up the semaphore
+		for i := 0; i < maxConcurrentVerifications; i++ {
+			v.semaphore <- struct{}{}
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		executed := false
+
+		v.startVerificationWithSemaphore(ctx, "test-cancel-sem", func(ctx context.Context) {
+			executed = true
+		})
+
+		// Cancel context - should cause the goroutine to exit without executing
+		time.Sleep(50 * time.Millisecond) // Give goroutine time to start waiting
+		cancel()
+
+		// Wait for the goroutine to finish
+		v.wg.Wait()
+
+		if executed {
+			t.Error("Verification function should not have been executed when context cancelled")
+		}
+
+		// Clean up semaphore
+		for i := 0; i < maxConcurrentVerifications; i++ {
+			<-v.semaphore
+		}
+	})
+
+	t.Run("stops when shutdown during semaphore wait", func(t *testing.T) {
+		v := NewVerifierService(eb, nil, nil, nil, db)
+
+		// Fill up the semaphore
+		for i := 0; i < maxConcurrentVerifications; i++ {
+			v.semaphore <- struct{}{}
+		}
+
+		ctx := context.Background()
+		executed := false
+
+		v.startVerificationWithSemaphore(ctx, "test-shutdown-sem", func(ctx context.Context) {
+			executed = true
+		})
+
+		// Signal shutdown - should cause the goroutine to exit
+		time.Sleep(50 * time.Millisecond)
+		close(v.shutdownCh)
+
+		// Wait for the goroutine to finish
+		v.wg.Wait()
+
+		if executed {
+			t.Error("Verification function should not have been executed on shutdown")
+		}
+
+		// Clean up semaphore
+		for i := 0; i < maxConcurrentVerifications; i++ {
+			<-v.semaphore
+		}
+	})
+
+	t.Run("unregisters verification after completion", func(t *testing.T) {
+		v := NewVerifierService(eb, nil, nil, nil, db)
+
+		ctx := context.Background()
+		corruptionID := "test-unregister"
+
+		v.startVerificationWithSemaphore(ctx, corruptionID, func(ctx context.Context) {
+			// Quick execution
+			time.Sleep(10 * time.Millisecond)
+		})
+
+		// Wait for completion
+		v.wg.Wait()
+
+		// Verify it was unregistered
+		v.activeVerifyMu.Lock()
+		_, exists := v.activeVerify[corruptionID]
+		v.activeVerifyMu.Unlock()
+
+		if exists {
+			t.Error("Expected verification to be unregistered after completion")
 		}
 	})
 }
