@@ -104,6 +104,7 @@ const (
 )
 
 type ScanProgress struct {
+	mu              sync.Mutex         `json:"-"` // Protects mutable fields during concurrent access
 	ID              string             `json:"id"`
 	Type            string             `json:"type"` // "path" or "file"
 	Path            string             `json:"path"`
@@ -214,13 +215,20 @@ func (s *ScannerService) Shutdown() {
 	s.mu.Lock()
 	for scanID, scan := range s.activeScans {
 		if scan.Type == "path" && scan.ScanDBID > 0 {
-			logger.Infof("Scanner: saving state for scan %s (file %d/%d)", scanID, scan.FilesDone, scan.TotalFiles)
+			// Lock to safely read mutable fields (fixes data race with markFileProcessed)
+			scan.mu.Lock()
+			filesDone := scan.FilesDone
+			totalFiles := scan.TotalFiles
+			scanDBID := scan.ScanDBID
+			scan.mu.Unlock()
+
+			logger.Infof("Scanner: saving state for scan %s (file %d/%d)", scanID, filesDone, totalFiles)
 			// Mark as interrupted in database - state is already saved during scanning
 			ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 			_, err := s.db.ExecContext(ctx, `
 				UPDATE scans SET status = 'interrupted', current_file_index = ?
 				WHERE id = ?
-			`, scan.FilesDone, scan.ScanDBID)
+			`, filesDone, scanDBID)
 			cancel()
 			if err != nil {
 				logger.Errorf("Failed to save scan state for %s: %v", scanID, err)
@@ -1190,6 +1198,25 @@ func (s *ScannerService) processFileInScan(
 ) scanLoopAction {
 	filePath := cfg.Files[fileIndex]
 
+	// RACE PREVENTION: Check if file is being scanned by another goroutine (e.g., webhook)
+	// This prevents duplicate scans when a bulk ScanPath and individual ScanFile overlap.
+	s.filesMu.Lock()
+	if s.filesInProgress[filePath] {
+		s.filesMu.Unlock()
+		logger.Debugf("Skipping file already being scanned: %s", filePath)
+		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
+		return scanContinue
+	}
+	s.filesInProgress[filePath] = true
+	s.filesMu.Unlock()
+
+	// Ensure cleanup when done with this file
+	defer func() {
+		s.filesMu.Lock()
+		delete(s.filesInProgress, filePath)
+		s.filesMu.Unlock()
+	}()
+
 	// Check for cancellation or shutdown
 	if s.checkScanCancellation(ctx, progress, progress.Path, fileIndex, len(cfg.Files)) == scanReturn {
 		return scanReturn
@@ -1201,7 +1228,9 @@ func (s *ScannerService) processFileInScan(
 	}
 
 	// Update progress
+	progress.mu.Lock()
 	progress.CurrentFile = filePath
+	progress.mu.Unlock()
 	s.emitProgress(progress)
 
 	// Build scan file context
@@ -1299,13 +1328,17 @@ func (s *ScannerService) handleHealthCheckResult(
 
 // markFileProcessed increments the file counter and saves progress periodically
 func (s *ScannerService) markFileProcessed(progress *ScanProgress, fileIndex int, scanDBID int64) {
+	// Lock to safely update mutable fields (fixes data race with GetActiveScans/Shutdown)
+	progress.mu.Lock()
 	progress.FilesDone++
+	filesDone := progress.FilesDone
+	progress.mu.Unlock()
 
 	// Save state to database periodically (every 10 files) to avoid excessive I/O
 	if fileIndex%10 == 0 {
 		if scanDBID > 0 {
 			progressCtx, progressCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-			if _, err := s.db.ExecContext(progressCtx, `UPDATE scans SET current_file_index = ?, files_scanned = ? WHERE id = ?`, fileIndex, progress.FilesDone, scanDBID); err != nil {
+			if _, err := s.db.ExecContext(progressCtx, `UPDATE scans SET current_file_index = ?, files_scanned = ? WHERE id = ?`, fileIndex, filesDone, scanDBID); err != nil {
 				logger.Warnf("Failed to save scan progress for scan %d: %v", scanDBID, err)
 			}
 			progressCancel()
@@ -1314,21 +1347,28 @@ func (s *ScannerService) markFileProcessed(progress *ScanProgress, fileIndex int
 }
 
 func (s *ScannerService) emitProgress(p *ScanProgress) {
+	// Build event data under lock to avoid race with markFileProcessed
+	p.mu.Lock()
+	eventData := map[string]interface{}{
+		"id":           p.ID,
+		"type":         p.Type,
+		"path":         p.Path,
+		"total_files":  p.TotalFiles,
+		"files_done":   p.FilesDone,
+		"current_file": p.CurrentFile,
+		"status":       p.Status,
+		"start_time":   p.StartTime,
+		"scan_db_id":   p.ScanDBID, // Database ID for frontend navigation
+	}
+	scanID := p.ID
+	p.mu.Unlock()
+
+	// Publish event outside the lock to avoid holding lock during I/O
 	if err := s.eventBus.Publish(domain.Event{
 		AggregateType: "scan",
-		AggregateID:   p.ID,
+		AggregateID:   scanID,
 		EventType:     "ScanProgress",
-		EventData: map[string]interface{}{
-			"id":           p.ID,
-			"type":         p.Type,
-			"path":         p.Path,
-			"total_files":  p.TotalFiles,
-			"files_done":   p.FilesDone,
-			"current_file": p.CurrentFile,
-			"status":       p.Status,
-			"start_time":   p.StartTime,
-			"scan_db_id":   p.ScanDBID, // Database ID for frontend navigation
-		},
+		EventData:     eventData,
 	}); err != nil {
 		logger.Debugf("Failed to emit scan progress: %v", err)
 	}
@@ -1339,8 +1379,27 @@ func (s *ScannerService) GetActiveScans() []ScanProgress {
 	defer s.mu.Unlock()
 	scans := make([]ScanProgress, 0, len(s.activeScans))
 	for _, scan := range s.activeScans {
-		// Return copies to avoid race conditions with background scan goroutines
-		scans = append(scans, *scan)
+		// Lock individual scan to safely copy mutable fields (fixes data race)
+		scan.mu.Lock()
+		// Manually copy fields to avoid copylocks warning (mutex is not copied)
+		scanCopy := ScanProgress{
+			ID:              scan.ID,
+			Type:            scan.Type,
+			Path:            scan.Path,
+			PathID:          scan.PathID,
+			TotalFiles:      scan.TotalFiles,
+			FilesDone:       scan.FilesDone,
+			CurrentFile:     scan.CurrentFile,
+			Status:          scan.Status,
+			StartTime:       scan.StartTime,
+			ScanDBID:        scan.ScanDBID,
+			isPaused:        scan.isPaused,
+			corruptionCount: scan.corruptionCount,
+			isThrottled:     scan.isThrottled,
+			// Note: cancel, pauseChan, resumeChan are not copied (internal use only)
+		}
+		scan.mu.Unlock()
+		scans = append(scans, scanCopy) //nolint:govet // scanCopy has fresh zero-valued mutex, not copied from original
 	}
 	return scans
 }

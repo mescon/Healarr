@@ -156,9 +156,9 @@ func (s *RESTServer) resumeScan(c *gin.Context) {
 func (s *RESTServer) pauseAllScans(c *gin.Context) {
 	activeScans := s.scanner.GetActiveScans()
 	paused := 0
-	for _, scan := range activeScans {
-		if scan.Status == "running" {
-			if s.scanner.PauseScan(scan.ID) == nil {
+	for i := range activeScans {
+		if activeScans[i].Status == "running" {
+			if s.scanner.PauseScan(activeScans[i].ID) == nil {
 				paused++
 			}
 		}
@@ -169,9 +169,9 @@ func (s *RESTServer) pauseAllScans(c *gin.Context) {
 func (s *RESTServer) resumeAllScans(c *gin.Context) {
 	activeScans := s.scanner.GetActiveScans()
 	resumed := 0
-	for _, scan := range activeScans {
-		if scan.Status == "paused" {
-			if s.scanner.ResumeScan(scan.ID) == nil {
+	for i := range activeScans {
+		if activeScans[i].Status == "paused" {
+			if s.scanner.ResumeScan(activeScans[i].ID) == nil {
 				resumed++
 			}
 		}
@@ -182,9 +182,9 @@ func (s *RESTServer) resumeAllScans(c *gin.Context) {
 func (s *RESTServer) cancelAllScans(c *gin.Context) {
 	activeScans := s.scanner.GetActiveScans()
 	cancelled := 0
-	for _, scan := range activeScans {
-		if scan.Status == "running" || scan.Status == "paused" {
-			if s.scanner.CancelScan(scan.ID) == nil {
+	for i := range activeScans {
+		if activeScans[i].Status == "running" || activeScans[i].Status == "paused" {
+			if s.scanner.CancelScan(activeScans[i].ID) == nil {
 				cancelled++
 			}
 		}

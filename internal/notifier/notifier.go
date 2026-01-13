@@ -259,10 +259,18 @@ func GetEventGroups() []EventGroup {
 			},
 		},
 		{
+			Name: "User Actions",
+			Events: []EventInfo{
+				{string(domain.CorruptionIgnored), "Corruption Ignored", "When a user ignores a detected corruption"},
+			},
+		},
+		{
 			Name: "System Events",
 			Events: []EventInfo{
 				{string(domain.SystemHealthDegraded), "System Health Degraded", "When system health checks detect issues"},
 				{string(domain.InstanceUnhealthy), "Arr Instance Unhealthy", "When an *arr instance becomes unreachable"},
+				{string(domain.InstanceHealthy), "Arr Instance Healthy", "When an *arr instance recovers"},
+				{string(domain.StuckRemediation), "Stuck Remediation", "When a remediation has been stuck for too long"},
 			},
 		},
 	}
@@ -704,6 +712,9 @@ var messageFormatters = map[string]messageFormatter{
 	string(domain.DownloadFailed):       fmtDownloadFailed,
 	string(domain.SystemHealthDegraded): fmtSystemHealthDegraded,
 	string(domain.InstanceUnhealthy):    fmtInstanceUnhealthy,
+	string(domain.InstanceHealthy):      fmtInstanceHealthy,
+	string(domain.StuckRemediation):     fmtStuckRemediation,
+	string(domain.CorruptionIgnored):    fmtCorruptionIgnored,
 }
 
 func fmtScanStarted(ctx messageContext) string {
@@ -828,6 +839,33 @@ func fmtInstanceUnhealthy(ctx messageContext) string {
 	}
 	if ctx.ErrorMsg != "" {
 		msg += fmt.Sprintf("\n⚠️ %s", ctx.ErrorMsg)
+	}
+	return msg
+}
+
+func fmtInstanceHealthy(ctx messageContext) string {
+	msg := "🟢 Arr instance recovered"
+	if ctx.Reason != "" {
+		msg += fmt.Sprintf("\n📋 %s", ctx.Reason)
+	}
+	return msg
+}
+
+func fmtStuckRemediation(ctx messageContext) string {
+	msg := "⏰ Stuck remediation detected"
+	if ctx.FilePath != "" {
+		msg += fmt.Sprintf(": %s", ctx.FileName)
+	}
+	if ctx.Reason != "" {
+		msg += fmt.Sprintf("\n📋 %s", ctx.Reason)
+	}
+	return msg + "\n👉 Remediation has shown no progress - manual check recommended"
+}
+
+func fmtCorruptionIgnored(ctx messageContext) string {
+	msg := fmt.Sprintf("🙈 Corruption ignored: %s", ctx.FileName)
+	if ctx.Reason != "" {
+		msg += fmt.Sprintf("\n📋 Reason: %s", ctx.Reason)
 	}
 	return msg
 }
@@ -1011,6 +1049,9 @@ var eventTitles = map[string]string{
 	string(domain.DownloadFailed):       "❌ Download Failed",
 	string(domain.SystemHealthDegraded): "⚠️ System Health Degraded",
 	string(domain.InstanceUnhealthy):    "🔴 Arr Instance Unreachable",
+	string(domain.InstanceHealthy):      "🟢 Arr Instance Recovered",
+	string(domain.StuckRemediation):     "⏰ Stuck Remediation Detected",
+	string(domain.CorruptionIgnored):    "🙈 Corruption Ignored by User",
 }
 
 func (n *Notifier) formatTitle(eventType string, fileName string) string {

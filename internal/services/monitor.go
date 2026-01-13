@@ -18,11 +18,11 @@ type MonitorService struct {
 	eventBus      *eventbus.EventBus
 	db            *sql.DB
 	clk           clock.Clock
-	wg            sync.WaitGroup // Tracks in-flight timer callbacks
-	pendingTimers []clock.Timer  // Timers that can be canceled on shutdown
-	timerMu       sync.Mutex     // Protects pendingTimers slice
-	stopChan      chan struct{}  // Signals shutdown
-	stopped       bool           // Prevents scheduling after Stop()
+	wg            sync.WaitGroup         // Tracks in-flight timer callbacks
+	pendingTimers map[string]clock.Timer // key: corruptionID - cleaned up when timers fire
+	timerMu       sync.Mutex             // Protects pendingTimers map
+	stopChan      chan struct{}          // Signals shutdown
+	stopped       bool                   // Prevents scheduling after Stop()
 }
 
 // NewMonitorService creates a new MonitorService.
@@ -36,7 +36,7 @@ func NewMonitorService(eb *eventbus.EventBus, db *sql.DB, clocks ...clock.Clock)
 		eventBus:      eb,
 		db:            db,
 		clk:           c,
-		pendingTimers: make([]clock.Timer, 0),
+		pendingTimers: make(map[string]clock.Timer),
 		stopChan:      make(chan struct{}),
 	}
 }
@@ -67,16 +67,16 @@ func (m *MonitorService) Stop() {
 	}
 	m.stopped = true
 
-	// Cancel all pending timers
+	// Cancel all pending timers and clear the map
 	canceled := 0
-	for _, timer := range m.pendingTimers {
+	for id, timer := range m.pendingTimers {
 		if timer.Stop() {
 			canceled++
 			// Timer was stopped before firing, decrement WaitGroup
 			m.wg.Done()
 		}
+		delete(m.pendingTimers, id)
 	}
-	m.pendingTimers = nil
 	m.timerMu.Unlock()
 
 	// Signal any in-flight callbacks to abort
@@ -147,10 +147,23 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 		return
 	}
 
+	// Cancel any existing timer for this corruption (prevents duplicate retries)
+	if existingTimer, exists := m.pendingTimers[corruptionID]; exists {
+		if existingTimer.Stop() {
+			m.wg.Done() // Timer was stopped before firing
+		}
+		delete(m.pendingTimers, corruptionID)
+	}
+
 	// Track the WaitGroup before scheduling to ensure we wait for callbacks
 	m.wg.Add(1)
 	timer := m.clk.AfterFunc(delay, func() {
 		defer m.wg.Done()
+
+		// Remove timer from map after firing (fixes memory leak)
+		m.timerMu.Lock()
+		delete(m.pendingTimers, corruptionID)
+		m.timerMu.Unlock()
 
 		// Check if we should proceed (not shut down)
 		select {
@@ -173,7 +186,7 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 			logger.Errorf("Failed to publish RetryScheduled event for %s: %v", corruptionID, err)
 		}
 	})
-	m.pendingTimers = append(m.pendingTimers, timer)
+	m.pendingTimers[corruptionID] = timer
 	m.timerMu.Unlock()
 }
 
