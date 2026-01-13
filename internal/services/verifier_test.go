@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1301,9 +1302,9 @@ func TestVerifierService_CheckHistoryForImport_WithExistingFiles(t *testing.T) {
 	tmpFile := filepath.Join(tmpDir, "imported.mkv")
 	os.WriteFile(tmpFile, []byte("test"), 0644)
 
-	var filesDetectedCount int
+	var filesDetectedCount atomic.Int32
 	eb.Subscribe(domain.FileDetected, func(e domain.Event) {
-		filesDetectedCount++
+		filesDetectedCount.Add(1)
 	})
 
 	mockArr := &testutil.MockArrClient{
@@ -1837,9 +1838,9 @@ func TestVerifierService_CheckAndEmitFilesFromArrAPI(t *testing.T) {
 
 		verifier := NewVerifierService(eb, mockHC, mockPM, mockArr, db)
 
-		var fileDetectedCount int
+		var fileDetectedCount atomic.Int32
 		eb.Subscribe(domain.FileDetected, func(e domain.Event) {
-			fileDetectedCount++
+			fileDetectedCount.Add(1)
 		})
 
 		result := verifier.checkAndEmitFilesFromArrAPI("test-3", "/path.mkv", 123, nil, time.Hour, 6*time.Hour)
@@ -1849,8 +1850,8 @@ func TestVerifierService_CheckAndEmitFilesFromArrAPI(t *testing.T) {
 		if !result {
 			t.Error("Expected true when all files exist")
 		}
-		if fileDetectedCount != 1 {
-			t.Errorf("Expected 1 FileDetected event, got %d", fileDetectedCount)
+		if fileDetectedCount.Load() != 1 {
+			t.Errorf("Expected 1 FileDetected event, got %d", fileDetectedCount.Load())
 		}
 	})
 
@@ -1876,9 +1877,9 @@ func TestVerifierService_CheckAndEmitFilesFromArrAPI(t *testing.T) {
 
 		verifier := NewVerifierService(eb, mockHC, mockPM, mockArr, db)
 
-		var fileDetectedCount int
+		var fileDetectedCount atomic.Int32
 		eb.Subscribe(domain.FileDetected, func(e domain.Event) {
-			fileDetectedCount++
+			fileDetectedCount.Add(1)
 		})
 
 		timeout := 6 * time.Hour

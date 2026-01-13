@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -930,9 +931,9 @@ func TestRestartServer_ReturnsOK(t *testing.T) {
 
 	// Mock the restart function to prevent actual process replacement
 	originalRestartFunc := restartProcessFunc
-	restartCalled := false
+	var restartCalled atomic.Bool
 	restartProcessFunc = func() {
-		restartCalled = true
+		restartCalled.Store(true)
 	}
 	defer func() {
 		restartProcessFunc = originalRestartFunc
@@ -956,7 +957,7 @@ func TestRestartServer_ReturnsOK(t *testing.T) {
 
 	// Wait for the goroutine to call the restart function
 	time.Sleep(600 * time.Millisecond)
-	assert.True(t, restartCalled, "restart function should have been called")
+	assert.True(t, restartCalled.Load(), "restart function should have been called")
 }
 
 func TestImportConfig_WithSchedulesAndNotifications(t *testing.T) {

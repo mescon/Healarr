@@ -178,6 +178,7 @@ type ScannerService struct {
 	filesInProgress map[string]bool
 	filesMu         sync.Mutex
 	shutdownCh      chan struct{}
+	shuttingDown    bool // Prevents new scans from starting during shutdown
 	wg              sync.WaitGroup
 
 	// Cached scan path configs to avoid N+1 queries
@@ -209,6 +210,12 @@ func (s *ScannerService) IsFileBeingScanned(localPath string) bool {
 // Shutdown gracefully stops all active scans by saving their state for later resumption
 func (s *ScannerService) Shutdown() {
 	logger.Infof("Scanner: initiating graceful shutdown...")
+
+	// Set shutdown flag under lock to prevent new scans from starting
+	s.mu.Lock()
+	s.shuttingDown = true
+	s.mu.Unlock()
+
 	close(s.shutdownCh)
 
 	// Save state for all active scans and cancel them
@@ -781,7 +788,14 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Check if shutdown is in progress before starting scan
+	s.mu.Lock()
+	if s.shuttingDown {
+		s.mu.Unlock()
+		return fmt.Errorf("scanner is shutting down")
+	}
 	s.wg.Add(1)
+	s.mu.Unlock()
 	defer s.wg.Done()
 
 	scanID := uuid.New().String()

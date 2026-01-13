@@ -535,17 +535,21 @@ func runCommandWithTimeout(cmd *exec.Cmd, timeout time.Duration, toolName string
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	// Start command in main goroutine to avoid race on cmd.Process
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%s failed to start: %s", toolName, err)
+	}
+
 	done := make(chan error, 1)
 	go func() {
-		done <- cmd.Run()
+		done <- cmd.Wait()
 	}()
 
 	select {
 	case <-time.After(timeout):
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}
+		_ = cmd.Process.Kill()
+		// Wait for goroutine to complete before returning
+		<-done
 		return nil, fmt.Errorf("%s timed out after %v", toolName, timeout)
 	case err := <-done:
 		if err != nil {

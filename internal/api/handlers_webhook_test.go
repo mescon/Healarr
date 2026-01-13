@@ -409,7 +409,6 @@ func TestWebhook_SuccessEpisodeFile(t *testing.T) {
 
 	arrID := createTestArrInstance(t, db, true)
 
-	var scannedPath string
 	mockPM := &testutil.MockPathMapper{
 		ToLocalPathFunc: func(arrPath string) (string, error) {
 			return "/local" + arrPath, nil
@@ -417,7 +416,7 @@ func TestWebhook_SuccessEpisodeFile(t *testing.T) {
 	}
 	mockScanner := &webhookMockScanner{
 		ScanFileFunc: func(path string) error {
-			scannedPath = path
+			// Scanner is called in a goroutine; just verify it doesn't error
 			return nil
 		},
 	}
@@ -440,9 +439,6 @@ func TestWebhook_SuccessEpisodeFile(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &response)
 	assert.Equal(t, "Scan queued", response["message"])
 	assert.Equal(t, "/local/tv/show/episode.mkv", response["local_path"])
-
-	// Note: Scanner is called in a goroutine, so we can't assert scannedPath immediately
-	_ = scannedPath // Variable used in goroutine
 }
 
 func TestWebhook_SuccessMovieFile(t *testing.T) {
