@@ -30,6 +30,7 @@ This documentation is designed for AI agents (LLMs) to understand the Healarr co
 | [DECISIONS.md](DECISIONS.md) | Design decisions and rationale |
 | [GOALS.md](GOALS.md) | Project goals, philosophy, quality standards |
 | [CLAUDE_EXPERT.md](CLAUDE_EXPERT.md) | Comprehensive system prompt for Claude Code |
+| [BUG_HUNTING_METHODOLOGY.md](BUG_HUNTING_METHODOLOGY.md) | Systematic bug hunting for event-sourced systems |
 
 ## What is Healarr?
 
