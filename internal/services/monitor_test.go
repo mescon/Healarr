@@ -961,3 +961,196 @@ func TestMonitorService_HandlesDownloadFailed(t *testing.T) {
 			beforePending, afterPending)
 	}
 }
+
+// =============================================================================
+// Additional edge case tests for coverage
+// =============================================================================
+
+func TestMonitorService_HandleNeedsAttention_DefaultCase(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	monitor := NewMonitorService(eb, db)
+
+	corruptionID := "default-case-test"
+
+	// Seed corruption context
+	testutil.SeedEvent(db, domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   corruptionID,
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path": "/movies/Test/movie.mkv",
+			"path_id":   int64(1),
+		},
+	})
+
+	// Call handleNeedsAttention with an event type that hits the default case
+	// We'll use a custom event type to hit the default switch case
+	monitor.handleNeedsAttention(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.MaxRetriesReached, // Not ImportBlocked or SearchExhausted
+		EventData: map[string]interface{}{
+			"file_path": "/movies/Test/movie.mkv",
+		},
+	})
+
+	// Test passes if no panic - just exercises default case logging
+}
+
+func TestMonitorService_HandleFailure_CorruptionContextNotFound(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	config.SetForTesting(&config.Config{
+		DefaultMaxRetries: 10,
+	})
+
+	mockClock := testutil.NewMockClock()
+	monitor := NewMonitorService(eb, db, mockClock)
+
+	// Don't seed any corruption - context lookup will fail
+	corruptionID := "missing-context-test"
+
+	beforePending := mockClock.PendingCount()
+
+	// Handle failure for a corruption that doesn't exist
+	monitor.handleFailure(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DeletionFailed,
+	})
+
+	// No timer should be scheduled since context lookup fails
+	afterPending := mockClock.PendingCount()
+	if afterPending != beforePending {
+		t.Errorf("Expected no timer when context not found, but pending changed from %d to %d",
+			beforePending, afterPending)
+	}
+}
+
+func TestMonitorService_GetCorruptionContext_EmptyFilePath(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	monitor := NewMonitorService(eb, db)
+
+	// Seed corruption with empty file_path
+	corruptionID := "empty-path-test"
+	_, err = db.Exec(`
+		INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data)
+		VALUES (?, 'corruption', 'CorruptionDetected', '{"file_path": "", "path_id": 1}')
+	`, corruptionID)
+	if err != nil {
+		t.Fatalf("Failed to insert event: %v", err)
+	}
+
+	// Should return error when file_path is empty
+	_, _, err = monitor.getCorruptionContext(corruptionID)
+	if err == nil {
+		t.Error("Expected error for empty file_path")
+	}
+}
+
+func TestMonitorService_TimerFiringAfterStop(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	config.SetForTesting(&config.Config{
+		DefaultMaxRetries: 10,
+	})
+
+	mockClock := testutil.NewMockClock()
+	monitor := NewMonitorService(eb, db, mockClock)
+	monitor.Start()
+
+	// Seed corruption
+	corruptionID := "timer-stop-test"
+	testutil.SeedEvent(db, domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   corruptionID,
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path": "/movies/Test/movie.mkv",
+			"path_id":   int64(1),
+		},
+	})
+
+	// Schedule a retry
+	eb.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DeletionFailed,
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify timer is scheduled
+	if mockClock.PendingCount() < 1 {
+		t.Fatal("Expected at least 1 pending timer")
+	}
+
+	// Stop the service
+	monitor.Stop()
+
+	// Try to advance time - timer should not fire because it was canceled
+	// MockClock behavior: stopped timers don't fire
+	mockClock.Advance(30 * time.Minute)
+
+	// Test passes if no deadlock/panic
+}
+
+func TestMonitorService_HandleNeedsAttention_NoFilePath(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	monitor := NewMonitorService(eb, db)
+
+	// Don't seed any corruption - context lookup will fail
+	corruptionID := "no-file-path-test"
+
+	// Publish event without file_path and without corruption context
+	// This tests the fallback path where getCorruptionContext fails
+	monitor.handleNeedsAttention(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.ImportBlocked,
+		EventData: map[string]interface{}{
+			"error_message": "Quality issue",
+			// No file_path
+		},
+	})
+
+	// Test passes if no panic - filePath will be empty but that's OK
+}
