@@ -374,6 +374,10 @@ func gracefulShutdown(deps *serviceDeps, apiServer *api.RESTServer) {
 	deps.healthMonitorService.Shutdown()
 	logger.Infof("✓ Health Monitor Service stopped")
 
+	logger.Infof("Stopping Remediator Service (waiting for in-flight remediations)...")
+	deps.remediatorService.Stop()
+	logger.Infof("✓ Remediator Service stopped")
+
 	logger.Infof("Stopping Monitor Service (canceling pending retries)...")
 	deps.monitorService.Stop()
 	logger.Infof("✓ Monitor Service stopped")

@@ -52,6 +52,9 @@ func (m *MonitorService) Start() {
 	// Events requiring manual intervention - emit NeedsAttention for UI visibility
 	m.eventBus.Subscribe(domain.ImportBlocked, m.handleNeedsAttention)
 	m.eventBus.Subscribe(domain.SearchExhausted, m.handleNeedsAttention)
+	// Terminal states from VerifierService - user-initiated actions that ended the flow
+	m.eventBus.Subscribe(domain.DownloadIgnored, m.handleNeedsAttention)
+	m.eventBus.Subscribe(domain.ManuallyRemoved, m.handleNeedsAttention)
 }
 
 // Stop gracefully shuts down the MonitorService.
@@ -109,13 +112,26 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 	}
 
 	// Fetch file_path and path_id from the original CorruptionDetected event
-	// so the Remediator has the context it needs
-	filePath, pathID, err := m.getCorruptionContext(corruptionID)
+	// so the Remediator has the context it needs.
+	// Use retry logic for transient database errors (e.g., database temporarily unavailable).
+	filePath, pathID, err := m.getCorruptionContextWithRetry(corruptionID, 3)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			logger.Warnf("Corruption %s not found in database, skipping retry", corruptionID)
 		} else {
-			logger.Errorf("Database error getting context for corruption %s: %v", corruptionID, err)
+			// Still failed after retries - publish system health event for visibility
+			logger.Errorf("Database error getting context for %s after retries: %v", corruptionID, err)
+			if pubErr := m.eventBus.Publish(domain.Event{
+				AggregateID:   corruptionID,
+				AggregateType: "corruption",
+				EventType:     domain.SystemHealthDegraded,
+				EventData: map[string]interface{}{
+					"reason": "database_error_during_retry_scheduling",
+					"error":  err.Error(),
+				},
+			}); pubErr != nil {
+				logger.Errorf("Failed to publish SystemHealthDegraded event: %v", pubErr)
+			}
 		}
 		return
 	}
@@ -167,10 +183,10 @@ func (m *MonitorService) getCorruptionContext(corruptionID string) (string, int6
 	var pathID sql.NullInt64
 
 	err := m.db.QueryRow(`
-		SELECT 
+		SELECT
 			json_extract(event_data, '$.file_path'),
 			json_extract(event_data, '$.path_id')
-		FROM events 
+		FROM events
 		WHERE aggregate_id = ? AND event_type = 'CorruptionDetected'
 		LIMIT 1
 	`, corruptionID).Scan(&filePath, &pathID)
@@ -184,6 +200,28 @@ func (m *MonitorService) getCorruptionContext(corruptionID string) (string, int6
 	}
 
 	return filePath.String, pathID.Int64, nil
+}
+
+// getCorruptionContextWithRetry attempts to get corruption context with retries for transient DB errors.
+// Returns early on sql.ErrNoRows (not retryable). Uses exponential backoff: 100ms, 200ms, 400ms.
+func (m *MonitorService) getCorruptionContextWithRetry(corruptionID string, maxRetries int) (string, int64, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		filePath, pathID, err := m.getCorruptionContext(corruptionID)
+		if err == nil {
+			return filePath, pathID, nil
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			// Not found is not retryable
+			return "", 0, err
+		}
+		lastErr = err
+		if attempt < maxRetries-1 {
+			// Exponential backoff: 100ms, 200ms, 400ms
+			time.Sleep(time.Duration(1<<uint(attempt)) * 100 * time.Millisecond)
+		}
+	}
+	return "", 0, lastErr
 }
 
 func (m *MonitorService) getRetryCount(corruptionID string) (int, int, error) {
@@ -243,6 +281,16 @@ func (m *MonitorService) handleNeedsAttention(event domain.Event) {
 	case domain.SearchExhausted:
 		reason, _ := event.GetString("reason")
 		logger.Warnf("Manual intervention required for %s: search exhausted - %s (file: %s)",
+			corruptionID, reason, filePath)
+
+	case domain.DownloadIgnored:
+		reason, _ := event.GetString("reason")
+		logger.Infof("Item closed by user for %s: download ignored - %s (file: %s)",
+			corruptionID, reason, filePath)
+
+	case domain.ManuallyRemoved:
+		reason, _ := event.GetString("reason")
+		logger.Infof("Item closed by user for %s: manually removed - %s (file: %s)",
 			corruptionID, reason, filePath)
 
 	default:

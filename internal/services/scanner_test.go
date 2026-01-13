@@ -1323,6 +1323,41 @@ func TestScannerService_Shutdown(t *testing.T) {
 	}
 }
 
+func TestScannerService_RescanWorkerShutdown(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	mockDetector := &testutil.MockHealthChecker{}
+	mockPathMapper := &testutil.MockPathMapper{}
+
+	scanner := NewScannerService(db, eb, mockDetector, mockPathMapper)
+
+	// Start the rescan worker
+	scanner.StartRescanWorker()
+
+	// Give the worker time to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Shutdown should wait for the worker to stop
+	done := make(chan struct{})
+	go func() {
+		scanner.Shutdown()
+		close(done)
+	}()
+
+	// Shutdown should complete within a reasonable time
+	select {
+	case <-done:
+		// Success - shutdown completed
+	case <-time.After(2 * time.Second):
+		t.Error("Shutdown took too long - rescan worker may not be properly tracked")
+	}
+}
+
 // =============================================================================
 // Cache tests
 // =============================================================================

@@ -2,6 +2,7 @@ package services
 
 import (
 	"database/sql"
+	"sync"
 	"time"
 
 	"github.com/mescon/Healarr/internal/config"
@@ -26,6 +27,11 @@ type RemediatorService struct {
 	pathMapper integration.PathMapper
 	db         *sql.DB
 	semaphore  chan struct{} // limits concurrent remediations
+	// Lifecycle management
+	wg         sync.WaitGroup
+	shutdownCh chan struct{}
+	stopped    bool
+	mu         sync.Mutex // protects stopped flag
 }
 
 func NewRemediatorService(eb eventbus.Publisher, arr integration.ArrClient, pm integration.PathMapper, db *sql.DB) *RemediatorService {
@@ -35,6 +41,7 @@ func NewRemediatorService(eb eventbus.Publisher, arr integration.ArrClient, pm i
 		pathMapper: pm,
 		db:         db,
 		semaphore:  make(chan struct{}, maxConcurrentRemediations),
+		shutdownCh: make(chan struct{}),
 	}
 	return r
 }
@@ -42,6 +49,32 @@ func NewRemediatorService(eb eventbus.Publisher, arr integration.ArrClient, pm i
 func (r *RemediatorService) Start() {
 	r.eventBus.Subscribe(domain.CorruptionDetected, r.handleCorruptionDetected)
 	r.eventBus.Subscribe(domain.RetryScheduled, r.handleRetry)
+}
+
+// Stop gracefully shuts down the RemediatorService.
+// Waits for in-flight remediations to complete.
+func (r *RemediatorService) Stop() {
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	r.stopped = true
+	close(r.shutdownCh)
+	r.mu.Unlock()
+
+	r.wg.Wait()
+	logger.Infof("RemediatorService stopped")
+}
+
+// isShuttingDown checks if shutdown was requested
+func (r *RemediatorService) isShuttingDown() bool {
+	select {
+	case <-r.shutdownCh:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *RemediatorService) handleRetry(event domain.Event) {
@@ -135,12 +168,24 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 		}
 	}
 
+	r.wg.Add(1)
 	go func() {
+		defer r.wg.Done()
+
+		// Check if shutting down before starting work
+		if r.isShuttingDown() {
+			logger.Debugf("Remediator shutting down, skipping retry search for %s", corruptionID)
+			return
+		}
+
 		// Acquire semaphore with timeout to limit concurrent remediations
 		// and prevent indefinite blocking if slots are stuck
 		select {
 		case r.semaphore <- struct{}{}:
 			defer func() { <-r.semaphore }()
+		case <-r.shutdownCh:
+			logger.Debugf("Remediator shutting down while waiting for semaphore for %s", corruptionID)
+			return
 		case <-time.After(semaphoreAcquireTimeout):
 			logger.Warnf("Remediator: timeout acquiring semaphore for retry search %s after %v - all slots busy",
 				corruptionID, semaphoreAcquireTimeout)
@@ -237,10 +282,18 @@ func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
 
 	if dryRun {
 		logger.Infof("Auto-remediation enabled for %s, but DRY-RUN mode is set for this path", data.FilePath)
-		go r.executeDryRun(corruptionID, data.FilePath, arrPath)
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			r.executeDryRun(corruptionID, data.FilePath, arrPath)
+		}()
 	} else {
 		logger.Infof("Auto-remediation enabled for %s, proceeding immediately", data.FilePath)
-		go r.executeRemediation(corruptionID, data.FilePath, arrPath, data.PathID)
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			r.executeRemediation(corruptionID, data.FilePath, arrPath, data.PathID)
+		}()
 	}
 }
 
@@ -287,11 +340,20 @@ func (r *RemediatorService) executeDryRun(corruptionID, filePath, arrPath string
 
 // executeRemediation performs the actual deletion and search trigger
 func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath string, pathID int64) {
+	// Check if shutting down before starting work
+	if r.isShuttingDown() {
+		logger.Debugf("Remediator shutting down, skipping remediation for %s", corruptionID)
+		return
+	}
+
 	// Acquire semaphore with timeout to limit concurrent remediations
 	// and prevent indefinite blocking if slots are stuck
 	select {
 	case r.semaphore <- struct{}{}:
 		defer func() { <-r.semaphore }()
+	case <-r.shutdownCh:
+		logger.Debugf("Remediator shutting down while waiting for semaphore for %s", corruptionID)
+		return
 	case <-time.After(semaphoreAcquireTimeout):
 		logger.Warnf("Remediator: timeout acquiring semaphore for %s after %v - all slots busy",
 			corruptionID, semaphoreAcquireTimeout)
@@ -328,6 +390,10 @@ func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath s
 		r.publishError(corruptionID, domain.DeletionFailed, err.Error())
 		return
 	}
+
+	// NOTE: Once deletion is successful, we MUST attempt the search even during shutdown.
+	// Aborting here would leave the item in "DeletionCompleted" state without a search.
+	// The retry mechanism (via MonitorService) will handle SearchFailed if search fails.
 
 	// Publish deletion completed - critical event, use retry
 	if err := r.eventBus.PublishWithRetry(domain.Event{

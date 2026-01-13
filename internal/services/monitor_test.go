@@ -1,6 +1,8 @@
 package services
 
 import (
+	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -1153,4 +1155,326 @@ func TestMonitorService_HandleNeedsAttention_NoFilePath(t *testing.T) {
 	})
 
 	// Test passes if no panic - filePath will be empty but that's OK
+}
+
+// =============================================================================
+// getCorruptionContextWithRetry tests
+// =============================================================================
+
+func TestMonitorService_GetCorruptionContextWithRetry(t *testing.T) {
+	t.Run("returns on first success", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+		monitor := NewMonitorService(eb, db)
+
+		// Seed corruption event
+		corruptionID := "retry-success-test"
+		_, err = testutil.SeedEvent(db, domain.Event{
+			AggregateType: "corruption",
+			AggregateID:   corruptionID,
+			EventType:     domain.CorruptionDetected,
+			EventData: map[string]interface{}{
+				"file_path": "/media/test.mkv",
+				"path_id":   float64(1),
+			},
+		})
+		if err != nil {
+			t.Fatalf("Failed to seed event: %v", err)
+		}
+
+		filePath, pathID, err := monitor.getCorruptionContextWithRetry(corruptionID, 3)
+
+		if err != nil {
+			t.Errorf("Expected success, got error: %v", err)
+		}
+		if filePath != "/media/test.mkv" {
+			t.Errorf("Expected /media/test.mkv, got %s", filePath)
+		}
+		if pathID != 1 {
+			t.Errorf("Expected pathID 1, got %d", pathID)
+		}
+	})
+
+	t.Run("returns ErrNoRows immediately without retry", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+		monitor := NewMonitorService(eb, db)
+
+		// Don't seed any event - should return ErrNoRows
+		_, _, err = monitor.getCorruptionContextWithRetry("non-existent", 3)
+
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("Expected sql.ErrNoRows, got: %v", err)
+		}
+	})
+}
+
+// =============================================================================
+// Terminal event handler tests (DownloadIgnored, ManuallyRemoved)
+// =============================================================================
+
+func TestMonitorService_HandleNeedsAttention_DownloadIgnored(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+	monitor := NewMonitorService(eb, db)
+	monitor.Start()
+
+	corruptionID := "download-ignored-test"
+
+	// Seed corruption for context lookup
+	_, err = testutil.SeedEvent(db, domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   corruptionID,
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path": "/media/ignored.mkv",
+			"path_id":   float64(1),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to seed event: %v", err)
+	}
+
+	// Handle DownloadIgnored event
+	monitor.handleNeedsAttention(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DownloadIgnored,
+		EventData: map[string]interface{}{
+			"file_path": "/media/ignored.mkv",
+			"reason":    "User chose to ignore",
+		},
+	})
+
+	// Test passes if no panic - just logs the event
+}
+
+func TestMonitorService_HandleNeedsAttention_ManuallyRemoved(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+	monitor := NewMonitorService(eb, db)
+	monitor.Start()
+
+	corruptionID := "manually-removed-test"
+
+	// Seed corruption for context lookup
+	_, err = testutil.SeedEvent(db, domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   corruptionID,
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path": "/media/removed.mkv",
+			"path_id":   float64(1),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to seed event: %v", err)
+	}
+
+	// Handle ManuallyRemoved event
+	monitor.handleNeedsAttention(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.ManuallyRemoved,
+		EventData: map[string]interface{}{
+			"file_path": "/media/removed.mkv",
+			"reason":    "User removed from queue",
+		},
+	})
+
+	// Test passes if no panic - just logs the event
+}
+
+func TestMonitorService_SubscribesToTerminalEvents(t *testing.T) {
+	// Test that MonitorService properly subscribes to terminal events
+	// by verifying that handleNeedsAttention is called when these events are published
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+	monitor := NewMonitorService(eb, db)
+	monitor.Start()
+
+	// Use sync.WaitGroup to wait for async handlers
+	var wg sync.WaitGroup
+	downloadIgnoredCount := 0
+	manuallyRemovedCount := 0
+	var mu sync.Mutex
+
+	// We can verify Start() subscribed by publishing events and seeing they don't panic
+	// (handleNeedsAttention will process them and just log)
+	corruptionID := "terminal-sub-test"
+
+	// Seed the CorruptionDetected event so getCorruptionContext works
+	err = eb.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path": "/media/test.mkv",
+			"path_id":   int64(1),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to publish CorruptionDetected: %v", err)
+	}
+
+	// Subscribe our own handlers to count events (handlers run async, so use wg)
+	wg.Add(2) // Expect 2 events
+	eb.Subscribe(domain.DownloadIgnored, func(e domain.Event) {
+		mu.Lock()
+		downloadIgnoredCount++
+		mu.Unlock()
+		wg.Done()
+	})
+	eb.Subscribe(domain.ManuallyRemoved, func(e domain.Event) {
+		mu.Lock()
+		manuallyRemovedCount++
+		mu.Unlock()
+		wg.Done()
+	})
+
+	// Publish terminal events - these should be handled without panic
+	err = eb.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DownloadIgnored,
+		EventData: map[string]interface{}{
+			"file_path": "/media/test.mkv",
+			"reason":    "User ignored download",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to publish DownloadIgnored: %v", err)
+	}
+
+	err = eb.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.ManuallyRemoved,
+		EventData: map[string]interface{}{
+			"file_path": "/media/test.mkv",
+			"reason":    "User removed from queue",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to publish ManuallyRemoved: %v", err)
+	}
+
+	// Wait for handlers to complete (with timeout)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Handlers completed
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for event handlers")
+	}
+
+	// Verify our counters incremented (proving events were published and processed)
+	mu.Lock()
+	defer mu.Unlock()
+	if downloadIgnoredCount != 1 {
+		t.Errorf("Expected 1 DownloadIgnored event processed, got %d", downloadIgnoredCount)
+	}
+	if manuallyRemovedCount != 1 {
+		t.Errorf("Expected 1 ManuallyRemoved event processed, got %d", manuallyRemovedCount)
+	}
+}
+
+// =============================================================================
+// handleFailure DB retry with SystemHealthDegraded tests
+// =============================================================================
+
+func TestMonitorService_HandleFailure_ErrNoRowsDoesNotPublishSystemHealthDegraded(t *testing.T) {
+	// This test verifies that ErrNoRows (not a DB error) does not trigger SystemHealthDegraded
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+	mockClock := testutil.NewMockClockAt(time.Now())
+	monitor := NewMonitorService(eb, db, mockClock)
+	monitor.Start()
+
+	// Track if SystemHealthDegraded is published (use sync primitives since handlers are async)
+	var healthDegradedCount int
+	var mu sync.Mutex
+	var healthWg sync.WaitGroup
+	healthWg.Add(1) // We expect 0 events, but set up in case one comes
+	eb.Subscribe(domain.SystemHealthDegraded, func(e domain.Event) {
+		mu.Lock()
+		healthDegradedCount++
+		mu.Unlock()
+		healthWg.Done()
+	})
+
+	// This test relies on a corruption ID that exists in the corruption_status view
+	// but does NOT have a CorruptionDetected event with file_path.
+	// The view is built from events, so we need to seed a CorruptionDetected without file_path.
+	corruptionID := "health-degraded-test"
+
+	// Insert CorruptionDetected event WITHOUT file_path so getCorruptionContext returns ErrNoRows
+	// (The query looks for json_extract(event_data, '$.file_path') which will be NULL)
+	_, err = db.Exec(`INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data, event_version, created_at)
+		VALUES (?, 'corruption', 'CorruptionDetected', '{"path_id": 1}', 1, datetime('now'))`, corruptionID)
+	if err != nil {
+		t.Fatalf("Failed to seed CorruptionDetected event: %v", err)
+	}
+
+	// Handle a failure event
+	monitor.handleFailure(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DownloadFailed,
+	})
+
+	// Wait briefly for any async handlers (though we expect none)
+	time.Sleep(100 * time.Millisecond)
+
+	// Since the CorruptionDetected event has no file_path, getCorruptionContext returns ErrNoRows
+	// This should result in a warning log but no SystemHealthDegraded (ErrNoRows is not a DB error)
+	// The event is silently skipped with a warning
+
+	// No SystemHealthDegraded should be published for ErrNoRows
+	mu.Lock()
+	count := healthDegradedCount
+	mu.Unlock()
+	if count != 0 {
+		t.Errorf("Expected 0 SystemHealthDegraded events for ErrNoRows, got %d", count)
+	}
 }

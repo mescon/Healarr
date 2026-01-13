@@ -1674,7 +1674,9 @@ func (s *ScannerService) queueForRescan(filePath string, pathID int64, errorType
 
 // StartRescanWorker starts a background worker that periodically processes pending rescans
 func (s *ScannerService) StartRescanWorker() {
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 

@@ -1321,6 +1321,221 @@ func TestRemediatorService_BuildSearchEventData(t *testing.T) {
 	})
 }
 
+// =============================================================================
+// Stop tests (lifecycle management)
+// =============================================================================
+
+func TestRemediatorService_Stop(t *testing.T) {
+	t.Run("stop completes immediately when nothing running", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		remediator := NewRemediatorService(mockEventBus, nil, nil, db)
+		remediator.Start()
+
+		// Stop should complete immediately
+		done := make(chan struct{})
+		go func() {
+			remediator.Stop()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Success
+		case <-time.After(1 * time.Second):
+			t.Error("Stop() took too long when nothing running")
+		}
+	})
+
+	t.Run("stop is idempotent", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		remediator := NewRemediatorService(mockEventBus, nil, nil, db)
+
+		// Call Stop() multiple times - should not panic or hang
+		remediator.Stop()
+		remediator.Stop()
+		remediator.Stop()
+	})
+
+	t.Run("stop waits for in-flight remediation", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		remediationStarted := make(chan struct{})
+		remediationDone := make(chan struct{})
+
+		mockArrClient := &testutil.MockArrClient{
+			FindMediaByPathFunc: func(path string) (int64, error) {
+				return 123, nil
+			},
+			DeleteFileFunc: func(mediaID int64, path string) (map[string]interface{}, error) {
+				close(remediationStarted)
+				// Wait until we're told to complete
+				<-remediationDone
+				return nil, nil
+			},
+			TriggerSearchFunc: func(mediaID int64, path string, episodeIDs []int64) error {
+				return nil
+			},
+		}
+		mockPathMapper := &testutil.MockPathMapper{}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+		remediator.Start()
+
+		// Start a remediation
+		event := testutil.NewCorruptionEventWithType(
+			testutil.TestFilePaths.Movie1,
+			"corrupt_header",
+			testutil.WithAutoRemediate(true),
+		)
+		remediator.handleCorruptionDetected(event)
+
+		// Wait for remediation to start
+		<-remediationStarted
+
+		// Start Stop() in a goroutine
+		stopDone := make(chan struct{})
+		go func() {
+			remediator.Stop()
+			close(stopDone)
+		}()
+
+		// Stop() should not complete yet (remediation still in progress)
+		select {
+		case <-stopDone:
+			t.Error("Stop() completed while remediation still in progress")
+		case <-time.After(100 * time.Millisecond):
+			// Good - still waiting
+		}
+
+		// Complete the remediation
+		close(remediationDone)
+
+		// Now Stop() should complete
+		select {
+		case <-stopDone:
+			// Success
+		case <-time.After(2 * time.Second):
+			t.Error("Stop() didn't complete after remediation finished")
+		}
+	})
+
+	t.Run("shutdown during semaphore wait aborts gracefully", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		blockingDone := make(chan struct{})
+
+		mockArrClient := &testutil.MockArrClient{
+			FindMediaByPathFunc: func(path string) (int64, error) {
+				return 123, nil
+			},
+			DeleteFileFunc: func(mediaID int64, path string) (map[string]interface{}, error) {
+				// Block forever until test completes
+				<-blockingDone
+				return nil, nil
+			},
+			TriggerSearchFunc: func(mediaID int64, path string, episodeIDs []int64) error {
+				return nil
+			},
+		}
+		mockPathMapper := &testutil.MockPathMapper{}
+
+		remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+		remediator.Start()
+
+		// Fill up all semaphore slots with blocking operations
+		for i := 0; i < maxConcurrentRemediations; i++ {
+			event := testutil.NewCorruptionEventWithType(
+				testutil.TestFilePaths.Movie1,
+				"corrupt_header",
+				testutil.WithAutoRemediate(true),
+			)
+			remediator.handleCorruptionDetected(event)
+		}
+
+		// Give goroutines time to acquire semaphore
+		time.Sleep(100 * time.Millisecond)
+
+		// Now try to start one more that will wait on semaphore
+		waitingEvent := testutil.NewCorruptionEventWithType(
+			testutil.TestFilePaths.Movie2,
+			"corrupt_header",
+			testutil.WithAutoRemediate(true),
+		)
+		remediator.handleCorruptionDetected(waitingEvent)
+
+		// Give the waiting goroutine time to start waiting
+		time.Sleep(50 * time.Millisecond)
+
+		// Stop should signal all goroutines to abort
+		go remediator.Stop()
+
+		// Give Stop() time to signal shutdown
+		time.Sleep(50 * time.Millisecond)
+
+		// Allow blocking operations to complete
+		close(blockingDone)
+
+		// The service should shut down within a reasonable time
+		time.Sleep(500 * time.Millisecond)
+	})
+}
+
+func TestRemediatorService_IsShuttingDown(t *testing.T) {
+	t.Run("returns false before Stop", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		remediator := NewRemediatorService(mockEventBus, nil, nil, db)
+
+		if remediator.isShuttingDown() {
+			t.Error("isShuttingDown() should return false before Stop()")
+		}
+	})
+
+	t.Run("returns true after Stop", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("Failed to create test DB: %v", err)
+		}
+		defer db.Close()
+
+		mockEventBus := testutil.NewMockEventBus()
+		remediator := NewRemediatorService(mockEventBus, nil, nil, db)
+
+		remediator.Stop()
+
+		if !remediator.isShuttingDown() {
+			t.Error("isShuttingDown() should return true after Stop()")
+		}
+	})
+}
+
 func TestRemediatorService_CheckDeletionCompleted(t *testing.T) {
 	t.Run("returns false with nil db", func(t *testing.T) {
 		mockEventBus := testutil.NewMockEventBus()
