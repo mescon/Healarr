@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -29,6 +30,9 @@ const maxConcurrentVerifications = 50
 
 // verificationSemaphoreTimeout is the maximum time to wait for a verification slot.
 const verificationSemaphoreTimeout = 5 * time.Minute
+
+// errMsgShutdownInProgress is the error message used when operations are aborted due to shutdown.
+const errMsgShutdownInProgress = "shutdown in progress"
 
 // VerificationMeta stores quality/release info captured from history for VerificationSuccess events
 type VerificationMeta struct {
@@ -840,7 +844,7 @@ func (v *VerifierService) getFilePathsWithRetry(mediaID int64, metadata map[stri
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if v.isShuttingDown() {
-			return nil, fmt.Errorf("shutdown in progress")
+			return nil, errors.New(errMsgShutdownInProgress)
 		}
 
 		allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, referencePath)
@@ -853,7 +857,7 @@ func (v *VerifierService) getFilePathsWithRetry(mediaID int64, metadata map[stri
 			backoff := time.Duration(1<<uint(attempt)) * time.Second
 			logger.Debugf("GetAllFilePaths failed (attempt %d/%d), retrying in %v: %v", attempt+1, maxRetries, backoff, err)
 			if v.waitWithShutdown(backoff) {
-				return nil, fmt.Errorf("shutdown in progress")
+				return nil, errors.New(errMsgShutdownInProgress)
 			}
 		}
 	}
@@ -883,7 +887,7 @@ func (v *VerifierService) getHistoryWithRetry(arrPath string, mediaID int64, lim
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Check for shutdown between retries
 		if v.isShuttingDown() {
-			return nil, fmt.Errorf("shutdown in progress")
+			return nil, errors.New(errMsgShutdownInProgress)
 		}
 
 		historyItems, err := v.arrClient.GetRecentHistoryForMediaByPath(arrPath, mediaID, limit)
@@ -898,7 +902,7 @@ func (v *VerifierService) getHistoryWithRetry(arrPath string, mediaID int64, lim
 			logger.Debugf("History API failed (attempt %d/%d), retrying in %v: %v", attempt+1, maxRetries, backoff, err)
 			select {
 			case <-v.shutdownCh:
-				return nil, fmt.Errorf("shutdown in progress")
+				return nil, errors.New(errMsgShutdownInProgress)
 			case <-time.After(backoff):
 			}
 		}
