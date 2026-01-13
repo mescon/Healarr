@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/mescon/Healarr/internal/clock"
@@ -14,9 +15,14 @@ import (
 )
 
 type MonitorService struct {
-	eventBus *eventbus.EventBus
-	db       *sql.DB
-	clk      clock.Clock
+	eventBus      *eventbus.EventBus
+	db            *sql.DB
+	clk           clock.Clock
+	wg            sync.WaitGroup // Tracks in-flight timer callbacks
+	pendingTimers []clock.Timer  // Timers that can be canceled on shutdown
+	timerMu       sync.Mutex     // Protects pendingTimers slice
+	stopChan      chan struct{}  // Signals shutdown
+	stopped       bool           // Prevents scheduling after Stop()
 }
 
 // NewMonitorService creates a new MonitorService.
@@ -27,17 +33,58 @@ func NewMonitorService(eb *eventbus.EventBus, db *sql.DB, clocks ...clock.Clock)
 		c = clocks[0]
 	}
 	return &MonitorService{
-		eventBus: eb,
-		db:       db,
-		clk:      c,
+		eventBus:      eb,
+		db:            db,
+		clk:           c,
+		pendingTimers: make([]clock.Timer, 0),
+		stopChan:      make(chan struct{}),
 	}
 }
 
 func (m *MonitorService) Start() {
+	// Failure events that trigger retry with exponential backoff
 	m.eventBus.Subscribe(domain.DeletionFailed, m.handleFailure)
 	m.eventBus.Subscribe(domain.SearchFailed, m.handleFailure)
 	m.eventBus.Subscribe(domain.VerificationFailed, m.handleFailure)
 	m.eventBus.Subscribe(domain.DownloadTimeout, m.handleFailure)
+	m.eventBus.Subscribe(domain.DownloadFailed, m.handleFailure) // BUG FIX: was orphaned event
+
+	// Events requiring manual intervention - emit NeedsAttention for UI visibility
+	m.eventBus.Subscribe(domain.ImportBlocked, m.handleNeedsAttention)
+	m.eventBus.Subscribe(domain.SearchExhausted, m.handleNeedsAttention)
+}
+
+// Stop gracefully shuts down the MonitorService.
+// It cancels pending retry timers and waits for in-flight callbacks to complete.
+func (m *MonitorService) Stop() {
+	m.timerMu.Lock()
+	if m.stopped {
+		m.timerMu.Unlock()
+		return
+	}
+	m.stopped = true
+
+	// Cancel all pending timers
+	canceled := 0
+	for _, timer := range m.pendingTimers {
+		if timer.Stop() {
+			canceled++
+			// Timer was stopped before firing, decrement WaitGroup
+			m.wg.Done()
+		}
+	}
+	m.pendingTimers = nil
+	m.timerMu.Unlock()
+
+	// Signal any in-flight callbacks to abort
+	close(m.stopChan)
+
+	// Wait for any callbacks that already started
+	m.wg.Wait()
+
+	if canceled > 0 {
+		logger.Infof("MonitorService stopped: canceled %d pending retry timers", canceled)
+	}
 }
 
 func (m *MonitorService) handleFailure(event domain.Event) {
@@ -76,7 +123,27 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 	// Exponential backoff: 15m, 30m, 60m
 	delay := time.Duration(math.Pow(2, float64(retryCount))) * 15 * time.Minute
 
-	m.clk.AfterFunc(delay, func() {
+	// Check if we're shutting down before scheduling
+	m.timerMu.Lock()
+	if m.stopped {
+		m.timerMu.Unlock()
+		logger.Debugf("MonitorService stopped, not scheduling retry for %s", corruptionID)
+		return
+	}
+
+	// Track the WaitGroup before scheduling to ensure we wait for callbacks
+	m.wg.Add(1)
+	timer := m.clk.AfterFunc(delay, func() {
+		defer m.wg.Done()
+
+		// Check if we should proceed (not shut down)
+		select {
+		case <-m.stopChan:
+			logger.Debugf("MonitorService stopped, skipping retry publish for %s", corruptionID)
+			return
+		default:
+		}
+
 		if err := m.eventBus.Publish(domain.Event{
 			AggregateID:   corruptionID,
 			AggregateType: "corruption",
@@ -90,6 +157,8 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 			logger.Errorf("Failed to publish RetryScheduled event for %s: %v", corruptionID, err)
 		}
 	})
+	m.pendingTimers = append(m.pendingTimers, timer)
+	m.timerMu.Unlock()
 }
 
 // getCorruptionContext retrieves the file_path and path_id from the original CorruptionDetected event
@@ -150,4 +219,37 @@ func (m *MonitorService) getRetryCount(corruptionID string) (int, int, error) {
 	// If user sets 0, they want 0 retries.
 
 	return count, limit, nil
+}
+
+// handleNeedsAttention handles events that require manual intervention.
+// These are terminal states where automatic retry is not appropriate.
+// The notifier handles user notifications; this handler logs for observability.
+func (m *MonitorService) handleNeedsAttention(event domain.Event) {
+	corruptionID := event.AggregateID
+
+	// Extract relevant info for logging
+	filePath, _ := event.GetString("file_path")
+	if filePath == "" {
+		// Try to get from corruption context
+		filePath, _, _ = m.getCorruptionContext(corruptionID)
+	}
+
+	switch event.EventType {
+	case domain.ImportBlocked:
+		errorMsg, _ := event.GetString("error_message")
+		logger.Warnf("Manual intervention required for %s: import blocked - %s (file: %s)",
+			corruptionID, errorMsg, filePath)
+
+	case domain.SearchExhausted:
+		reason, _ := event.GetString("reason")
+		logger.Warnf("Manual intervention required for %s: search exhausted - %s (file: %s)",
+			corruptionID, reason, filePath)
+
+	default:
+		logger.Warnf("Manual intervention required for %s: %s (file: %s)",
+			corruptionID, event.EventType, filePath)
+	}
+
+	// Note: No automatic retry is scheduled for these events.
+	// User must manually retry via the UI or API after resolving the issue.
 }
