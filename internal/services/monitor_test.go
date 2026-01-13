@@ -1478,3 +1478,214 @@ func TestMonitorService_HandleFailure_ErrNoRowsDoesNotPublishSystemHealthDegrade
 		t.Errorf("Expected 0 SystemHealthDegraded events for ErrNoRows, got %d", count)
 	}
 }
+
+func TestMonitorService_GetCorruptionContextWithRetry_Success(t *testing.T) {
+	// Test that getCorruptionContextWithRetry succeeds on first try with valid data
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+	monitor := NewMonitorService(eb, db)
+
+	corruptionID := "retry-success-test"
+
+	// Seed a proper CorruptionDetected event WITH file_path
+	_, err = db.Exec(`INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data, event_version, created_at)
+		VALUES (?, 'corruption', 'CorruptionDetected', '{"file_path": "/media/test.mkv", "path_id": 42}', 1, datetime('now'))`, corruptionID)
+	if err != nil {
+		t.Fatalf("Failed to seed event: %v", err)
+	}
+
+	filePath, pathID, err := monitor.getCorruptionContextWithRetry(corruptionID, 3)
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+	if filePath != "/media/test.mkv" {
+		t.Errorf("Expected file_path '/media/test.mkv', got '%s'", filePath)
+	}
+	if pathID != 42 {
+		t.Errorf("Expected path_id 42, got %d", pathID)
+	}
+}
+
+func TestMonitorService_GetCorruptionContextWithRetry_ErrNoRowsNotRetried(t *testing.T) {
+	// Test that ErrNoRows is returned immediately without retry
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+	monitor := NewMonitorService(eb, db)
+
+	// No event seeded - will return ErrNoRows
+	_, _, err = monitor.getCorruptionContextWithRetry("nonexistent-id", 3)
+	if err != sql.ErrNoRows {
+		t.Errorf("Expected sql.ErrNoRows, got: %v", err)
+	}
+}
+
+func TestMonitorService_HandleFailure_MaxRetriesReachedPublishesEvent(t *testing.T) {
+	// Test that when retry count >= max retries, MaxRetriesReached is published
+	// Explicitly set config to ensure consistent behavior regardless of test order
+	testConfig := config.NewTestConfig()
+	testConfig.DefaultMaxRetries = 3
+	config.SetForTesting(testConfig)
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+	mockClock := testutil.NewMockClockAt(time.Now())
+	monitor := NewMonitorService(eb, db, mockClock)
+
+	corruptionID := "max-retries-test-2"
+
+	// Track MaxRetriesReached events BEFORE starting the monitor
+	var maxRetriesCount int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(1)
+	eb.Subscribe(domain.MaxRetriesReached, func(e domain.Event) {
+		mu.Lock()
+		maxRetriesCount++
+		mu.Unlock()
+		wg.Done()
+	})
+
+	monitor.Start()
+
+	// Seed corruption with retry_count already at max (3)
+	// First, seed a CorruptionDetected event
+	_, err = db.Exec(`INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data, event_version, created_at)
+		VALUES (?, 'corruption', 'CorruptionDetected', '{"file_path": "/media/test.mkv", "path_id": 1}', 1, datetime('now'))`, corruptionID)
+	if err != nil {
+		t.Fatalf("Failed to seed CorruptionDetected event: %v", err)
+	}
+
+	// Seed 3 *Failed events to reach max retries (default max is 3)
+	// The retry_count view counts events with event_type LIKE '%Failed'
+	for i := 0; i < 3; i++ {
+		_, err = db.Exec(`INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data, event_version, created_at)
+			VALUES (?, 'corruption', 'DownloadFailed', '{}', 1, datetime('now'))`, corruptionID)
+		if err != nil {
+			t.Fatalf("Failed to seed DownloadFailed event: %v", err)
+		}
+	}
+
+	// Handle a failure event - should trigger MaxRetriesReached since we're at max
+	monitor.handleFailure(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DownloadFailed,
+	})
+
+	// Wait for async handler
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for MaxRetriesReached event")
+	}
+
+	mu.Lock()
+	if maxRetriesCount != 1 {
+		t.Errorf("Expected 1 MaxRetriesReached event, got %d", maxRetriesCount)
+	}
+	mu.Unlock()
+}
+
+func TestMonitorService_HandleFailure_SchedulesRetryWithContext(t *testing.T) {
+	// Test that handleFailure schedules a retry with proper context
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+	mockClock := testutil.NewMockClock()
+	monitor := NewMonitorService(eb, db, mockClock)
+	monitor.Start()
+
+	corruptionID := "retry-context-test"
+
+	// Track RetryScheduled events
+	var retryEvent domain.Event
+	var retryCount int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(1)
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) {
+		mu.Lock()
+		retryEvent = e
+		retryCount++
+		mu.Unlock()
+		wg.Done()
+	})
+
+	// Seed a CorruptionDetected event
+	_, err = db.Exec(`INSERT INTO events (aggregate_id, aggregate_type, event_type, event_data, event_version, created_at)
+		VALUES (?, 'corruption', 'CorruptionDetected', '{"file_path": "/media/retry.mkv", "path_id": 99}', 1, datetime('now'))`, corruptionID)
+	if err != nil {
+		t.Fatalf("Failed to seed event: %v", err)
+	}
+
+	// Handle a failure event
+	monitor.handleFailure(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DownloadFailed,
+	})
+
+	// Advance the mock clock to trigger the timer (first retry is 15 minutes)
+	mockClock.Advance(16 * time.Minute)
+
+	// Wait for async handler
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for RetryScheduled event")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if retryCount != 1 {
+		t.Errorf("Expected 1 RetryScheduled event, got %d", retryCount)
+	}
+	if retryEvent.AggregateID != corruptionID {
+		t.Errorf("Expected aggregate_id %s, got %s", corruptionID, retryEvent.AggregateID)
+	}
+
+	// Check event data contains file_path and path_id
+	filePath, _ := retryEvent.GetString("file_path")
+	if filePath != "/media/retry.mkv" {
+		t.Errorf("Expected file_path '/media/retry.mkv', got '%s'", filePath)
+	}
+	pathID, _ := retryEvent.GetInt64("path_id")
+	if pathID != 99 {
+		t.Errorf("Expected path_id 99, got %d", pathID)
+	}
+}
