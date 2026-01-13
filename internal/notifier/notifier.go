@@ -239,6 +239,7 @@ func GetEventGroups() []EventGroup {
 				{string(domain.VerificationSuccess), "Successfully Repaired", "When the replacement file passes health checks"},
 				{string(domain.VerificationFailed), "Replacement Corrupt", "When the new download is also corrupt"},
 				{string(domain.DownloadTimeout), "Download Timeout", "When the replacement download takes too long"},
+				{string(domain.DownloadFailed), "Download Failed", "When the download fails (no seeders, tracker issues)"},
 			},
 		},
 		{
@@ -261,6 +262,7 @@ func GetEventGroups() []EventGroup {
 			Name: "System Events",
 			Events: []EventInfo{
 				{string(domain.SystemHealthDegraded), "System Health Degraded", "When system health checks detect issues"},
+				{string(domain.InstanceUnhealthy), "Arr Instance Unhealthy", "When an *arr instance becomes unreachable"},
 			},
 		},
 	}
@@ -678,27 +680,30 @@ type messageFormatter func(ctx messageContext) string
 
 // messageFormatters maps event types to their message formatters
 var messageFormatters = map[string]messageFormatter{
-	string(domain.ScanStarted):         fmtScanStarted,
-	string(domain.ScanCompleted):       fmtScanCompleted,
-	string(domain.ScanFailed):          fmtScanFailed,
-	string(domain.CorruptionDetected):  fmtCorruptionDetected,
-	string(domain.RemediationQueued):   fmtRemediationQueued,
-	string(domain.DeletionStarted):     fmtDeletionStarted,
-	string(domain.DeletionCompleted):   fmtDeletionCompleted,
-	string(domain.DeletionFailed):      fmtDeletionFailed,
-	string(domain.SearchStarted):       fmtSearchStarted,
-	string(domain.SearchCompleted):     fmtSearchCompleted,
-	string(domain.SearchFailed):        fmtSearchFailed,
-	string(domain.VerificationStarted): fmtVerificationStarted,
-	string(domain.VerificationSuccess): fmtVerificationSuccess,
-	string(domain.VerificationFailed):  fmtVerificationFailed,
-	string(domain.DownloadTimeout):     fmtDownloadTimeout,
-	string(domain.ImportBlocked):       fmtImportBlocked,
-	string(domain.ManuallyRemoved):     fmtManuallyRemoved,
-	string(domain.DownloadIgnored):     fmtDownloadIgnored,
-	string(domain.RetryScheduled):      fmtRetryScheduled,
-	string(domain.MaxRetriesReached):   fmtMaxRetriesReached,
-	string(domain.SearchExhausted):     fmtSearchExhausted,
+	string(domain.ScanStarted):          fmtScanStarted,
+	string(domain.ScanCompleted):        fmtScanCompleted,
+	string(domain.ScanFailed):           fmtScanFailed,
+	string(domain.CorruptionDetected):   fmtCorruptionDetected,
+	string(domain.RemediationQueued):    fmtRemediationQueued,
+	string(domain.DeletionStarted):      fmtDeletionStarted,
+	string(domain.DeletionCompleted):    fmtDeletionCompleted,
+	string(domain.DeletionFailed):       fmtDeletionFailed,
+	string(domain.SearchStarted):        fmtSearchStarted,
+	string(domain.SearchCompleted):      fmtSearchCompleted,
+	string(domain.SearchFailed):         fmtSearchFailed,
+	string(domain.VerificationStarted):  fmtVerificationStarted,
+	string(domain.VerificationSuccess):  fmtVerificationSuccess,
+	string(domain.VerificationFailed):   fmtVerificationFailed,
+	string(domain.DownloadTimeout):      fmtDownloadTimeout,
+	string(domain.ImportBlocked):        fmtImportBlocked,
+	string(domain.ManuallyRemoved):      fmtManuallyRemoved,
+	string(domain.DownloadIgnored):      fmtDownloadIgnored,
+	string(domain.RetryScheduled):       fmtRetryScheduled,
+	string(domain.MaxRetriesReached):    fmtMaxRetriesReached,
+	string(domain.SearchExhausted):      fmtSearchExhausted,
+	string(domain.DownloadFailed):       fmtDownloadFailed,
+	string(domain.SystemHealthDegraded): fmtSystemHealthDegraded,
+	string(domain.InstanceUnhealthy):    fmtInstanceUnhealthy,
 }
 
 func fmtScanStarted(ctx messageContext) string {
@@ -794,6 +799,36 @@ func fmtSearchExhausted(ctx messageContext) string {
 		msg += fmt.Sprintf("\n📋 Reason: %s", ctx.Reason)
 	}
 	msg += "\n👉 Check your indexers or manually search in Sonarr/Radarr"
+	return msg
+}
+
+func fmtDownloadFailed(ctx messageContext) string {
+	msg := fmt.Sprintf("❌ Download failed: %s", ctx.FileName)
+	if ctx.ErrorMsg != "" {
+		msg += fmt.Sprintf("\n⚠️ %s", ctx.ErrorMsg)
+	}
+	if ctx.Reason != "" {
+		msg += fmt.Sprintf("\n📋 Reason: %s", ctx.Reason)
+	}
+	return msg
+}
+
+func fmtSystemHealthDegraded(ctx messageContext) string {
+	msg := "⚠️ System health degraded"
+	if ctx.ErrorMsg != "" {
+		msg += fmt.Sprintf("\n📋 %s", ctx.ErrorMsg)
+	}
+	return msg
+}
+
+func fmtInstanceUnhealthy(ctx messageContext) string {
+	msg := "🔴 Arr instance unreachable"
+	if ctx.Reason != "" {
+		msg += fmt.Sprintf("\n📋 %s", ctx.Reason)
+	}
+	if ctx.ErrorMsg != "" {
+		msg += fmt.Sprintf("\n⚠️ %s", ctx.ErrorMsg)
+	}
 	return msg
 }
 
@@ -953,25 +988,29 @@ func (n *Notifier) sendGenericWebhook(cfg *NotificationConfig, eventType string,
 // formatTitle creates a short title for the event
 // eventTitles maps event types to short titles
 var eventTitles = map[string]string{
-	string(domain.ScanStarted):         "🔍 Scan Started",
-	string(domain.ScanCompleted):       "✅ Scan Complete",
-	string(domain.ScanFailed):          "❌ Scan Failed",
-	string(domain.RemediationQueued):   "🔧 Remediation Queued",
-	string(domain.DeletionStarted):     "🗑️ Deletion Started",
-	string(domain.DeletionCompleted):   "✅ File Deleted",
-	string(domain.DeletionFailed):      "❌ Deletion Failed",
-	string(domain.SearchStarted):       "🔎 Search Triggered",
-	string(domain.SearchCompleted):     "✅ Search Complete",
-	string(domain.SearchFailed):        "❌ Search Failed",
-	string(domain.VerificationStarted): "🔬 Verification Started",
-	string(domain.VerificationSuccess): "✅ Verification Success",
-	string(domain.VerificationFailed):  "❌ Verification Failed",
-	string(domain.DownloadTimeout):     "⏰ Download Timeout",
-	string(domain.ImportBlocked):       "🚫 Import Blocked - Manual Action Required",
-	string(domain.ManuallyRemoved):     "🗑️ Download Manually Removed",
-	string(domain.DownloadIgnored):     "⏸️ Download Ignored by User",
-	string(domain.RetryScheduled):      "🔄 Retry Scheduled",
-	string(domain.MaxRetriesReached):   "⚠️ Max Retries Reached",
+	string(domain.ScanStarted):          "🔍 Scan Started",
+	string(domain.ScanCompleted):        "✅ Scan Complete",
+	string(domain.ScanFailed):           "❌ Scan Failed",
+	string(domain.RemediationQueued):    "🔧 Remediation Queued",
+	string(domain.DeletionStarted):      "🗑️ Deletion Started",
+	string(domain.DeletionCompleted):    "✅ File Deleted",
+	string(domain.DeletionFailed):       "❌ Deletion Failed",
+	string(domain.SearchStarted):        "🔎 Search Triggered",
+	string(domain.SearchCompleted):      "✅ Search Complete",
+	string(domain.SearchFailed):         "❌ Search Failed",
+	string(domain.VerificationStarted):  "🔬 Verification Started",
+	string(domain.VerificationSuccess):  "✅ Verification Success",
+	string(domain.VerificationFailed):   "❌ Verification Failed",
+	string(domain.DownloadTimeout):      "⏰ Download Timeout",
+	string(domain.ImportBlocked):        "🚫 Import Blocked - Manual Action Required",
+	string(domain.ManuallyRemoved):      "🗑️ Download Manually Removed",
+	string(domain.DownloadIgnored):      "⏸️ Download Ignored by User",
+	string(domain.RetryScheduled):       "🔄 Retry Scheduled",
+	string(domain.MaxRetriesReached):    "⚠️ Max Retries Reached",
+	string(domain.SearchExhausted):      "🔍 No Replacement Found",
+	string(domain.DownloadFailed):       "❌ Download Failed",
+	string(domain.SystemHealthDegraded): "⚠️ System Health Degraded",
+	string(domain.InstanceUnhealthy):    "🔴 Arr Instance Unreachable",
 }
 
 func (n *Notifier) formatTitle(eventType string, fileName string) string {
