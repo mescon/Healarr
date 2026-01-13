@@ -3,6 +3,7 @@ package services
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -814,6 +815,120 @@ func TestVerifierService_CheckHistoryForImport(t *testing.T) {
 		// Returns false because GetAllFilePaths returns error
 		if result {
 			t.Error("Expected false when GetAllFilePaths fails")
+		}
+	})
+}
+
+// =============================================================================
+// getFilePathsWithRetry tests
+// =============================================================================
+
+func TestVerifierService_GetFilePathsWithRetry(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	t.Run("succeeds on first try", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		mockArr := &testutil.MockArrClient{
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				return []string{"/movies/Test/movie.mkv"}, nil
+			},
+		}
+
+		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
+
+		paths, err := verifier.getFilePathsWithRetry(123, nil, "/test.mkv", 3)
+		if err != nil {
+			t.Errorf("Expected success, got error: %v", err)
+		}
+		if len(paths) != 1 || paths[0] != "/movies/Test/movie.mkv" {
+			t.Errorf("Unexpected paths: %v", paths)
+		}
+	})
+
+	t.Run("succeeds after transient failures", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		attempts := 0
+		mockArr := &testutil.MockArrClient{
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				attempts++
+				if attempts < 3 {
+					return nil, errPathNotConfigured
+				}
+				return []string{"/movies/Test/movie.mkv"}, nil
+			},
+		}
+
+		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
+
+		paths, err := verifier.getFilePathsWithRetry(123, nil, "/test.mkv", 3)
+		if err != nil {
+			t.Errorf("Expected success on 3rd attempt, got error: %v", err)
+		}
+		if len(paths) != 1 {
+			t.Errorf("Unexpected paths: %v", paths)
+		}
+		if attempts != 3 {
+			t.Errorf("Expected 3 attempts, got %d", attempts)
+		}
+	})
+
+	t.Run("fails after max retries", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		attempts := 0
+		mockArr := &testutil.MockArrClient{
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				attempts++
+				return nil, errPathNotConfigured
+			},
+		}
+
+		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
+
+		paths, err := verifier.getFilePathsWithRetry(123, nil, "/test.mkv", 3)
+		if err == nil {
+			t.Error("Expected error after max retries")
+		}
+		if paths != nil {
+			t.Errorf("Expected nil paths, got: %v", paths)
+		}
+		if attempts != 3 {
+			t.Errorf("Expected 3 attempts, got %d", attempts)
+		}
+	})
+
+	t.Run("aborts on shutdown", func(t *testing.T) {
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+
+		mockArr := &testutil.MockArrClient{
+			GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+				return nil, errPathNotConfigured
+			},
+		}
+
+		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
+
+		// Signal shutdown before calling
+		verifier.Shutdown()
+
+		paths, err := verifier.getFilePathsWithRetry(123, nil, "/test.mkv", 3)
+		if err == nil || !strings.Contains(err.Error(), "shutdown") {
+			t.Errorf("Expected shutdown error, got: %v", err)
+		}
+		if paths != nil {
+			t.Errorf("Expected nil paths on shutdown, got: %v", paths)
 		}
 	})
 }
