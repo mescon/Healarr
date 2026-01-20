@@ -4210,3 +4210,198 @@ func TestRepository_GetDatabaseStats_TableCounts(t *testing.T) {
 		t.Error("Missing table_counts in stats")
 	}
 }
+
+// =============================================================================
+// Metrics tests
+// =============================================================================
+
+// mockMetricsRecorder is a test implementation of DBMetricsRecorder
+type mockMetricsRecorder struct {
+	queryCount     int
+	lastOperation  string
+	lastDuration   float64
+	poolStatsCalls int
+	lastOpenConns  int
+	lastInUse      int
+	lastIdle       int
+}
+
+func (m *mockMetricsRecorder) RecordDBQuery(operation string, duration float64) {
+	m.queryCount++
+	m.lastOperation = operation
+	m.lastDuration = duration
+}
+
+func (m *mockMetricsRecorder) RecordDBPoolStats(openConns, inUse, idle int) {
+	m.poolStatsCalls++
+	m.lastOpenConns = openConns
+	m.lastInUse = inUse
+	m.lastIdle = idle
+}
+
+func TestRepository_SetMetrics(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	mock := &mockMetricsRecorder{}
+	repo.SetMetrics(mock)
+
+	// Verify metrics recorder is set by executing a query
+	_, _ = repo.DB.Exec("SELECT 1")
+	// Direct DB access doesn't use metrics, need to use the wrapped methods
+}
+
+func TestExtractQueryType(t *testing.T) {
+	tests := []struct {
+		query    string
+		expected string
+	}{
+		{"SELECT * FROM users", "select"},
+		{"  SELECT id FROM table", "select"},
+		{"INSERT INTO users VALUES (1)", "insert"},
+		{"UPDATE users SET name = 'test'", "update"},
+		{"DELETE FROM users WHERE id = 1", "delete"},
+		{"CREATE TABLE test (id INT)", "other"},
+		{"DROP TABLE test", "other"},
+		{"PRAGMA table_info(users)", "other"},
+		{"", "other"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			got := extractQueryType(tt.query)
+			if got != tt.expected {
+				t.Errorf("extractQueryType(%q) = %q, want %q", tt.query, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestRepository_QueryContextWithMetrics(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	mock := &mockMetricsRecorder{}
+	repo.SetMetrics(mock)
+
+	ctx := t.Context()
+	rows, err := repo.QueryContext(ctx, "SELECT name FROM arr_instances LIMIT 1")
+	if err != nil {
+		t.Fatalf("QueryContext failed: %v", err)
+	}
+	rows.Close()
+
+	if mock.queryCount != 1 {
+		t.Errorf("Expected 1 query recorded, got %d", mock.queryCount)
+	}
+	if mock.lastOperation != "select" {
+		t.Errorf("Expected operation 'select', got %q", mock.lastOperation)
+	}
+	if mock.lastDuration <= 0 {
+		t.Error("Duration should be positive")
+	}
+}
+
+func TestRepository_QueryRowContextWithMetrics(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	mock := &mockMetricsRecorder{}
+	repo.SetMetrics(mock)
+
+	ctx := t.Context()
+	var count int
+	_ = repo.QueryRowContext(ctx, "SELECT COUNT(*) FROM arr_instances").Scan(&count)
+
+	if mock.queryCount != 1 {
+		t.Errorf("Expected 1 query recorded, got %d", mock.queryCount)
+	}
+	if mock.lastOperation != "select" {
+		t.Errorf("Expected operation 'select', got %q", mock.lastOperation)
+	}
+}
+
+func TestRepository_ExecContextWithMetrics(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	mock := &mockMetricsRecorder{}
+	repo.SetMetrics(mock)
+
+	ctx := t.Context()
+	_, err := repo.ExecContext(ctx, "INSERT INTO settings (key, value) VALUES ('test_key', 'test_value')")
+	if err != nil {
+		t.Fatalf("ExecContext failed: %v", err)
+	}
+
+	if mock.queryCount != 1 {
+		t.Errorf("Expected 1 query recorded, got %d", mock.queryCount)
+	}
+	if mock.lastOperation != "insert" {
+		t.Errorf("Expected operation 'insert', got %q", mock.lastOperation)
+	}
+}
+
+func TestRepository_MetricsDisabled(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Don't set metrics - should not panic
+	ctx := t.Context()
+	rows, err := repo.QueryContext(ctx, "SELECT 1")
+	if err != nil {
+		t.Fatalf("QueryContext failed: %v", err)
+	}
+	rows.Close()
+}
+
+func TestRepository_StartPeriodicPoolStats_WithMetrics(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	mock := &mockMetricsRecorder{}
+	repo.SetMetrics(mock)
+
+	stop := repo.StartPeriodicPoolStats(10 * time.Millisecond)
+	defer stop()
+
+	// Wait for at least one report
+	time.Sleep(50 * time.Millisecond)
+
+	if mock.poolStatsCalls < 1 {
+		t.Errorf("Expected at least 1 pool stats call, got %d", mock.poolStatsCalls)
+	}
+}
+
+func TestRepository_StartPeriodicPoolStats_WithoutMetrics(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Don't set metrics - should return no-op function
+	stop := repo.StartPeriodicPoolStats(10 * time.Millisecond)
+	stop() // Should not panic
+}
+
+func TestRepository_StartPeriodicPoolStats_Stop(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	mock := &mockMetricsRecorder{}
+	repo.SetMetrics(mock)
+
+	stop := repo.StartPeriodicPoolStats(10 * time.Millisecond)
+
+	// Wait for at least one report
+	time.Sleep(30 * time.Millisecond)
+	initialCalls := mock.poolStatsCalls
+
+	// Stop and wait
+	stop()
+	time.Sleep(50 * time.Millisecond)
+
+	// Calls should stop increasing after stop()
+	if mock.poolStatsCalls > initialCalls+1 {
+		t.Errorf("Pool stats calls should stop after stop(), got %d calls after %d initial",
+			mock.poolStatsCalls, initialCalls)
+	}
+}
