@@ -37,6 +37,9 @@ type contextKey string
 // RequestIDKey is the context key for storing the request ID.
 const RequestIDKey contextKey = "request_id"
 
+// metricsEndpoint is the path for the Prometheus metrics endpoint.
+const metricsEndpoint = "/metrics"
+
 // GetRequestID extracts the request ID from a context.
 // Returns an empty string if no request ID is set.
 func GetRequestID(ctx context.Context) string {
@@ -79,56 +82,66 @@ type ServerDeps struct {
 	Metrics    *metrics.MetricsService
 }
 
-// NewRESTServer creates a new REST server with the provided dependencies.
-func NewRESTServer(deps ServerDeps) *RESTServer {
-	// Set Gin to release mode for production (suppresses debug warnings)
-	gin.SetMode(gin.ReleaseMode)
-	r := gin.New()
-
-	// Request ID middleware for correlation/tracing
-	r.Use(func(c *gin.Context) {
-		// Use existing request ID from header if provided, otherwise generate a UUID
+// requestIDMiddleware adds a unique request ID to each request for tracing.
+func requestIDMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
 		reqID := c.GetHeader("X-Request-ID")
 		if reqID == "" {
 			reqID = uuid.New().String()
 		}
-		// Store in both Gin context and Go context for propagation
 		c.Set("request_id", reqID)
 		ctx := context.WithValue(c.Request.Context(), RequestIDKey, reqID)
 		c.Request = c.Request.WithContext(ctx)
 		c.Header("X-Request-ID", reqID)
 		c.Next()
-	})
+	}
+}
 
-	// Metrics middleware - records HTTP request duration and count
-	// Note: deps.Metrics will be used after server creation
-	var metricsService = deps.Metrics
-	r.Use(func(c *gin.Context) {
-		// Skip metrics endpoint to avoid recursion
-		if c.Request.URL.Path == "/metrics" {
+// metricsMiddleware records HTTP request duration and count.
+func metricsMiddleware(metricsService *metrics.MetricsService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.URL.Path == metricsEndpoint {
 			c.Next()
 			return
 		}
-
 		start := time.Now()
 		c.Next()
 		duration := time.Since(start).Seconds()
-
-		// Use the matched route pattern (e.g., "/api/scans/:scan_id") instead of
-		// the actual path to keep cardinality bounded
 		path := c.FullPath()
 		if path == "" {
 			path = "unmatched"
 		}
-
 		status := strconv.Itoa(c.Writer.Status())
 		if metricsService != nil {
 			metricsService.RecordHTTPRequest(c.Request.Method, path, status, duration)
 		}
-	})
+	}
+}
 
-	// Custom recovery middleware with enhanced logging
-	r.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+// corsMiddleware handles CORS headers based on allowed origins.
+func corsMiddleware(corsOrigins string, allowedOrigins map[string]bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		if corsOrigins == "*" {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		} else if origin != "" && allowedOrigins[origin] {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+			c.Writer.Header().Set("Vary", "Origin")
+		}
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Key, accept, origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	}
+}
+
+// recoveryMiddleware handles panics with enhanced logging.
+func recoveryMiddleware() gin.HandlerFunc {
+	return gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
 		reqID := c.GetString("request_id")
 		logger.Errorf("[PANIC RECOVERY] request_id=%s path=%s method=%s error=%v",
 			reqID, c.Request.URL.Path, c.Request.Method, recovered)
@@ -136,41 +149,28 @@ func NewRESTServer(deps ServerDeps) *RESTServer {
 			"error":      "Internal server error",
 			"request_id": reqID,
 		})
-	}))
+	})
+}
 
-	// CORS middleware - configurable via HEALARR_CORS_ORIGIN env var
-	// If not set, defaults to same-origin (no CORS header = browser enforces same-origin)
-	// Set to "*" only for development, or specify allowed origins comma-separated
+// NewRESTServer creates a new REST server with the provided dependencies.
+func NewRESTServer(deps ServerDeps) *RESTServer {
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+
+	// Apply middleware
+	r.Use(requestIDMiddleware())
+	r.Use(metricsMiddleware(deps.Metrics))
+	r.Use(recoveryMiddleware())
+
+	// Build allowed origins map for CORS
 	corsOrigins := os.Getenv("HEALARR_CORS_ORIGIN")
 	allowedOrigins := make(map[string]bool)
-	if corsOrigins != "" {
-		for _, origin := range strings.Split(corsOrigins, ",") {
-			allowedOrigins[strings.TrimSpace(origin)] = true
+	for _, origin := range strings.Split(corsOrigins, ",") {
+		if trimmed := strings.TrimSpace(origin); trimmed != "" {
+			allowedOrigins[trimmed] = true
 		}
 	}
-
-	r.Use(func(c *gin.Context) {
-		origin := c.GetHeader("Origin")
-
-		// Only set CORS headers if origin is allowed
-		if corsOrigins == "*" {
-			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		} else if origin != "" && allowedOrigins[origin] {
-			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-			c.Writer.Header().Set("Vary", "Origin")
-		}
-		// If no match, don't set Access-Control-Allow-Origin (same-origin policy applies)
-
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Key, accept, origin, Cache-Control, X-Requested-With")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
-
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(204)
-			return
-		}
-		c.Next()
-	})
+	r.Use(corsMiddleware(corsOrigins, allowedOrigins))
 
 	// Initialize tool checker with custom binary paths from config
 	cfg := config.Get()
@@ -350,7 +350,7 @@ func (s *RESTServer) setupRoutes() {
 
 	// Prometheus metrics endpoint at root level (standard convention, not behind base path)
 	// This makes it easy for Prometheus to discover and scrape without knowing the base path
-	s.router.GET("/metrics", gin.WrapH(s.metrics.Handler()))
+	s.router.GET(metricsEndpoint, gin.WrapH(s.metrics.Handler()))
 
 	// Create a group for the base path (or use root if basePath is "/")
 	var base *gin.RouterGroup
@@ -376,7 +376,7 @@ func (s *RESTServer) setupRoutes() {
 		api.GET("/system/info", s.handleSystemInfo)
 
 		// Prometheus metrics endpoint (no authentication required for scraping)
-		api.GET("/metrics", gin.WrapH(s.metrics.Handler()))
+		api.GET(metricsEndpoint, gin.WrapH(s.metrics.Handler()))
 
 		// Public auth endpoints with rate limiting
 		api.POST("/auth/setup", SetupLimiter.Middleware(), s.handleAuthSetup)

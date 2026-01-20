@@ -213,8 +213,9 @@ func (r *Repository) ExecContext(ctx context.Context, query string, args ...inte
 // statistics at the specified interval. Returns a stop function.
 func (r *Repository) StartPeriodicPoolStats(interval time.Duration) func() {
 	if r.metrics == nil {
-		// No-op if metrics not configured
-		return func() {}
+		// Return no-op stop function when metrics not configured.
+		// This allows callers to always call the returned function without nil checks.
+		return func() { /* intentionally empty - no cleanup needed when metrics disabled */ }
 	}
 
 	stopCh := make(chan struct{})
