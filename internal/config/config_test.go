@@ -1039,3 +1039,181 @@ func TestConfigWarningStruct(t *testing.T) {
 		t.Errorf("expected Recommended '/recommended/path', got %q", warning.Recommended)
 	}
 }
+
+// =============================================================================
+// Path resolution tests
+// =============================================================================
+
+func TestResolveDataDir_WithEnvVar(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HEALARR_DATA_DIR", tmpDir)
+
+	result := resolveDataDir()
+
+	// Should return the env var path (as absolute)
+	abs, _ := filepath.Abs(tmpDir)
+	if result != abs {
+		t.Errorf("resolveDataDir() = %q, want %q", result, abs)
+	}
+}
+
+func TestResolveDataDir_DefaultFallback(t *testing.T) {
+	// Clear env var
+	t.Setenv("HEALARR_DATA_DIR", "")
+
+	result := resolveDataDir()
+
+	// Should return some path (either /config or ./config or relative to executable)
+	// We just verify it returns a non-empty string
+	if result == "" {
+		t.Error("resolveDataDir() should not return empty string")
+	}
+}
+
+func TestMakeAbsolute_RelativePath(t *testing.T) {
+	result := makeAbsolute("relative/path")
+
+	// Should be converted to absolute
+	if !filepath.IsAbs(result) {
+		t.Errorf("makeAbsolute() = %q, should be absolute", result)
+	}
+}
+
+func TestMakeAbsolute_AbsolutePath(t *testing.T) {
+	input := "/already/absolute/path"
+	result := makeAbsolute(input)
+
+	// Should remain unchanged
+	if result != input {
+		t.Errorf("makeAbsolute() = %q, want %q", result, input)
+	}
+}
+
+func TestMakeAbsolute_DotPath(t *testing.T) {
+	result := makeAbsolute(".")
+
+	// Should be converted to current working directory
+	cwd, err := os.Getwd()
+	if err == nil && result != cwd {
+		t.Errorf("makeAbsolute('.') = %q, want %q", result, cwd)
+	}
+}
+
+func TestResolveWebDir_WithEnvVar(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HEALARR_WEB_DIR", tmpDir)
+
+	result := resolveWebDir()
+
+	if result != tmpDir {
+		t.Errorf("resolveWebDir() = %q, want %q", result, tmpDir)
+	}
+}
+
+func TestResolveWebDir_DefaultFallback(t *testing.T) {
+	// Clear env var
+	t.Setenv("HEALARR_WEB_DIR", "")
+
+	result := resolveWebDir()
+
+	// Should return some path (either /app/web or ./web or other candidate)
+	// We just verify it returns a non-empty string
+	if result == "" {
+		t.Error("resolveWebDir() should not return empty string")
+	}
+}
+
+func TestIsValidWebDir_WithValidDir(t *testing.T) {
+	// Create a temp dir with index.html
+	tmpDir := t.TempDir()
+	indexPath := filepath.Join(tmpDir, "index.html")
+	if err := os.WriteFile(indexPath, []byte("<html></html>"), 0644); err != nil {
+		t.Fatalf("Failed to create index.html: %v", err)
+	}
+
+	result := isValidWebDir(tmpDir)
+
+	if !result {
+		t.Error("isValidWebDir() should return true for dir with index.html")
+	}
+}
+
+func TestIsValidWebDir_WithoutIndexHtml(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	result := isValidWebDir(tmpDir)
+
+	if result {
+		t.Error("isValidWebDir() should return false for dir without index.html")
+	}
+}
+
+func TestIsValidWebDir_NonExistentDir(t *testing.T) {
+	result := isValidWebDir("/non/existent/directory")
+
+	if result {
+		t.Error("isValidWebDir() should return false for non-existent directory")
+	}
+}
+
+func TestBuildWebDirCandidates(t *testing.T) {
+	candidates := buildWebDirCandidates()
+
+	// Should return at least one candidate
+	if len(candidates) == 0 {
+		t.Error("buildWebDirCandidates() should return at least one candidate")
+	}
+
+	// First candidate should be Docker container default
+	if candidates[0] != "/app/web" {
+		t.Errorf("First candidate = %q, want /app/web", candidates[0])
+	}
+}
+
+func TestIsDockerEnvironment(t *testing.T) {
+	// This function checks for /.dockerenv file
+	// We can't reliably test positive case without being in Docker
+	// but we can verify the function doesn't panic
+	result := isDockerEnvironment()
+
+	// Just verify it returns a bool without panicking
+	_ = result
+}
+
+func TestCreateRequiredDirs_Success(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataDir := filepath.Join(tmpDir, "data")
+
+	// Should not panic or error
+	logDir := createRequiredDirs(dataDir)
+
+	// Verify directories were created
+	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+		t.Error("createRequiredDirs should create data directory")
+	}
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		t.Error("createRequiredDirs should create log directory")
+	}
+	// Verify log directory is inside data directory
+	expectedLogDir := filepath.Join(dataDir, "logs")
+	if logDir != expectedLogDir {
+		t.Errorf("createRequiredDirs() returned %q, want %q", logDir, expectedLogDir)
+	}
+}
+
+func TestCreateRequiredDirs_AlreadyExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataDir := filepath.Join(tmpDir, "data")
+
+	// Create directories first
+	os.MkdirAll(dataDir, 0755)
+	os.MkdirAll(filepath.Join(dataDir, "logs"), 0755)
+
+	// Should not error when directories already exist
+	logDir := createRequiredDirs(dataDir)
+
+	expectedLogDir := filepath.Join(dataDir, "logs")
+	if logDir != expectedLogDir {
+		t.Errorf("createRequiredDirs() returned %q, want %q", logDir, expectedLogDir)
+	}
+}

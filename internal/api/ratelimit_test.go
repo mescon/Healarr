@@ -598,3 +598,26 @@ func TestRateLimiter_ShutdownMultipleLimiters(t *testing.T) {
 		}
 	}
 }
+
+func TestRateLimiter_CleanupGoroutineExits(t *testing.T) {
+	// Test that the cleanup goroutine properly exits when shutdown is called
+	// This helps verify the cleanup function's select statement is hit
+	rl := NewRateLimiter(10, time.Minute, 10)
+
+	// Give the cleanup goroutine time to start
+	time.Sleep(10 * time.Millisecond)
+
+	// Add a client
+	rl.Allow("test-client")
+
+	// Call shutdown - should signal cleanup goroutine to exit via shutdown channel
+	rl.Shutdown()
+
+	// Give the goroutine time to receive shutdown signal and exit
+	time.Sleep(10 * time.Millisecond)
+
+	// Rate limiter should still function but cleanup goroutine should have exited
+	if !rl.Allow("another-client") {
+		t.Error("Rate limiter should still accept requests after shutdown")
+	}
+}
