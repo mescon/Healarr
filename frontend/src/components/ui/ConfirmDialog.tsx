@@ -1,7 +1,17 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AlertTriangle, Trash2, X } from 'lucide-react';
 import clsx from 'clsx';
+
+/**
+ * Get all focusable elements within a container.
+ */
+function getFocusableElements(container: HTMLElement): HTMLElement[] {
+    const elements = container.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]):not([disabled])'
+    );
+    return Array.from(elements);
+}
 
 interface ConfirmDialogProps {
     isOpen: boolean;
@@ -27,24 +37,58 @@ const ConfirmDialog = ({
     onCancel,
 }: ConfirmDialogProps) => {
     const confirmButtonRef = useRef<HTMLButtonElement>(null);
+    const dialogRef = useRef<HTMLDivElement>(null);
+    const previousActiveElement = useRef<HTMLElement | null>(null);
 
-    // Focus confirm button when dialog opens
+    // Focus trap: trap Tab key within dialog
+    const handleKeyDown = useCallback((e: KeyboardEvent) => {
+        if (e.key === 'Escape' && !isLoading) {
+            onCancel();
+            return;
+        }
+
+        if (e.key !== 'Tab' || !dialogRef.current) return;
+
+        const focusableElements = getFocusableElements(dialogRef.current);
+        if (focusableElements.length === 0) return;
+
+        const firstElement = focusableElements[0];
+        const lastElement = focusableElements[focusableElements.length - 1];
+
+        // Shift+Tab on first element: wrap to last
+        if (e.shiftKey && document.activeElement === firstElement) {
+            e.preventDefault();
+            lastElement.focus();
+        }
+        // Tab on last element: wrap to first
+        else if (!e.shiftKey && document.activeElement === lastElement) {
+            e.preventDefault();
+            firstElement.focus();
+        }
+    }, [isLoading, onCancel]);
+
+    // Save previous focus and restore on close
     useEffect(() => {
-        if (isOpen && confirmButtonRef.current) {
-            confirmButtonRef.current.focus();
+        if (isOpen) {
+            // Save current focus to restore later
+            previousActiveElement.current = document.activeElement as HTMLElement;
+            // Focus confirm button when dialog opens
+            if (confirmButtonRef.current) {
+                confirmButtonRef.current.focus();
+            }
+        } else if (previousActiveElement.current) {
+            // Restore focus when dialog closes
+            previousActiveElement.current.focus();
+            previousActiveElement.current = null;
         }
     }, [isOpen]);
 
-    // Handle escape key
+    // Handle keyboard events
     useEffect(() => {
-        const handleEscape = (e: KeyboardEvent) => {
-            if (e.key === 'Escape' && isOpen && !isLoading) {
-                onCancel();
-            }
-        };
-        document.addEventListener('keydown', handleEscape);
-        return () => document.removeEventListener('keydown', handleEscape);
-    }, [isOpen, isLoading, onCancel]);
+        if (!isOpen) return;
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [isOpen, handleKeyDown]);
 
     const variantStyles = {
         danger: {
@@ -85,6 +129,7 @@ const ConfirmDialog = ({
                     aria-describedby="confirm-dialog-message"
                 >
                     <motion.div
+                        ref={dialogRef}
                         initial={{ scale: 0.95, opacity: 0 }}
                         animate={{ scale: 1, opacity: 1 }}
                         exit={{ scale: 0.95, opacity: 0 }}

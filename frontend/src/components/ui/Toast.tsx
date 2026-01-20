@@ -67,6 +67,8 @@ const Toast = ({ type, message, onClose, duration = 5000 }: ToastProps) => {
             className={`relative min-w-[320px] max-w-md rounded-xl border backdrop-blur-xl shadow-2xl overflow-hidden ${getStyles()}`}
             onMouseEnter={() => setIsPaused(true)}
             onMouseLeave={() => setIsPaused(false)}
+            role={type === 'error' ? 'alert' : 'status'}
+            aria-live={type === 'error' ? 'assertive' : 'polite'}
         >
             <div className="p-4 flex items-start gap-3">
                 <div className="shrink-0 mt-0.5">

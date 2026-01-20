@@ -112,3 +112,5 @@ Thumbs.db
 # Claude Code project instructions (local only, not committed)
 # -----------------------------------------------------------------------------
 /CLAUDE.md
+/.claude/
+/.agents/

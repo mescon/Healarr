@@ -77,29 +77,64 @@ const RemediationJourney: React.FC<RemediationJourneyProps> = ({ corruptionId, o
         queryFn: () => getCorruptionHistory(corruptionId),
     });
 
+    // Event with computed delta information
+    interface EventWithDelta {
+        event_type: string;
+        timestamp: string;
+        data: unknown;
+        deltaMs: number;
+        deltaSeconds: number;
+    }
+
     // Compute summary from history
     const summary = useMemo(() => {
         if (!history || history.length === 0) return null;
-        
+
         // Find the CorruptionDetected event for original file
         const detected = history.find(e => e.event_type === 'CorruptionDetected');
         const originalPath = (detected?.data as Record<string, unknown>)?.file_path as string || '';
         const originalFilename = originalPath.split('/').pop() || 'Unknown';
-        
+
         // Find FileDetected event for new file (if exists)
         const fileDetected = history.find(e => e.event_type === 'FileDetected');
         const newPath = (fileDetected?.data as Record<string, unknown>)?.file_path as string || '';
         const newFilename = newPath ? newPath.split('/').pop() : null;
-        
+
         // Determine current status from last event
         const lastEvent = history[history.length - 1];
         const status = lastEvent?.event_type || 'Unknown';
-        
+
         // Determine state
         const isResolved = status === 'VerificationSuccess';
         const isFailed = status === 'MaxRetriesReached' || status.includes('Failed');
         const isIgnored = status === 'CorruptionIgnored';
-        
+
+        // Calculate deltas between consecutive events
+        const eventsWithDeltas: EventWithDelta[] = history.map((event, idx) => {
+            if (idx === 0) {
+                return { ...event, deltaMs: 0, deltaSeconds: 0 };
+            }
+            const prevTime = new Date(history[idx - 1].timestamp).getTime();
+            const currTime = new Date(event.timestamp).getTime();
+            const deltaMs = currTime - prevTime;
+            return {
+                ...event,
+                deltaMs,
+                deltaSeconds: Math.floor(deltaMs / 1000)
+            };
+        });
+
+        // Find the longest delta (bottleneck) - only consider events after the first
+        const bottleneckIdx = eventsWithDeltas.reduce((maxIdx, event, idx) => {
+            if (idx === 0) return maxIdx;
+            return event.deltaMs > (eventsWithDeltas[maxIdx]?.deltaMs || 0) ? idx : maxIdx;
+        }, 1);
+
+        // Calculate total duration from first to last event
+        const firstTime = new Date(history[0].timestamp).getTime();
+        const lastTime = new Date(history[history.length - 1].timestamp).getTime();
+        const totalDurationSeconds = Math.floor((lastTime - firstTime) / 1000);
+
         return {
             originalFilename,
             originalPath,
@@ -111,6 +146,9 @@ const RemediationJourney: React.FC<RemediationJourneyProps> = ({ corruptionId, o
             isFailed,
             isIgnored,
             filesAreDifferent: newFilename && newFilename !== originalFilename,
+            eventsWithDeltas,
+            bottleneckIdx,
+            totalDurationSeconds,
         };
     }, [history]);
 
@@ -244,6 +282,37 @@ const RemediationJourney: React.FC<RemediationJourneyProps> = ({ corruptionId, o
                         </div>
                     ) : (
                         <div className="relative py-4">
+                            {/* Duration Summary Header */}
+                            {summary && summary.totalDurationSeconds > 60 && history && history.length > 1 && (
+                                <div className="mb-6 p-3 rounded-lg bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+                                    <div className="flex items-center justify-between text-sm">
+                                        <span className="text-slate-600 dark:text-slate-400">
+                                            Total duration:
+                                        </span>
+                                        <span className="text-slate-900 dark:text-white font-medium font-mono">
+                                            {formatDuration(summary.totalDurationSeconds)}
+                                        </span>
+                                    </div>
+                                    {summary.bottleneckIdx > 0 && summary.eventsWithDeltas[summary.bottleneckIdx]?.deltaSeconds > 60 && (
+                                        <div className="flex items-center justify-between text-sm mt-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                                            <span className="text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
+                                                <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                                                Bottleneck:
+                                            </span>
+                                            <span className="text-amber-600 dark:text-amber-400 font-medium text-xs">
+                                                {getEventDescription(
+                                                    summary.eventsWithDeltas[summary.bottleneckIdx].event_type,
+                                                    summary.eventsWithDeltas[summary.bottleneckIdx].data as Record<string, unknown>
+                                                )}
+                                                <span className="ml-2 font-mono">
+                                                    ({formatDuration(summary.eventsWithDeltas[summary.bottleneckIdx].deltaSeconds)})
+                                                </span>
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
                             <div className="space-y-8">
                                 {history?.map((event, idx) => {
                                     const hasDetails = !!(event.data && typeof event.data === 'object' && Object.keys(event.data as object).length > 0);
@@ -510,9 +579,33 @@ const RemediationJourney: React.FC<RemediationJourneyProps> = ({ corruptionId, o
                                                                 {getEventDescription(event.event_type, event.data as Record<string, unknown>)}
                                                             </h3>
                                                         </div>
-                                                        <time className="text-xs text-slate-500 font-mono mt-0.5 block">
-                                                            {formatFull(event.timestamp)}
-                                                        </time>
+                                                        <div className="flex items-center gap-2 mt-0.5">
+                                                            <time className="text-xs text-slate-500 font-mono">
+                                                                {formatFull(event.timestamp)}
+                                                            </time>
+                                                            {/* Delta badge - shows time since previous event */}
+                                                            {(() => {
+                                                                const deltaSeconds = summary?.eventsWithDeltas?.[idx]?.deltaSeconds ?? 0;
+                                                                const isBottleneck = idx === summary?.bottleneckIdx;
+                                                                if (idx <= 0 || deltaSeconds <= 0) return null;
+                                                                return (
+                                                                    <span className={clsx(
+                                                                        "px-1.5 py-0.5 rounded text-xs font-mono inline-flex items-center gap-1",
+                                                                        deltaSeconds < 60
+                                                                            ? "text-green-600 dark:text-green-400 bg-green-500/10"
+                                                                            : deltaSeconds < 1800
+                                                                                ? "text-amber-600 dark:text-amber-400 bg-amber-500/10"
+                                                                                : "text-red-600 dark:text-red-400 bg-red-500/10",
+                                                                        isBottleneck && "ring-1 ring-red-500/50"
+                                                                    )}>
+                                                                        +{formatDuration(deltaSeconds)}
+                                                                        {isBottleneck && (
+                                                                            <AlertTriangle className="w-3 h-3" />
+                                                                        )}
+                                                                    </span>
+                                                                );
+                                                            })()}
+                                                        </div>
                                                         {primaryInfo}
                                                     </div>
 

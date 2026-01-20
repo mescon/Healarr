@@ -23,6 +23,16 @@ type MetricsService struct {
 	scansTotal          *prometheus.CounterVec
 	notificationsTotal  *prometheus.CounterVec
 
+	// HTTP metrics
+	httpRequestsTotal    *prometheus.CounterVec
+	httpRequestDuration  *prometheus.HistogramVec
+	websocketConnections prometheus.Gauge
+
+	// Database metrics
+	dbQueriesTotal   *prometheus.CounterVec
+	dbQueryDuration  *prometheus.HistogramVec
+	dbConnectionPool *prometheus.GaugeVec
+
 	// Gauges
 	activeRemediations  prometheus.Gauge
 	queuedRemediations  prometheus.Gauge
@@ -87,6 +97,55 @@ func NewMetricsService(eb *eventbus.EventBus) *MetricsService {
 			[]string{"outcome"}, // sent, failed
 		),
 
+		httpRequestsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "healarr_http_requests_total",
+				Help: "Total number of HTTP requests by method, path, and status",
+			},
+			[]string{"method", "path", "status"},
+		),
+
+		httpRequestDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "healarr_http_request_duration_seconds",
+				Help:    "HTTP request duration in seconds",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"method", "path", "status"},
+		),
+
+		websocketConnections: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "healarr_websocket_connections",
+				Help: "Current number of active WebSocket connections",
+			},
+		),
+
+		dbQueriesTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "healarr_db_queries_total",
+				Help: "Total number of database queries by operation type",
+			},
+			[]string{"operation"}, // select, insert, update, delete, other
+		),
+
+		dbQueryDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "healarr_db_query_duration_seconds",
+				Help:    "Database query duration in seconds",
+				Buckets: prometheus.ExponentialBuckets(0.001, 2, 12), // 1ms to ~4s
+			},
+			[]string{"operation"},
+		),
+
+		dbConnectionPool: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "healarr_db_connection_pool",
+				Help: "Database connection pool statistics",
+			},
+			[]string{"state"}, // open, in_use, idle
+		),
+
 		activeRemediations: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "healarr_active_remediations",
@@ -147,6 +206,12 @@ func NewMetricsService(eb *eventbus.EventBus) *MetricsService {
 		m.verificationsTotal,
 		m.scansTotal,
 		m.notificationsTotal,
+		m.httpRequestsTotal,
+		m.httpRequestDuration,
+		m.websocketConnections,
+		m.dbQueriesTotal,
+		m.dbQueryDuration,
+		m.dbConnectionPool,
 		m.activeRemediations,
 		m.queuedRemediations,
 		m.stuckRemediations,
@@ -304,4 +369,35 @@ func (m *MetricsService) ResetStuckCount() {
 	m.stuckRemediationCount = 0
 	m.stuckRemediations.Set(0)
 	m.mu.Unlock()
+}
+
+// RecordHTTPRequest records metrics for an HTTP request.
+// Called by the metrics middleware after each request completes.
+func (m *MetricsService) RecordHTTPRequest(method, path, status string, duration float64) {
+	m.httpRequestsTotal.WithLabelValues(method, path, status).Inc()
+	m.httpRequestDuration.WithLabelValues(method, path, status).Observe(duration)
+}
+
+// WebSocketConnected increments the WebSocket connection count.
+func (m *MetricsService) WebSocketConnected() {
+	m.websocketConnections.Inc()
+}
+
+// WebSocketDisconnected decrements the WebSocket connection count.
+func (m *MetricsService) WebSocketDisconnected() {
+	m.websocketConnections.Dec()
+}
+
+// RecordDBQuery records metrics for a database query.
+// operation should be "select", "insert", "update", "delete", or "other".
+func (m *MetricsService) RecordDBQuery(operation string, duration float64) {
+	m.dbQueriesTotal.WithLabelValues(operation).Inc()
+	m.dbQueryDuration.WithLabelValues(operation).Observe(duration)
+}
+
+// RecordDBPoolStats records database connection pool statistics.
+func (m *MetricsService) RecordDBPoolStats(openConns, inUse, idle int) {
+	m.dbConnectionPool.WithLabelValues("open").Set(float64(openConns))
+	m.dbConnectionPool.WithLabelValues("in_use").Set(float64(inUse))
+	m.dbConnectionPool.WithLabelValues("idle").Set(float64(idle))
 }

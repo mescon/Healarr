@@ -11,6 +11,8 @@ import clsx from 'clsx';
 import { useToast } from '../../contexts/ToastContext';
 import CollapsibleSection from './CollapsibleSection';
 import ConfirmDialog from '../ui/ConfirmDialog';
+import { useFormValidation, FieldError } from '../../hooks/useFormValidation';
+import { arrInstanceSchema } from '../../lib/schemas/arr-instance';
 
 // Server Status Component
 const ServerStatus = ({ url, apiKey, isManuallyTesting }: { url: string; apiKey: string; isManuallyTesting?: boolean }) => {
@@ -52,6 +54,9 @@ const ServerStatus = ({ url, apiKey, isManuallyTesting }: { url: string; apiKey:
 const ArrServersSection = () => {
     const queryClient = useQueryClient();
     const toast = useToast();
+
+    // Form validation
+    const { errors, validate, clearErrors, clearFieldError } = useFormValidation(arrInstanceSchema);
 
     // Local state
     const [isAddExpanded, setIsAddExpanded] = useState(false);
@@ -156,14 +161,11 @@ const ArrServersSection = () => {
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
 
-        const missingFields: string[] = [];
-        if (!newArr.name?.trim()) missingFields.push('Name');
-        if (!newArr.url?.trim()) missingFields.push('URL');
-        if (!newArr.api_key?.trim()) missingFields.push('API Key');
-        if (!newArr.type) missingFields.push('Type');
-
-        if (missingFields.length > 0) {
-            toast.error(`Please fill in required fields: ${missingFields.join(', ')}`);
+        // Validate using Zod schema
+        if (!validate(newArr)) {
+            // Errors are set by useFormValidation - show toast with summary
+            const errorCount = Object.keys(errors).length;
+            toast.error(`Please fix ${errorCount} validation ${errorCount === 1 ? 'error' : 'errors'}`);
             return;
         }
 
@@ -193,6 +195,7 @@ const ArrServersSection = () => {
         setTestStatus({});
         setIsAddExpanded(false);
         setEditingId(null);
+        clearErrors();
     };
 
     return (
@@ -247,51 +250,88 @@ const ArrServersSection = () => {
                                 <form onSubmit={handleSubmit} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-800/50 pt-4">
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Type</label>
+                                            <label htmlFor="arr-type" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Type</label>
                                             <select
+                                                id="arr-type"
                                                 value={newArr.type || 'sonarr'}
-                                                onChange={e => setNewArr({ ...newArr, type: e.target.value as 'sonarr' | 'radarr' | 'whisparr-v2' | 'whisparr-v3' })}
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+                                                onChange={e => {
+                                                    setNewArr({ ...newArr, type: e.target.value as 'sonarr' | 'radarr' | 'whisparr-v2' | 'whisparr-v3' });
+                                                    clearFieldError('type');
+                                                }}
+                                                aria-invalid={!!errors.type}
+                                                aria-describedby={errors.type ? 'arr-type-error' : undefined}
+                                                className={clsx(
+                                                    "w-full px-3 py-2 bg-white dark:bg-slate-900 border rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500",
+                                                    errors.type ? "border-red-500" : "border-slate-300 dark:border-slate-700"
+                                                )}
                                             >
                                                 <option value="sonarr">Sonarr</option>
                                                 <option value="radarr">Radarr</option>
                                                 <option value="whisparr-v2">Whisparr v2 (Sonarr-based)</option>
                                                 <option value="whisparr-v3">Whisparr v3 (Radarr-based)</option>
                                             </select>
+                                            <FieldError error={errors.type} />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Name <span className="text-red-400">*</span></label>
+                                            <label htmlFor="arr-name" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Name <span className="text-red-400">*</span></label>
                                             <input
+                                                id="arr-name"
                                                 type="text"
-                                                required
                                                 value={newArr.name || ''}
-                                                onChange={e => setNewArr({ ...newArr, name: e.target.value })}
+                                                onChange={e => {
+                                                    setNewArr({ ...newArr, name: e.target.value });
+                                                    clearFieldError('name');
+                                                }}
                                                 placeholder="My Sonarr"
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500"
+                                                aria-invalid={!!errors.name}
+                                                aria-describedby={errors.name ? 'arr-name-error' : undefined}
+                                                className={clsx(
+                                                    "w-full px-3 py-2 bg-white dark:bg-slate-900 border rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500",
+                                                    errors.name ? "border-red-500" : "border-slate-300 dark:border-slate-700"
+                                                )}
                                             />
+                                            <FieldError error={errors.name} />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">URL <span className="text-red-400">*</span></label>
+                                            <label htmlFor="arr-url" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">URL <span className="text-red-400">*</span></label>
                                             <input
+                                                id="arr-url"
                                                 type="url"
-                                                required
                                                 value={newArr.url || ''}
-                                                onChange={e => setNewArr({ ...newArr, url: e.target.value })}
+                                                onChange={e => {
+                                                    setNewArr({ ...newArr, url: e.target.value });
+                                                    clearFieldError('url');
+                                                }}
                                                 placeholder="http://localhost:8989"
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500"
+                                                aria-invalid={!!errors.url}
+                                                aria-describedby={errors.url ? 'arr-url-error' : undefined}
+                                                className={clsx(
+                                                    "w-full px-3 py-2 bg-white dark:bg-slate-900 border rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500",
+                                                    errors.url ? "border-red-500" : "border-slate-300 dark:border-slate-700"
+                                                )}
                                             />
+                                            <FieldError error={errors.url} />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">API Key <span className="text-red-400">*</span></label>
+                                            <label htmlFor="arr-apikey" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">API Key <span className="text-red-400">*</span></label>
                                             <input
+                                                id="arr-apikey"
                                                 type="text"
-                                                required
                                                 value={newArr.api_key || ''}
-                                                onChange={e => setNewArr({ ...newArr, api_key: e.target.value })}
+                                                onChange={e => {
+                                                    setNewArr({ ...newArr, api_key: e.target.value });
+                                                    clearFieldError('api_key');
+                                                }}
                                                 placeholder="API key"
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500"
+                                                aria-invalid={!!errors.api_key}
+                                                aria-describedby={errors.api_key ? 'arr-apikey-error' : 'arr-apikey-hint'}
+                                                className={clsx(
+                                                    "w-full px-3 py-2 bg-white dark:bg-slate-900 border rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500",
+                                                    errors.api_key ? "border-red-500" : "border-slate-300 dark:border-slate-700"
+                                                )}
                                             />
-                                            <p className="mt-1 text-xs text-slate-500">Find in *arr Settings → General. Required for webhooks even if local auth is disabled.</p>
+                                            <FieldError error={errors.api_key} />
+                                            <p id="arr-apikey-hint" className="mt-1 text-xs text-slate-500">Find in *arr Settings → General. Required for webhooks even if local auth is disabled.</p>
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-3 pb-2">

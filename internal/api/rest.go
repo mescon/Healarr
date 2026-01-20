@@ -13,10 +13,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/crypto"
@@ -28,6 +30,24 @@ import (
 	"github.com/mescon/Healarr/internal/services"
 	"github.com/mescon/Healarr/internal/web"
 )
+
+// contextKey is a custom type for context keys to prevent collisions.
+type contextKey string
+
+// RequestIDKey is the context key for storing the request ID.
+const RequestIDKey contextKey = "request_id"
+
+// GetRequestID extracts the request ID from a context.
+// Returns an empty string if no request ID is set.
+func GetRequestID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if reqID, ok := ctx.Value(RequestIDKey).(string); ok {
+		return reqID
+	}
+	return ""
+}
 
 // RESTServer provides the HTTP REST API for Healarr.
 type RESTServer struct {
@@ -67,14 +87,44 @@ func NewRESTServer(deps ServerDeps) *RESTServer {
 
 	// Request ID middleware for correlation/tracing
 	r.Use(func(c *gin.Context) {
-		// Use existing request ID from header if provided, otherwise generate one
+		// Use existing request ID from header if provided, otherwise generate a UUID
 		reqID := c.GetHeader("X-Request-ID")
 		if reqID == "" {
-			reqID = fmt.Sprintf("%d-%d", time.Now().UnixNano(), c.Request.ContentLength)
+			reqID = uuid.New().String()
 		}
+		// Store in both Gin context and Go context for propagation
 		c.Set("request_id", reqID)
+		ctx := context.WithValue(c.Request.Context(), RequestIDKey, reqID)
+		c.Request = c.Request.WithContext(ctx)
 		c.Header("X-Request-ID", reqID)
 		c.Next()
+	})
+
+	// Metrics middleware - records HTTP request duration and count
+	// Note: deps.Metrics will be used after server creation
+	var metricsService = deps.Metrics
+	r.Use(func(c *gin.Context) {
+		// Skip metrics endpoint to avoid recursion
+		if c.Request.URL.Path == "/metrics" {
+			c.Next()
+			return
+		}
+
+		start := time.Now()
+		c.Next()
+		duration := time.Since(start).Seconds()
+
+		// Use the matched route pattern (e.g., "/api/scans/:scan_id") instead of
+		// the actual path to keep cardinality bounded
+		path := c.FullPath()
+		if path == "" {
+			path = "unmatched"
+		}
+
+		status := strconv.Itoa(c.Writer.Status())
+		if metricsService != nil {
+			metricsService.RecordHTTPRequest(c.Request.Method, path, status, duration)
+		}
 	})
 
 	// Custom recovery middleware with enhanced logging
@@ -143,7 +193,7 @@ func NewRESTServer(deps ServerDeps) *RESTServer {
 		notifier:       deps.Notifier,
 		healthNotifier: deps.Notifier, // Uses same notifier via interface for testability
 		metrics:        deps.Metrics,
-		hub:            NewWebSocketHub(deps.EventBus),
+		hub:            NewWebSocketHub(deps.EventBus, deps.Metrics),
 		startTime:      time.Now(),
 		toolChecker:    toolChecker,
 	}

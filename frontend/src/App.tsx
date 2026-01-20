@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/layout/Layout';
 import ProtectedRoute from './components/auth/ProtectedRoute';
+import ErrorBoundary from './components/ErrorBoundary';
 import { ToastProvider } from './contexts/ToastContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ConnectionProvider } from './contexts/ConnectionContext';
@@ -27,33 +28,35 @@ const PageLoader = () => (
 
 function App() {
   return (
-    <ThemeProvider>
-      <ConnectionProvider>
-        <ToastProvider>
-          <Suspense fallback={<PageLoader />}>
-            <Routes>
-              <Route path="/login" element={<Login />} />
-              <Route path="/" element={
-                <ProtectedRoute>
-                  <Layout />
-                </ProtectedRoute>
-              }>
-                <Route index element={<Dashboard />} />
-                <Route path="scans" element={<Scans />} />
-                <Route path="scans/:id" element={<ScanDetails />} />
-                <Route path="corruptions" element={<Corruptions />} />
-                <Route path="logs" element={<Logs />} />
-                <Route path="config" element={<Config />} />
-                <Route path="help" element={<Help />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Route>
-            </Routes>
-          </Suspense>
-          <ToastContainer />
-          <ConnectionOverlay />
-        </ToastProvider>
-      </ConnectionProvider>
-    </ThemeProvider>
+    <ErrorBoundary>
+      <ThemeProvider>
+        <ConnectionProvider>
+          <ToastProvider>
+            <Suspense fallback={<PageLoader />}>
+              <Routes>
+                <Route path="/login" element={<Login />} />
+                <Route path="/" element={
+                  <ProtectedRoute>
+                    <Layout />
+                  </ProtectedRoute>
+                }>
+                  <Route index element={<Dashboard />} />
+                  <Route path="scans" element={<Scans />} />
+                  <Route path="scans/:id" element={<ScanDetails />} />
+                  <Route path="corruptions" element={<Corruptions />} />
+                  <Route path="logs" element={<Logs />} />
+                  <Route path="config" element={<Config />} />
+                  <Route path="help" element={<Help />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Route>
+              </Routes>
+            </Suspense>
+            <ToastContainer />
+            <ConnectionOverlay />
+          </ToastProvider>
+        </ConnectionProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }
 
