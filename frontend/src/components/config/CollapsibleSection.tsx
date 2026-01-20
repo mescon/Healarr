@@ -42,6 +42,8 @@ const CollapsibleSection = ({
         localStorage.setItem(storageKey, String(newValue));
     };
 
+    const contentId = `section-${id}-content`;
+
     return (
         <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -51,29 +53,37 @@ const CollapsibleSection = ({
         >
             <button
                 onClick={toggleExpanded}
+                aria-expanded={isExpanded}
+                aria-controls={contentId}
                 className="w-full flex items-center justify-between group cursor-pointer"
             >
                 <div className="flex items-center gap-3">
-                    <Icon className={clsx("w-6 h-6", iconColor)} />
+                    <Icon className={clsx("w-6 h-6", iconColor)} aria-hidden="true" />
                     <div className="text-left">
-                        <h2 className="text-2xl font-semibold text-slate-900 dark:text-white">{title}</h2>
+                        <h2 id={`section-${id}-heading`} className="text-2xl font-semibold text-slate-900 dark:text-white">{title}</h2>
                         {subtitle && <p className="text-sm text-slate-600 dark:text-slate-400">{subtitle}</p>}
                     </div>
                 </div>
-                <ChevronDown className={clsx(
-                    "w-5 h-5 text-slate-600 dark:text-slate-400 transition-transform duration-200",
-                    isExpanded && "rotate-180"
-                )} />
+                <ChevronDown
+                    className={clsx(
+                        "w-5 h-5 text-slate-600 dark:text-slate-400 transition-transform duration-200",
+                        isExpanded && "rotate-180"
+                    )}
+                    aria-hidden="true"
+                />
             </button>
 
             <AnimatePresence initial={false}>
                 {isExpanded && (
                     <motion.div
+                        id={contentId}
                         initial={{ height: 0, opacity: 0 }}
                         animate={{ height: "auto", opacity: 1 }}
                         exit={{ height: 0, opacity: 0 }}
                         transition={{ duration: 0.2, ease: "easeInOut" }}
                         className="overflow-hidden"
+                        role="region"
+                        aria-labelledby={`section-${id}-heading`}
                     >
                         {children}
                     </motion.div>

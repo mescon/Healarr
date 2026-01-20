@@ -14,6 +14,8 @@ import clsx from 'clsx';
 import { useToast } from '../../contexts/ToastContext';
 import { CollapsibleSection } from '../../components/config';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
+import { useFormValidation, FieldError } from '../../hooks/useFormValidation';
+import { notificationSchema, validateNotificationConfig } from '../../lib/schemas/notification';
 
 interface NotificationFormData {
     name: string;
@@ -36,6 +38,9 @@ const defaultFormData: NotificationFormData = {
 const NotificationsSection = () => {
     const queryClient = useQueryClient();
     const toast = useToast();
+
+    // Form validation
+    const { errors, validate, clearErrors, clearFieldError, setFieldError } = useFormValidation(notificationSchema);
 
     // Local state
     const [isAddExpanded, setIsAddExpanded] = useState(false);
@@ -132,6 +137,7 @@ const NotificationsSection = () => {
         setEditingId(null);
         setIsAddExpanded(false);
         setTestResult(null);
+        clearErrors();
     };
 
     const startEdit = (notification: NotificationConfig) => {
@@ -187,9 +193,32 @@ const NotificationsSection = () => {
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        if (!formData.provider_type || !hasProviderConfig()) {
-            toast.error('Please fill in all required fields');
+
+        // Prepare data for validation
+        const dataToValidate = {
+            ...formData,
+            name: formData.name || `${getProviderLabel(formData.provider_type)} Notifications`,
+        };
+
+        // Validate base notification schema
+        if (!validate(dataToValidate)) {
+            const errorCount = Object.keys(errors).length;
+            toast.error(`Please fix ${errorCount} validation ${errorCount === 1 ? 'error' : 'errors'}`);
             return;
+        }
+
+        // Validate provider-specific config
+        if (formData.provider_type) {
+            const configResult = validateNotificationConfig(formData.provider_type, formData.config);
+            if (!configResult.success) {
+                // Set errors for config fields
+                for (const issue of configResult.error.issues) {
+                    const fieldKey = `config.${issue.path.join('.')}`;
+                    setFieldError(fieldKey, issue.message);
+                }
+                toast.error('Please fill in all required provider fields');
+                return;
+            }
         }
 
         const notificationData: NotificationConfig = {
@@ -255,7 +284,7 @@ const NotificationsSection = () => {
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         <div>
                                             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                                                Notification Service
+                                                Notification Service <span className="text-red-400">*</span>
                                             </label>
                                             <ProviderSelect
                                                 value={formData.provider_type}
@@ -266,21 +295,33 @@ const NotificationsSection = () => {
                                                         config: {},
                                                     }));
                                                     setTestResult(null);
+                                                    clearFieldError('provider_type');
                                                 }}
                                                 variant="config"
                                             />
+                                            <FieldError error={errors.provider_type} />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                                            <label htmlFor="notification-name" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
                                                 Name (optional)
                                             </label>
                                             <input
+                                                id="notification-name"
                                                 type="text"
                                                 value={formData.name}
-                                                onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-pink-500"
+                                                onChange={(e) => {
+                                                    setFormData(prev => ({ ...prev, name: e.target.value }));
+                                                    clearFieldError('name');
+                                                }}
+                                                aria-invalid={!!errors.name}
+                                                aria-describedby={errors.name ? 'notification-name-error' : undefined}
+                                                className={clsx(
+                                                    "w-full px-3 py-2 bg-white dark:bg-slate-900 border rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-pink-500",
+                                                    errors.name ? "border-red-500" : "border-slate-300 dark:border-slate-700"
+                                                )}
                                                 placeholder={formData.provider_type ? `My ${getProviderLabel(formData.provider_type)} Alerts` : 'My Notifications'}
                                             />
+                                            <FieldError error={errors.name} />
                                         </div>
                                     </div>
 
@@ -299,11 +340,12 @@ const NotificationsSection = () => {
                                     {formData.provider_type && (
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                             <div>
-                                                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2 flex items-center gap-2">
+                                                <label htmlFor="notification-throttle" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2 flex items-center gap-2">
                                                     <Clock className="w-4 h-4" />
                                                     Throttle (seconds)
                                                 </label>
                                                 <input
+                                                    id="notification-throttle"
                                                     type="number"
                                                     min="0"
                                                     value={formData.throttle_seconds}
@@ -311,9 +353,10 @@ const NotificationsSection = () => {
                                                         ...prev,
                                                         throttle_seconds: parseInt(e.target.value) || 0
                                                     }))}
+                                                    aria-describedby="notification-throttle-hint"
                                                     className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-pink-500"
                                                 />
-                                                <p className="text-xs text-slate-500 mt-1">
+                                                <p id="notification-throttle-hint" className="text-xs text-slate-500 mt-1">
                                                     Minimum seconds between notifications (0 = no throttling)
                                                 </p>
                                             </div>
@@ -322,12 +365,18 @@ const NotificationsSection = () => {
 
                                     {/* Event Selection */}
                                     {formData.provider_type && (
-                                        <EventSelector
-                                            events={formData.events}
-                                            eventGroups={eventGroups}
-                                            onChange={(events) => setFormData(prev => ({ ...prev, events }))}
-                                            variant="config"
-                                        />
+                                        <div>
+                                            <EventSelector
+                                                events={formData.events}
+                                                eventGroups={eventGroups}
+                                                onChange={(events) => {
+                                                    setFormData(prev => ({ ...prev, events }));
+                                                    clearFieldError('events');
+                                                }}
+                                                variant="config"
+                                            />
+                                            <FieldError error={errors.events} />
+                                        </div>
                                     )}
 
                                     {/* Test Result */}

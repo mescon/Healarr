@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -594,5 +595,227 @@ func TestLog_WritesToFile(t *testing.T) {
 
 	if !strings.Contains(string(content), uniqueMsg) {
 		t.Error("Log file should contain the logged message")
+	}
+}
+
+// =============================================================================
+// Context-aware logging tests
+// =============================================================================
+
+func TestLogWithContext_NoContext(t *testing.T) {
+	originalLevel := minLevel
+	originalListeners := listeners
+	listeners = make([]chan LogEntry, 0)
+	defer func() {
+		minLevel = originalLevel
+		listeners = originalListeners
+	}()
+
+	minLevel = Debug
+	ch := Subscribe()
+
+	// Use context without request ID to test the no-ID path
+	LogWithContext(context.Background(), Info, "message without context")
+
+	select {
+	case entry := <-ch:
+		if entry.Level != Info {
+			t.Errorf("Level = %s, want INFO", entry.Level)
+		}
+		// Should not contain request ID prefix
+		if strings.Contains(entry.Message, "[req:") {
+			t.Error("Message should not contain request ID when context is nil")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Did not receive log entry")
+	}
+}
+
+func TestLogWithContext_WithRequestID(t *testing.T) {
+	originalLevel := minLevel
+	originalListeners := listeners
+	listeners = make([]chan LogEntry, 0)
+	defer func() {
+		minLevel = originalLevel
+		listeners = originalListeners
+	}()
+
+	minLevel = Debug
+	ch := Subscribe()
+
+	ctx := context.WithValue(context.Background(), RequestIDKey, "test-req-123")
+	LogWithContext(ctx, Info, "message with context")
+
+	select {
+	case entry := <-ch:
+		if !strings.Contains(entry.Message, "[req:test-req-123]") {
+			t.Errorf("Message should contain request ID, got: %s", entry.Message)
+		}
+		if !strings.Contains(entry.Message, "message with context") {
+			t.Error("Message should contain the original message")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Did not receive log entry")
+	}
+}
+
+func TestLogWithContext_EmptyRequestID(t *testing.T) {
+	originalLevel := minLevel
+	originalListeners := listeners
+	listeners = make([]chan LogEntry, 0)
+	defer func() {
+		minLevel = originalLevel
+		listeners = originalListeners
+	}()
+
+	minLevel = Debug
+	ch := Subscribe()
+
+	ctx := context.WithValue(context.Background(), RequestIDKey, "")
+	LogWithContext(ctx, Info, "message with empty req id")
+
+	select {
+	case entry := <-ch:
+		// Empty request ID should not add prefix
+		if strings.Contains(entry.Message, "[req:]") {
+			t.Error("Message should not contain empty request ID prefix")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Did not receive log entry")
+	}
+}
+
+func TestLogWithContext_Filtering(t *testing.T) {
+	originalLevel := minLevel
+	originalListeners := listeners
+	listeners = make([]chan LogEntry, 0)
+	defer func() {
+		minLevel = originalLevel
+		listeners = originalListeners
+	}()
+
+	minLevel = Error
+	ch := Subscribe()
+
+	ctx := context.WithValue(context.Background(), RequestIDKey, "test-123")
+	LogWithContext(ctx, Debug, "should be filtered")
+
+	select {
+	case <-ch:
+		t.Error("Debug message should be filtered at Error level")
+	case <-time.After(50 * time.Millisecond):
+		// Expected - message was filtered
+	}
+}
+
+func TestInfofCtx(t *testing.T) {
+	originalLevel := minLevel
+	originalListeners := listeners
+	listeners = make([]chan LogEntry, 0)
+	defer func() {
+		minLevel = originalLevel
+		listeners = originalListeners
+	}()
+
+	minLevel = Debug
+	ch := Subscribe()
+
+	ctx := context.WithValue(context.Background(), RequestIDKey, "info-req")
+	InfofCtx(ctx, "info message")
+
+	select {
+	case entry := <-ch:
+		if entry.Level != Info {
+			t.Errorf("InfofCtx should log at Info level, got %s", entry.Level)
+		}
+		if !strings.Contains(entry.Message, "[req:info-req]") {
+			t.Error("Should contain request ID")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Did not receive log entry")
+	}
+}
+
+func TestErrorfCtx(t *testing.T) {
+	originalLevel := minLevel
+	originalListeners := listeners
+	listeners = make([]chan LogEntry, 0)
+	defer func() {
+		minLevel = originalLevel
+		listeners = originalListeners
+	}()
+
+	minLevel = Debug
+	ch := Subscribe()
+
+	ctx := context.WithValue(context.Background(), RequestIDKey, "error-req")
+	ErrorfCtx(ctx, "error message")
+
+	select {
+	case entry := <-ch:
+		if entry.Level != Error {
+			t.Errorf("ErrorfCtx should log at Error level, got %s", entry.Level)
+		}
+		if !strings.Contains(entry.Message, "[req:error-req]") {
+			t.Error("Should contain request ID")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Did not receive log entry")
+	}
+}
+
+func TestDebugfCtx(t *testing.T) {
+	originalLevel := minLevel
+	originalListeners := listeners
+	listeners = make([]chan LogEntry, 0)
+	defer func() {
+		minLevel = originalLevel
+		listeners = originalListeners
+	}()
+
+	minLevel = Debug
+	ch := Subscribe()
+
+	ctx := context.WithValue(context.Background(), RequestIDKey, "debug-req")
+	DebugfCtx(ctx, "debug message")
+
+	select {
+	case entry := <-ch:
+		if entry.Level != Debug {
+			t.Errorf("DebugfCtx should log at Debug level, got %s", entry.Level)
+		}
+		if !strings.Contains(entry.Message, "[req:debug-req]") {
+			t.Error("Should contain request ID")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Did not receive log entry")
+	}
+}
+
+func TestWarnfCtx(t *testing.T) {
+	originalLevel := minLevel
+	originalListeners := listeners
+	listeners = make([]chan LogEntry, 0)
+	defer func() {
+		minLevel = originalLevel
+		listeners = originalListeners
+	}()
+
+	minLevel = Debug
+	ch := Subscribe()
+
+	ctx := context.WithValue(context.Background(), RequestIDKey, "warn-req")
+	WarnfCtx(ctx, "warn message")
+
+	select {
+	case entry := <-ch:
+		if entry.Level != Warn {
+			t.Errorf("WarnfCtx should log at Warn level, got %s", entry.Level)
+		}
+		if !strings.Contains(entry.Message, "[req:warn-req]") {
+			t.Error("Should contain request ID")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Did not receive log entry")
 	}
 }

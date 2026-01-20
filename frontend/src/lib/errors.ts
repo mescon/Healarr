@@ -22,6 +22,11 @@ const errorPatterns: Array<{ pattern: RegExp | string; message: string }> = [
     { pattern: 'CERT_HAS_EXPIRED', message: 'SSL certificate has expired. Contact the server administrator.' },
     { pattern: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', message: 'Cannot verify SSL certificate. The certificate may be self-signed.' },
 
+    // *arr specific errors (check before generic HTTP status codes)
+    { pattern: /api.*key.*invalid/i, message: 'Invalid API key. Copy the correct key from Settings → General in your *arr app.' },
+    { pattern: /root.*folder.*not.*found/i, message: 'Root folder not found. Check the path exists and is accessible.' },
+    { pattern: /quality.*profile/i, message: 'Quality profile error. Verify the profile exists in your *arr settings.' },
+
     // HTTP status codes
     { pattern: /\b400\b/, message: 'Bad request. Check the data you\'re sending is correct.' },
     { pattern: /\b401\b|unauthorized/i, message: 'Authentication failed. Check your API key is correct.' },
@@ -33,11 +38,6 @@ const errorPatterns: Array<{ pattern: RegExp | string; message: string }> = [
     { pattern: /\b502\b|bad gateway/i, message: 'Bad gateway. Check if the *arr service is running.' },
     { pattern: /\b503\b|service unavailable/i, message: 'Service unavailable. The server may be overloaded or down for maintenance.' },
     { pattern: /\b504\b|gateway timeout/i, message: 'Gateway timeout. The server took too long to respond.' },
-
-    // *arr specific errors
-    { pattern: /api.*key.*invalid/i, message: 'Invalid API key. Copy the correct key from Settings → General in your *arr app.' },
-    { pattern: /root.*folder.*not.*found/i, message: 'Root folder not found. Check the path exists and is accessible.' },
-    { pattern: /quality.*profile/i, message: 'Quality profile error. Verify the profile exists in your *arr settings.' },
 
     // File system errors
     { pattern: 'ENOENT', message: 'File or directory not found. Check the path exists.' },

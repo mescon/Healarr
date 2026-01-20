@@ -14,6 +14,7 @@ import (
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/metrics"
 )
 
 // getWebSocketUpgrader returns an upgrader with origin validation
@@ -67,10 +68,17 @@ type WebSocketHub struct {
 	logCh      chan logger.LogEntry
 	mu         sync.Mutex
 	eventBus   *eventbus.EventBus
+	metrics    *metrics.MetricsService // Optional metrics service for connection tracking
 }
 
 // NewWebSocketHub creates a new WebSocketHub and subscribes to relevant events.
-func NewWebSocketHub(eventBus *eventbus.EventBus) *WebSocketHub {
+// The metrics service is optional and enables connection tracking metrics.
+func NewWebSocketHub(eventBus *eventbus.EventBus, metricsService ...*metrics.MetricsService) *WebSocketHub {
+	var ms *metrics.MetricsService
+	if len(metricsService) > 0 {
+		ms = metricsService[0]
+	}
+
 	h := &WebSocketHub{
 		broadcast:  make(chan interface{}),
 		register:   make(chan *websocket.Conn),
@@ -78,6 +86,7 @@ func NewWebSocketHub(eventBus *eventbus.EventBus) *WebSocketHub {
 		shutdown:   make(chan struct{}),
 		clients:    make(map[*websocket.Conn]bool),
 		eventBus:   eventBus,
+		metrics:    ms,
 	}
 
 	// Subscribe to all events that affect UI state
@@ -172,11 +181,18 @@ func (h *WebSocketHub) run() {
 func (h *WebSocketHub) closeAllClients() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	clientCount := len(h.clients)
 	for client := range h.clients {
 		if err := client.Close(); err != nil {
 			logger.Debugf("WebSocket close error during shutdown: %v", err)
 		}
 		delete(h.clients, client)
+	}
+	// Decrement metrics for all closed clients at once
+	if h.metrics != nil && clientCount > 0 {
+		for i := 0; i < clientCount; i++ {
+			h.metrics.WebSocketDisconnected()
+		}
 	}
 }
 
@@ -185,6 +201,10 @@ func (h *WebSocketHub) registerClient(client *websocket.Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.clients[client] = true
+	// Track connection in Prometheus metrics
+	if h.metrics != nil {
+		h.metrics.WebSocketConnected()
+	}
 	logger.Debugf("WebSocket client connected (Total: %d)", len(h.clients))
 }
 
@@ -194,6 +214,10 @@ func (h *WebSocketHub) unregisterClient(client *websocket.Conn) {
 	defer h.mu.Unlock()
 	if _, ok := h.clients[client]; ok {
 		delete(h.clients, client)
+		// Track disconnection in Prometheus metrics
+		if h.metrics != nil {
+			h.metrics.WebSocketDisconnected()
+		}
 		if err := client.Close(); err != nil {
 			logger.Debugf("WebSocket close error: %v", err)
 		}
@@ -212,6 +236,10 @@ func (h *WebSocketHub) broadcastMessage(message interface{}) {
 				logger.Debugf("WebSocket close error during broadcast: %v", closeErr)
 			}
 			delete(h.clients, client)
+			// Track disconnection in Prometheus metrics
+			if h.metrics != nil {
+				h.metrics.WebSocketDisconnected()
+			}
 		}
 	}
 }

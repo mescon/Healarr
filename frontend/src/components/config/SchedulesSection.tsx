@@ -154,8 +154,9 @@ const SchedulesSection = () => {
                                 <form onSubmit={handleSubmit} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-800/50 pt-4">
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Scan Path</label>
+                                            <label htmlFor="schedule-path" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Scan Path</label>
                                             <select
+                                                id="schedule-path"
                                                 value={newSchedule.scan_path_id || ''}
                                                 onChange={e => setNewSchedule({ ...newSchedule, scan_path_id: parseInt(e.target.value) })}
                                                 className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500"
@@ -169,8 +170,9 @@ const SchedulesSection = () => {
                                         </div>
                                         <div className="space-y-4">
                                             <div>
-                                                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Frequency</label>
+                                                <label htmlFor="schedule-frequency" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Frequency</label>
                                                 <select
+                                                    id="schedule-frequency"
                                                     value={schedulePreset}
                                                     onChange={e => handlePresetChange(e.target.value)}
                                                     className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500"

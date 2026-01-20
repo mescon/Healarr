@@ -153,6 +153,57 @@ func createTestMetrics(t *testing.T, eb *eventbus.EventBus) (*MetricsService, *p
 				Buckets: prometheus.ExponentialBuckets(1, 2, 12),
 			},
 		),
+
+		// HTTP metrics
+		httpRequestsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "healarr_http_requests_total",
+				Help: "Total HTTP requests",
+			},
+			[]string{"method", "path", "status"},
+		),
+
+		httpRequestDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "healarr_http_request_duration_seconds",
+				Help:    "HTTP request duration in seconds",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"method", "path", "status"},
+		),
+
+		websocketConnections: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "healarr_websocket_connections",
+				Help: "Current WebSocket connections",
+			},
+		),
+
+		// Database metrics
+		dbQueriesTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "healarr_db_queries_total",
+				Help: "Total database queries",
+			},
+			[]string{"operation"},
+		),
+
+		dbQueryDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "healarr_db_query_duration_seconds",
+				Help:    "Database query duration in seconds",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"operation"},
+		),
+
+		dbConnectionPool: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "healarr_db_connection_pool",
+				Help: "Database connection pool statistics",
+			},
+			[]string{"state"},
+		),
 	}
 
 	// Register all metrics with custom registry
@@ -169,6 +220,12 @@ func createTestMetrics(t *testing.T, eb *eventbus.EventBus) (*MetricsService, *p
 		m.currentScanProgress,
 		m.remediationDuration,
 		m.scanDuration,
+		m.httpRequestsTotal,
+		m.httpRequestDuration,
+		m.websocketConnections,
+		m.dbQueriesTotal,
+		m.dbQueryDuration,
+		m.dbConnectionPool,
 	)
 
 	return m, reg
@@ -616,4 +673,110 @@ func TestMetrics_MaxRetriesLifecycle(t *testing.T) {
 	if m.activeRemediationCount != 0 {
 		t.Errorf("After max retries: activeRemediationCount = %d, want 0", m.activeRemediationCount)
 	}
+}
+
+// =============================================================================
+// WebSocket metrics tests
+// =============================================================================
+
+func TestMetricsService_WebSocketConnected(t *testing.T) {
+	eb := newTestEventBus(t)
+	m, _ := createTestMetrics(t, eb)
+
+	// Should not panic - gauge gets incremented
+	m.WebSocketConnected()
+	m.WebSocketConnected()
+	m.WebSocketConnected()
+
+	// We can't easily read Prometheus gauges without gathering, just verify no panic
+}
+
+func TestMetricsService_WebSocketDisconnected(t *testing.T) {
+	eb := newTestEventBus(t)
+	m, _ := createTestMetrics(t, eb)
+
+	// Connect then disconnect
+	m.WebSocketConnected()
+	m.WebSocketConnected()
+	m.WebSocketDisconnected()
+	m.WebSocketDisconnected()
+
+	// Should not panic even with 0 connections
+	m.WebSocketDisconnected()
+}
+
+func TestMetricsService_WebSocketConnectionLifecycle(t *testing.T) {
+	eb := newTestEventBus(t)
+	m, _ := createTestMetrics(t, eb)
+
+	// Simulate typical connection lifecycle
+	for i := 0; i < 5; i++ {
+		m.WebSocketConnected()
+	}
+
+	// Disconnect some
+	for i := 0; i < 3; i++ {
+		m.WebSocketDisconnected()
+	}
+
+	// Connect more
+	for i := 0; i < 2; i++ {
+		m.WebSocketConnected()
+	}
+
+	// Should not panic - this tests typical usage patterns
+}
+
+// =============================================================================
+// HTTP metrics tests
+// =============================================================================
+
+func TestMetricsService_RecordHTTPRequest(t *testing.T) {
+	eb := newTestEventBus(t)
+	m, _ := createTestMetrics(t, eb)
+
+	// Should not panic when recording HTTP requests
+	m.RecordHTTPRequest("GET", "/api/health", "200", 0.015)
+	m.RecordHTTPRequest("POST", "/api/config", "201", 0.250)
+	m.RecordHTTPRequest("GET", "/api/corruptions", "500", 1.500)
+}
+
+func TestMetricsService_RecordHTTPRequest_VariousMethods(t *testing.T) {
+	eb := newTestEventBus(t)
+	m, _ := createTestMetrics(t, eb)
+
+	methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}
+	statuses := []string{"200", "201", "204", "400", "401", "403", "404", "500", "502", "503"}
+
+	for _, method := range methods {
+		for _, status := range statuses {
+			m.RecordHTTPRequest(method, "/api/test", status, 0.05)
+		}
+	}
+}
+
+// =============================================================================
+// DB metrics tests
+// =============================================================================
+
+func TestMetricsService_RecordDBQuery(t *testing.T) {
+	eb := newTestEventBus(t)
+	m, _ := createTestMetrics(t, eb)
+
+	// Should not panic when recording DB queries
+	m.RecordDBQuery("select", 0.005)
+	m.RecordDBQuery("insert", 0.010)
+	m.RecordDBQuery("update", 0.008)
+	m.RecordDBQuery("delete", 0.003)
+	m.RecordDBQuery("other", 0.020)
+}
+
+func TestMetricsService_RecordDBPoolStats(t *testing.T) {
+	eb := newTestEventBus(t)
+	m, _ := createTestMetrics(t, eb)
+
+	// Should not panic when recording pool stats
+	m.RecordDBPoolStats(10, 5, 5)
+	m.RecordDBPoolStats(10, 8, 2)
+	m.RecordDBPoolStats(10, 0, 10)
 }

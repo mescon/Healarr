@@ -12,6 +12,8 @@ import { useToast } from '../../contexts/ToastContext';
 import CollapsibleSection from './CollapsibleSection';
 import FileBrowser from '../ui/FileBrowser';
 import ConfirmDialog from '../ui/ConfirmDialog';
+import { useFormValidation, FieldError } from '../../hooks/useFormValidation';
+import { scanPathSchema } from '../../lib/schemas/scan-path';
 
 // Path Validation Status Component
 const PathValidationStatus = ({ pathId }: { pathId: number }) => {
@@ -69,6 +71,9 @@ interface ScanPathsSectionProps {
 const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) => {
     const queryClient = useQueryClient();
     const toast = useToast();
+
+    // Form validation
+    const { errors, validate, clearErrors, clearFieldError } = useFormValidation(scanPathSchema);
 
     // Local state
     const [isAddExpanded, setIsAddExpanded] = useState(false);
@@ -173,23 +178,35 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        if (newPath.local_path && newPath.arr_instance_id) {
-            const formData = { ...newPath };
-            if (formData.detection_args && typeof formData.detection_args === 'string') {
-                formData.detection_args = (formData.detection_args as string)
-                    .split(',')
-                    .map(arg => arg.trim())
-                    .filter(arg => arg.length > 0) as unknown as string;
-            }
 
-            if (editingId) {
-                updateMutation.mutate({ id: editingId, data: formData as Omit<ScanPath, 'id'> });
-                setEditingId(null);
-            } else {
-                createMutation.mutate(formData as Omit<ScanPath, 'id'>);
-            }
-            resetForm();
+        // Prepare form data with arr_path defaulting to local_path
+        const formData = {
+            ...newPath,
+            arr_path: newPath.arr_path || newPath.local_path || '',
+        };
+
+        // Validate using Zod schema
+        if (!validate(formData)) {
+            const errorCount = Object.keys(errors).length;
+            toast.error(`Please fix ${errorCount} validation ${errorCount === 1 ? 'error' : 'errors'}`);
+            return;
         }
+
+        // Process detection_args if present
+        if (formData.detection_args && typeof formData.detection_args === 'string') {
+            formData.detection_args = (formData.detection_args as string)
+                .split(',')
+                .map(arg => arg.trim())
+                .filter(arg => arg.length > 0) as unknown as string;
+        }
+
+        if (editingId) {
+            updateMutation.mutate({ id: editingId, data: formData as Omit<ScanPath, 'id'> });
+            setEditingId(null);
+        } else {
+            createMutation.mutate(formData as Omit<ScanPath, 'id'>);
+        }
+        resetForm();
     };
 
     const handleEdit = (path: ScanPath) => {
@@ -235,6 +252,7 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
         });
         setIsAddExpanded(false);
         setEditingId(null);
+        clearErrors();
     };
 
     return (
@@ -288,14 +306,23 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
                                 <form onSubmit={handleSubmit} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-800/50 pt-4">
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Local Path</label>
+                                            <label htmlFor="path-local" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Local Path <span className="text-red-400">*</span></label>
                                             <div className="flex gap-2">
                                                 <input
+                                                    id="path-local"
                                                     type="text"
                                                     value={newPath.local_path || ''}
-                                                    onChange={e => setNewPath({ ...newPath, local_path: e.target.value })}
+                                                    onChange={e => {
+                                                        setNewPath({ ...newPath, local_path: e.target.value });
+                                                        clearFieldError('local_path');
+                                                    }}
                                                     placeholder="/media/tv or /tv"
-                                                    className="flex-1 px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500"
+                                                    aria-invalid={!!errors.local_path}
+                                                    aria-describedby={errors.local_path ? 'path-local-error' : undefined}
+                                                    className={clsx(
+                                                        "flex-1 px-3 py-2 bg-white dark:bg-slate-900 border rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500",
+                                                        errors.local_path ? "border-red-500" : "border-slate-300 dark:border-slate-700"
+                                                    )}
                                                 />
                                                 <button
                                                     type="button"
@@ -310,31 +337,43 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
                                                     <Folder className="w-5 h-5 text-slate-600 dark:text-slate-400" aria-hidden="true" />
                                                 </button>
                                             </div>
+                                            <FieldError error={errors.local_path} />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">*arr Path <span className="text-slate-500 font-normal">(optional)</span></label>
+                                            <label htmlFor="path-arr" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">*arr Path <span className="text-slate-500 font-normal">(optional)</span></label>
                                             <input
+                                                id="path-arr"
                                                 type="text"
                                                 value={newPath.arr_path || ''}
                                                 onChange={e => setNewPath({ ...newPath, arr_path: e.target.value })}
                                                 placeholder="Leave empty if same as local path"
+                                                aria-describedby="path-arr-hint"
                                                 className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500"
                                             />
-                                            <p className="mt-1 text-xs text-slate-500">Only fill this in if your *arr app sees media at a different path than Healarr</p>
+                                            <p id="path-arr-hint" className="mt-1 text-xs text-slate-500">Only fill this in if your *arr app sees media at a different path than Healarr</p>
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">*arr Server</label>
+                                            <label htmlFor="path-arr-server" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">*arr Server <span className="text-red-400">*</span></label>
                                             <select
+                                                id="path-arr-server"
                                                 value={newPath.arr_instance_id || ''}
-                                                onChange={e => setNewPath({ ...newPath, arr_instance_id: e.target.value ? parseInt(e.target.value) : null })}
-                                                className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-                                                required
+                                                onChange={e => {
+                                                    setNewPath({ ...newPath, arr_instance_id: e.target.value ? parseInt(e.target.value) : null });
+                                                    clearFieldError('arr_instance_id');
+                                                }}
+                                                aria-invalid={!!errors.arr_instance_id}
+                                                aria-describedby={errors.arr_instance_id ? 'path-arr-server-error' : undefined}
+                                                className={clsx(
+                                                    "w-full px-3 py-2 bg-white dark:bg-slate-900 border rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500",
+                                                    errors.arr_instance_id ? "border-red-500" : "border-slate-300 dark:border-slate-700"
+                                                )}
                                             >
                                                 <option value="">Select a server...</option>
                                                 {arrInstances?.map(arr => (
                                                     <option key={arr.id} value={arr.id}>{arr.name}</option>
                                                 ))}
                                             </select>
+                                            <FieldError error={errors.arr_instance_id} />
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-6 pb-2">

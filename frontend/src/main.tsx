@@ -7,7 +7,7 @@ import { getRouterBasePath } from './lib/basePath'
 import App from './App.tsx'
 import './index.css'
 
-// Global React Query configuration for optimal performance
+// Global React Query configuration for optimal performance and error handling
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -15,6 +15,16 @@ const queryClient = new QueryClient({
       gcTime: 5 * 60 * 1000, // Cache kept for 5 minutes
       refetchOnWindowFocus: false, // Don't refetch when window regains focus
       retry: 1, // Only retry failed requests once
+      // Throw errors to ErrorBoundary for server errors (5xx)
+      // Client errors (4xx) should be handled in components
+      throwOnError: (error) => {
+        const status = (error as { response?: { status?: number } })?.response?.status;
+        return status !== undefined && status >= 500;
+      },
+    },
+    mutations: {
+      // Mutations should handle errors locally (inline feedback)
+      throwOnError: false,
     },
   },
 })

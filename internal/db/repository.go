@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -25,9 +26,17 @@ const RetryDelay = 100 * time.Millisecond
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// DBMetricsRecorder is an interface for recording database metrics.
+// This avoids circular imports with the metrics package.
+type DBMetricsRecorder interface {
+	RecordDBQuery(operation string, duration float64)
+	RecordDBPoolStats(openConns, inUse, idle int)
+}
+
 // Repository provides database access methods for the application.
 type Repository struct {
-	DB *sql.DB
+	DB      *sql.DB
+	metrics DBMetricsRecorder // Optional metrics recorder
 }
 
 // NewRepository creates a new Repository with the database at the given path.
@@ -139,6 +148,96 @@ func (r *Repository) checkIntegrity() error {
 	}
 	logger.Infof("✓ Database integrity check passed")
 	return nil
+}
+
+// SetMetrics configures the metrics recorder for database query tracking.
+// This should be called after NewRepository to enable metrics collection.
+func (r *Repository) SetMetrics(m DBMetricsRecorder) {
+	r.metrics = m
+}
+
+// extractQueryType determines the SQL operation type from a query string.
+// Returns "select", "insert", "update", "delete", or "other".
+func extractQueryType(query string) string {
+	// Trim whitespace and convert to lowercase for comparison
+	trimmed := strings.TrimSpace(strings.ToLower(query))
+	switch {
+	case strings.HasPrefix(trimmed, "select"):
+		return "select"
+	case strings.HasPrefix(trimmed, "insert"):
+		return "insert"
+	case strings.HasPrefix(trimmed, "update"):
+		return "update"
+	case strings.HasPrefix(trimmed, "delete"):
+		return "delete"
+	default:
+		return "other"
+	}
+}
+
+// recordQueryMetrics records timing metrics for a database query if metrics are enabled.
+func (r *Repository) recordQueryMetrics(query string, start time.Time) {
+	if r.metrics == nil {
+		return
+	}
+	duration := time.Since(start).Seconds()
+	operation := extractQueryType(query)
+	r.metrics.RecordDBQuery(operation, duration)
+}
+
+// QueryRowContext executes a query that returns at most one row with metrics tracking.
+func (r *Repository) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	start := time.Now()
+	row := r.DB.QueryRowContext(ctx, query, args...)
+	r.recordQueryMetrics(query, start)
+	return row
+}
+
+// QueryContext executes a query that returns rows with metrics tracking.
+func (r *Repository) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	start := time.Now()
+	rows, err := r.DB.QueryContext(ctx, query, args...)
+	r.recordQueryMetrics(query, start)
+	return rows, err
+}
+
+// ExecContext executes a query that doesn't return rows with metrics tracking.
+func (r *Repository) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	start := time.Now()
+	result, err := r.DB.ExecContext(ctx, query, args...)
+	r.recordQueryMetrics(query, start)
+	return result, err
+}
+
+// StartPeriodicPoolStats starts a background goroutine that reports connection pool
+// statistics at the specified interval. Returns a stop function.
+func (r *Repository) StartPeriodicPoolStats(interval time.Duration) func() {
+	if r.metrics == nil {
+		// Return no-op stop function when metrics not configured.
+		// This allows callers to always call the returned function without nil checks.
+		return func() { /* intentionally empty - no cleanup needed when metrics disabled */ }
+	}
+
+	stopCh := make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				stats := r.DB.Stats()
+				r.metrics.RecordDBPoolStats(stats.OpenConnections, stats.InUse, stats.Idle)
+			}
+		}
+	}()
+
+	return func() {
+		close(stopCh)
+	}
 }
 
 // Close closes the database connection.

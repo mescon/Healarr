@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
 import { humanizeError } from '../lib/errors';
+import { setApiErrorHandler } from '../lib/api';
 
 interface Toast {
     id: string;
@@ -72,6 +73,20 @@ export const ToastProvider = ({ children }: ToastProviderProps) => {
     const info = useCallback((message: string, duration?: number) => {
         addToast({ type: 'info', message, duration });
     }, [addToast]);
+
+    // Subscribe to global API errors
+    useEffect(() => {
+        setApiErrorHandler((axiosError) => {
+            // Extract error message from response or use generic message
+            const message = axiosError.response?.data && typeof axiosError.response.data === 'object'
+                ? (axiosError.response.data as { error?: string }).error || 'Server error'
+                : 'An unexpected server error occurred';
+            error(message);
+        });
+
+        // Cleanup on unmount
+        return () => setApiErrorHandler(null);
+    }, [error]);
 
     return (
         <ToastContext.Provider value={{ toasts, addToast, removeToast, success, error, warning, info }}>

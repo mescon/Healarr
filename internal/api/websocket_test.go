@@ -637,3 +637,96 @@ func TestWebSocketHub_HandleConnection_UpgradeError(t *testing.T) {
 		t.Errorf("ClientCount() = %d, want 0 after failed upgrade", hub.ClientCount())
 	}
 }
+
+func TestWebSocketHub_ShutdownWithConnectedClients(t *testing.T) {
+	db, cleanup := setupTestDBForWebSocket(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	hub := NewWebSocketHub(eb)
+
+	// Give the hub's run goroutine time to start
+	time.Sleep(10 * time.Millisecond)
+
+	// Create a test WebSocket server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool { return true },
+		}
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+
+		hub.register <- ws
+
+		// Keep connection alive until server closes
+		for {
+			_, _, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	// Connect multiple clients
+	numClients := 3
+	clients := make([]*websocket.Conn, 0, numClients)
+	for i := 0; i < numClients; i++ {
+		url := "ws" + strings.TrimPrefix(server.URL, "http")
+		ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+		if err != nil {
+			t.Fatalf("Failed to connect client %d: %v", i, err)
+		}
+		clients = append(clients, ws)
+	}
+
+	// Wait for all registrations
+	time.Sleep(100 * time.Millisecond)
+
+	if hub.ClientCount() != numClients {
+		t.Errorf("ClientCount() = %d, want %d before shutdown", hub.ClientCount(), numClients)
+	}
+
+	// Shutdown the hub - this should close all connected clients
+	hub.Shutdown()
+
+	// Give shutdown time to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// All clients should be disconnected
+	if hub.ClientCount() != 0 {
+		t.Errorf("ClientCount() = %d, want 0 after shutdown", hub.ClientCount())
+	}
+
+	// Clean up client connections
+	for _, ws := range clients {
+		ws.Close()
+	}
+}
+
+func TestWebSocketHub_ShutdownEmpty(t *testing.T) {
+	db, cleanup := setupTestDBForWebSocket(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	hub := NewWebSocketHub(eb)
+
+	// Give the hub's run goroutine time to start
+	time.Sleep(10 * time.Millisecond)
+
+	// Shutdown with no clients - should not panic
+	hub.Shutdown()
+
+	// Give shutdown time to complete
+	time.Sleep(50 * time.Millisecond)
+
+	if hub.ClientCount() != 0 {
+		t.Errorf("ClientCount() = %d, want 0", hub.ClientCount())
+	}
+}

@@ -31,6 +31,8 @@ interface DataGridProps<T> {
     // Mobile options
     mobileBreakpoint?: 'sm' | 'md' | 'lg';  // Default: 'md' (768px)
     mobileCardTitle?: (row: T) => React.ReactNode;  // Custom title for mobile cards
+    // Accessibility
+    ariaLabel?: string;  // Accessible label for the table
 }
 
 const LIMIT_OPTIONS = [25, 50, 100, 250, 1000];
@@ -172,6 +174,7 @@ const DataGrid = <T extends { id: string | number }>({
     onRowClick,
     mobileBreakpoint = 'md',
     mobileCardTitle,
+    ariaLabel,
 }: DataGridProps<T>) => {
     // Responsive class mappings - must use complete class names for Tailwind JIT detection
     // DO NOT use template literals like `${prefix}block` - Tailwind won't detect them!
@@ -187,11 +190,11 @@ const DataGrid = <T extends { id: string | number }>({
             <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
                 {/* Desktop skeleton */}
                 <div className={clsx("hidden overflow-x-auto", responsiveClasses.showDesktop)}>
-                    <table className="w-full text-left text-sm">
+                    <table className="w-full text-left text-sm" aria-label={ariaLabel || "Loading data"}>
                         <thead className="bg-slate-100 dark:bg-slate-800/50">
                             <tr>
                                 {columns.map((col, idx) => (
-                                    <th key={idx} className={clsx("px-6 py-4", col.className)}>
+                                    <th key={idx} scope="col" className={clsx("px-6 py-4", col.className)}>
                                         <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded animate-pulse w-20" />
                                     </th>
                                 ))}
@@ -252,11 +255,11 @@ const DataGrid = <T extends { id: string | number }>({
         <div className="rounded-2xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl overflow-hidden">
             {/* Desktop Table View - hidden on mobile */}
             <div className={clsx("hidden overflow-x-auto", responsiveClasses.showDesktop)}>
-                <table className="w-full text-left text-sm text-slate-600 dark:text-slate-400">
+                <table className="w-full text-left text-sm text-slate-600 dark:text-slate-400" aria-label={ariaLabel}>
                     <thead className="bg-slate-100 dark:bg-slate-800/50 text-xs uppercase text-slate-500 font-medium">
                         <tr>
                             {columns.map((col, idx) => (
-                                <th key={idx} className={clsx("px-6 py-4", col.className)}>
+                                <th key={idx} scope="col" className={clsx("px-6 py-4", col.className)}>
                                     {col.header}
                                 </th>
                             ))}
@@ -314,8 +317,9 @@ const DataGrid = <T extends { id: string | number }>({
                         </span>
                         {pagination.onLimitChange && (
                             <div className="flex items-center gap-2">
-                                <span className="text-xs text-slate-500">Per page:</span>
+                                <label htmlFor="pagination-limit" className="text-xs text-slate-500">Per page:</label>
                                 <select
+                                    id="pagination-limit"
                                     value={pagination.limit}
                                     onChange={(e) => pagination.onLimitChange!(Number(e.target.value))}
                                     className="text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-slate-600 dark:text-slate-400 focus:outline-none focus:ring-2 focus:ring-green-500/50 cursor-pointer"

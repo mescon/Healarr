@@ -1,6 +1,28 @@
-import axios from 'axios';
+import axios, { type AxiosError } from 'axios';
 import type { DashboardStats, Corruption, Remediation, PaginatedResponse, Scan, PathHealth } from '../types/api';
 import { getApiBasePath, getRouterBasePath } from './basePath';
+
+// Global error handler type - can be set by React components
+type ApiErrorHandler = (error: AxiosError) => void;
+let globalErrorHandler: ApiErrorHandler | null = null;
+
+/**
+ * Set a global error handler for API errors.
+ * This allows React components (like ToastProvider) to receive API errors
+ * without the API module needing to know about React.
+ *
+ * @example
+ * // In a React component/context:
+ * useEffect(() => {
+ *   setApiErrorHandler((error) => {
+ *     toast.error(error.message);
+ *   });
+ *   return () => setApiErrorHandler(null);
+ * }, []);
+ */
+export function setApiErrorHandler(handler: ApiErrorHandler | null): void {
+  globalErrorHandler = handler;
+}
 
 // Create axios instance with dynamic base URL for reverse proxy support
 const api = axios.create({
@@ -19,14 +41,22 @@ api.interceptors.request.use((config) => {
     return config;
 });
 
-// Add response interceptor to handle 401 errors
+// Add response interceptor to handle errors
 api.interceptors.response.use(
     (response) => response,
-    (error) => {
+    (error: AxiosError) => {
+        // Handle 401 errors by redirecting to login
         if (error.response?.status === 401) {
             localStorage.removeItem('healarr_token');
             const basePath = getRouterBasePath();
             window.location.href = basePath === '/' ? '/login' : `${basePath}/login`;
+        } else if (globalErrorHandler) {
+            // For non-401 errors, notify the global error handler
+            // Skip network errors without response (handled by individual components)
+            // Only handle server errors (5xx) globally
+            if (error.response?.status && error.response.status >= 500) {
+                globalErrorHandler(error);
+            }
         }
         return Promise.reject(error);
     }

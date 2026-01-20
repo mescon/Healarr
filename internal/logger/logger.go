@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +12,13 @@ import (
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+// contextKey is a custom type for context keys to prevent collisions.
+type contextKey string
+
+// RequestIDKey is the context key for storing the request ID.
+// This matches the key used in the api package.
+const RequestIDKey contextKey = "request_id"
 
 // LogLevel represents the severity level of a log message.
 type LogLevel string
@@ -183,4 +191,61 @@ func Debugf(format string, v ...interface{}) {
 // Warnf logs a formatted message at WARN level.
 func Warnf(format string, v ...interface{}) {
 	Log(Warn, format, v...)
+}
+
+// LogWithContext writes a formatted message at the specified level, including request ID if present.
+// This enables request correlation in distributed traces and log aggregation.
+func LogWithContext(ctx context.Context, level LogLevel, format string, v ...interface{}) {
+	// Filter messages below minimum level early
+	if levelPriority(level) < levelPriority(minLevel) {
+		return
+	}
+
+	// Extract request ID from context if available
+	reqID := ""
+	if ctx != nil {
+		if id, ok := ctx.Value(RequestIDKey).(string); ok {
+			reqID = id
+		}
+	}
+
+	msg := fmt.Sprintf(format, v...)
+	timestamp := time.Now().Format(time.RFC3339)
+
+	// Prepend request ID if present for correlation
+	logMsg := msg
+	if reqID != "" {
+		logMsg = fmt.Sprintf("[req:%s] %s", reqID, msg)
+	}
+
+	// Print to stdout and file (via log.SetOutput in init)
+	// Format: timestamp [LEVEL] [req:id] message
+	log.Printf("%s [%s] %s", timestamp, level, logMsg)
+
+	// Broadcast to subscribers (include request ID in message for WebSocket clients)
+	broadcast(LogEntry{
+		Timestamp: timestamp,
+		Level:     level,
+		Message:   logMsg,
+	})
+}
+
+// InfofCtx logs a formatted message at INFO level with context (request ID correlation).
+func InfofCtx(ctx context.Context, format string, v ...interface{}) {
+	LogWithContext(ctx, Info, format, v...)
+}
+
+// ErrorfCtx logs a formatted message at ERROR level with context (request ID correlation).
+func ErrorfCtx(ctx context.Context, format string, v ...interface{}) {
+	LogWithContext(ctx, Error, format, v...)
+}
+
+// DebugfCtx logs a formatted message at DEBUG level with context (request ID correlation).
+func DebugfCtx(ctx context.Context, format string, v ...interface{}) {
+	LogWithContext(ctx, Debug, format, v...)
+}
+
+// WarnfCtx logs a formatted message at WARN level with context (request ID correlation).
+func WarnfCtx(ctx context.Context, format string, v ...interface{}) {
+	LogWithContext(ctx, Warn, format, v...)
 }

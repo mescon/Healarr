@@ -63,3 +63,31 @@ body {
 :root.dark {
   color-scheme: dark;
 }
+
+/* Visible focus indicators for keyboard navigation (WCAG 2.1 AA compliance) */
+*:focus-visible {
+  outline: 2px solid theme(colors.green.500);
+  outline-offset: 2px;
+}
+
+/* Ensure focus is visible on dark backgrounds */
+.dark *:focus-visible {
+  outline-color: theme(colors.green.400);
+}
+
+/* Remove default outline for elements that already have focus styling */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible,
+button:focus-visible {
+  outline: none;
+  ring: 2px;
+  ring-color: theme(colors.green.500);
+}
+
+/* High contrast focus for skip link */
+.sr-only:focus {
+  outline: 3px solid theme(colors.green.500);
+  outline-offset: 2px;
+}
