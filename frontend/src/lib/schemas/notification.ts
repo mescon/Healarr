@@ -41,21 +41,26 @@ const notificationBaseSchema = z.object({
  * Provider-specific config schemas.
  * These validate the nested `config` object based on provider type.
  */
+/**
+ * Provider-specific config schemas.
+ * Field names MUST match the `key` values in notificationProviders.ts PROVIDER_CONFIGS.
+ */
+
 const webhookConfigSchema = z.object({
   url: z.string().url('Must be a valid webhook URL'),
 });
 
 const discordConfigSchema = z.object({
-  webhookurl: z.string().url('Must be a valid Discord webhook URL'),
+  webhook_url: z.string().url('Must be a valid Discord webhook URL'),
 });
 
 const slackConfigSchema = z.object({
-  webhookurl: z.string().url('Must be a valid Slack webhook URL'),
+  webhook_url: z.string().url('Must be a valid Slack webhook URL'),
 });
 
 const telegramConfigSchema = z.object({
-  token: z.string().min(1, 'Bot token is required'),
-  chats: z.string().min(1, 'At least one chat ID is required'),
+  bot_token: z.string().min(1, 'Bot token is required'),
+  chat_id: z.string().min(1, 'Chat ID is required'),
 });
 
 const emailConfigSchema = z.object({
@@ -63,24 +68,28 @@ const emailConfigSchema = z.object({
   port: z.string().or(z.number()).optional(),
   username: z.string().optional(),
   password: z.string().optional(),
-  fromaddress: z.string().email('Must be a valid email address'),
-  toaddresses: z.string().min(1, 'At least one recipient is required'),
+  from: z.string().email('Must be a valid email address'),
+  to: z.string().min(1, 'At least one recipient is required'),
+  tls: z.boolean().optional(),
 });
 
 const gotifyConfigSchema = z.object({
-  host: z.string().url('Must be a valid Gotify server URL'),
-  token: z.string().min(1, 'Application token is required'),
+  server_url: z.string().url('Must be a valid Gotify server URL'),
+  app_token: z.string().min(1, 'Application token is required'),
+  priority: z.number().optional(),
 });
 
 const ntfyConfigSchema = z.object({
-  host: z.string().optional(),
+  server_url: z.string().optional(),
   topic: z.string().min(1, 'Topic is required'),
-  token: z.string().optional(),
+  priority: z.number().optional(),
 });
 
 const pushoverConfigSchema = z.object({
-  user: z.string().min(1, 'User key is required'),
-  token: z.string().min(1, 'API token is required'),
+  user_key: z.string().min(1, 'User key is required'),
+  app_token: z.string().min(1, 'API token is required'),
+  priority: z.number().optional(),
+  sound: z.string().optional(),
 });
 
 /**
