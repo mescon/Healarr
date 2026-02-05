@@ -372,8 +372,7 @@ func (s *RESTServer) setupRoutes() {
 		// Health check endpoint (no authentication required)
 		api.GET("/health", s.handleHealth)
 
-		// System info endpoint (no authentication required - useful for debugging)
-		api.GET("/system/info", s.handleSystemInfo)
+		// System info endpoint moved to protected group (contains internal paths and runtime details)
 
 		// Prometheus metrics endpoint (no authentication required for scraping)
 		api.GET(metricsEndpoint, gin.WrapH(s.metrics.Handler()))
@@ -395,6 +394,9 @@ func (s *RESTServer) setupRoutes() {
 		protected := api.Group("")
 		protected.Use(s.authMiddleware())
 		{
+			// System info (requires auth - exposes internal paths and runtime details)
+			protected.GET("/system/info", s.handleSystemInfo)
+
 			// Auth management
 			protected.GET("/auth/key", s.getAPIKey)
 			protected.POST("/auth/regenerate", s.regenerateAPIKey)
@@ -499,8 +501,12 @@ func (s *RESTServer) setupRoutes() {
 // Start begins listening for HTTP requests on the specified address.
 func (s *RESTServer) Start(addr string) error {
 	s.httpServer = &http.Server{
-		Addr:    addr,
-		Handler: s.router,
+		Addr:              addr,
+		Handler:           s.router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	return s.httpServer.ListenAndServe()
 }
