@@ -68,14 +68,13 @@ const emailConfigSchema = z.object({
 });
 
 const gotifyConfigSchema = z.object({
-  host: z.string().url('Must be a valid Gotify server URL'),
-  token: z.string().min(1, 'Application token is required'),
+  server_url: z.string().url('Must be a valid Gotify server URL'),
+  app_token: z.string().min(1, 'Application token is required'),
 });
 
 const ntfyConfigSchema = z.object({
-  host: z.string().optional(),
+  server_url: z.string().optional(),
   topic: z.string().min(1, 'Topic is required'),
-  token: z.string().optional(),
 });
 
 const pushoverConfigSchema = z.object({
