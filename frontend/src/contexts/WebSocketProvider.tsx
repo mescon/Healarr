@@ -117,6 +117,11 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
                     queryClient.invalidateQueries({ queryKey: ['dashboardStats'] });
                 }
 
+                // Health events - refresh dashboard stats
+                if (eventType === 'SystemHealthDegraded' || eventType === 'InstanceUnhealthy' || eventType === 'InstanceHealthy') {
+                    queryClient.invalidateQueries({ queryKey: ['dashboardStats'] });
+                }
+
                 // Corruption lifecycle events - refresh corruption list and stats
                 // These are all the events that can change a corruption's status
                 const corruptionEvents = [

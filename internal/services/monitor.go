@@ -144,7 +144,11 @@ func (m *MonitorService) handleFailure(event domain.Event) {
 	// Exponential backoff: 15m, 30m, 60m
 	delay := time.Duration(math.Pow(2, float64(retryCount))) * 15 * time.Minute
 
-	// Check if we're shutting down before scheduling
+	m.scheduleRetry(corruptionID, filePath, pathID, delay)
+}
+
+// scheduleRetry schedules a retry for the given corruption with exponential backoff.
+func (m *MonitorService) scheduleRetry(corruptionID, filePath string, pathID int64, delay time.Duration) {
 	m.timerMu.Lock()
 	if m.stopped {
 		m.timerMu.Unlock()

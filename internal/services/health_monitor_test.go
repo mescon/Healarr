@@ -1699,3 +1699,192 @@ func TestPublishNeedsAttentionForOrphan(t *testing.T) {
 		t.Error("Timed out waiting for SearchExhausted event")
 	}
 }
+
+// =============================================================================
+// InstanceHealthy recovery event tests
+// =============================================================================
+
+func TestHealthMonitorService_checkInstanceHealth_PublishesInstanceHealthyOnRecovery(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Subscribe to capture both unhealthy and healthy events
+	unhealthyCh := make(chan domain.Event, 10)
+	healthyCh := make(chan domain.Event, 10)
+	eb.Subscribe(domain.InstanceUnhealthy, func(e domain.Event) {
+		unhealthyCh <- e
+	})
+	eb.Subscribe(domain.InstanceHealthy, func(e domain.Event) {
+		healthyCh <- e
+	})
+
+	client := &mockHealthArrClient{
+		instances: []*integration.ArrInstanceInfo{
+			{ID: 1, Name: "Sonarr", Type: "sonarr", URL: "http://localhost:8989"},
+		},
+		healthCheckErr: errors.New("connection refused"), // Start unhealthy
+	}
+
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
+
+	// First check: instance is unhealthy
+	h.checkInstanceHealth()
+
+	// Verify InstanceUnhealthy was published
+	select {
+	case event := <-unhealthyCh:
+		if event.EventType != domain.InstanceUnhealthy {
+			t.Errorf("Expected InstanceUnhealthy event, got %s", event.EventType)
+		}
+		if event.EventData["instance_name"] != "Sonarr" {
+			t.Errorf("Expected instance_name=Sonarr, got %v", event.EventData["instance_name"])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Expected InstanceUnhealthy event but none received")
+	}
+
+	// Verify no InstanceHealthy was published yet
+	select {
+	case event := <-healthyCh:
+		t.Fatalf("Did not expect InstanceHealthy event yet, got %v", event)
+	case <-time.After(100 * time.Millisecond):
+		// Expected - no healthy event yet
+	}
+
+	// Now make the instance healthy again
+	client.healthCheckErr = nil
+
+	// Second check: instance recovers
+	h.checkInstanceHealth()
+
+	// Verify InstanceHealthy was published
+	select {
+	case event := <-healthyCh:
+		if event.EventType != domain.InstanceHealthy {
+			t.Errorf("Expected InstanceHealthy event, got %s", event.EventType)
+		}
+		if event.EventData["instance_name"] != "Sonarr" {
+			t.Errorf("Expected instance_name=Sonarr, got %v", event.EventData["instance_name"])
+		}
+		if event.EventData["instance_type"] != "sonarr" {
+			t.Errorf("Expected instance_type=sonarr, got %v", event.EventData["instance_type"])
+		}
+		if event.EventData["instance_url"] != "http://localhost:8989" {
+			t.Errorf("Expected instance_url=http://localhost:8989, got %v", event.EventData["instance_url"])
+		}
+		if event.AggregateID != "instance_Sonarr" {
+			t.Errorf("Expected AggregateID=instance_Sonarr, got %s", event.AggregateID)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Expected InstanceHealthy event but none received")
+	}
+}
+
+func TestHealthMonitorService_checkInstanceHealth_NoHealthyEventWhenAlreadyHealthy(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Subscribe to capture healthy events
+	healthyCh := make(chan domain.Event, 10)
+	eb.Subscribe(domain.InstanceHealthy, func(e domain.Event) {
+		healthyCh <- e
+	})
+
+	client := &mockHealthArrClient{
+		instances: []*integration.ArrInstanceInfo{
+			{ID: 1, Name: "Sonarr", Type: "sonarr", URL: "http://localhost:8989"},
+		},
+		healthCheckErr: nil, // Already healthy
+	}
+
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
+
+	// Check: instance is healthy but was never unhealthy
+	h.checkInstanceHealth()
+
+	// Should NOT publish InstanceHealthy (no recovery happened)
+	select {
+	case event := <-healthyCh:
+		t.Fatalf("Did not expect InstanceHealthy event for already-healthy instance, got %v", event)
+	case <-time.After(100 * time.Millisecond):
+		// Expected - no healthy event for already-healthy instance
+	}
+}
+
+func TestHealthMonitorService_checkInstanceHealth_MultipleInstanceRecovery(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Subscribe to capture events
+	unhealthyCh := make(chan domain.Event, 10)
+	healthyCh := make(chan domain.Event, 10)
+	eb.Subscribe(domain.InstanceUnhealthy, func(e domain.Event) {
+		unhealthyCh <- e
+	})
+	eb.Subscribe(domain.InstanceHealthy, func(e domain.Event) {
+		healthyCh <- e
+	})
+
+	client := &mockHealthArrClient{
+		instances: []*integration.ArrInstanceInfo{
+			{ID: 1, Name: "Sonarr", Type: "sonarr", URL: "http://localhost:8989"},
+			{ID: 2, Name: "Radarr", Type: "radarr", URL: "http://localhost:7878"},
+		},
+		healthCheckErr: errors.New("connection refused"), // Both unhealthy
+	}
+
+	h := NewHealthMonitorService(db, eb, client, 24*time.Hour)
+
+	// First check: both instances are unhealthy
+	h.checkInstanceHealth()
+
+	// Drain the unhealthy events
+	for i := 0; i < 2; i++ {
+		select {
+		case <-unhealthyCh:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("Expected InstanceUnhealthy event %d but none received", i+1)
+		}
+	}
+
+	// Recover both
+	client.healthCheckErr = nil
+	h.checkInstanceHealth()
+
+	// Should get two InstanceHealthy events
+	recoveredNames := make(map[string]bool)
+	for i := 0; i < 2; i++ {
+		select {
+		case event := <-healthyCh:
+			name, _ := event.EventData["instance_name"].(string)
+			recoveredNames[name] = true
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("Expected InstanceHealthy event %d but none received", i+1)
+		}
+	}
+
+	if !recoveredNames["Sonarr"] {
+		t.Error("Expected Sonarr to recover")
+	}
+	if !recoveredNames["Radarr"] {
+		t.Error("Expected Radarr to recover")
+	}
+}

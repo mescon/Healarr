@@ -9,6 +9,7 @@ services:
     image: ghcr.io/mescon/healarr:latest
     container_name: healarr
     restart: unless-stopped
+    init: true
     ports:
       - "3090:3090"
     environment:

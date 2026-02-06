@@ -3,6 +3,7 @@ package services
 import (
 	"database/sql"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -2216,5 +2217,47 @@ func TestFindStaleItems_AllStateCategories(t *testing.T) {
 
 	if len(items) != len(testItems) {
 		t.Errorf("Expected %d items, got %d", len(testItems), len(items))
+	}
+}
+
+// =============================================================================
+// extractEpisodeIDs tests
+// =============================================================================
+
+func TestExtractEpisodeIDsFromEventMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata map[string]interface{}
+		want     []int64
+	}{
+		{"nil metadata", nil, nil},
+		{"empty metadata", map[string]interface{}{}, nil},
+		{"no inner metadata key", map[string]interface{}{"other": "val"}, nil},
+		{"inner metadata wrong type", map[string]interface{}{"metadata": "string"}, nil},
+		{"no episodeIds key", map[string]interface{}{"metadata": map[string]interface{}{}}, nil},
+		{"episodeIds wrong type", map[string]interface{}{"metadata": map[string]interface{}{"episodeIds": "string"}}, nil},
+		{"single episode ID", map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"episodeIds": []interface{}{float64(42)},
+			},
+		}, []int64{42}},
+		{"multiple episode IDs", map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"episodeIds": []interface{}{float64(1), float64(2), float64(3)},
+			},
+		}, []int64{1, 2, 3}},
+		{"non-float values skipped", map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"episodeIds": []interface{}{float64(1), "invalid", float64(3)},
+			},
+		}, []int64{1, 3}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractEpisodeIDsFromEventMetadata(tt.metadata)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("extractEpisodeIDsFromEventMetadata() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

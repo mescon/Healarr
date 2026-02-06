@@ -46,16 +46,16 @@ const webhookConfigSchema = z.object({
 });
 
 const discordConfigSchema = z.object({
-  webhookurl: z.string().url('Must be a valid Discord webhook URL'),
+  webhook_url: z.string().url('Must be a valid Discord webhook URL'),
 });
 
 const slackConfigSchema = z.object({
-  webhookurl: z.string().url('Must be a valid Slack webhook URL'),
+  webhook_url: z.string().url('Must be a valid Slack webhook URL'),
 });
 
 const telegramConfigSchema = z.object({
-  token: z.string().min(1, 'Bot token is required'),
-  chats: z.string().min(1, 'At least one chat ID is required'),
+  bot_token: z.string().min(1, 'Bot token is required'),
+  chat_id: z.string().min(1, 'At least one chat ID is required'),
 });
 
 const emailConfigSchema = z.object({
@@ -63,8 +63,8 @@ const emailConfigSchema = z.object({
   port: z.string().or(z.number()).optional(),
   username: z.string().optional(),
   password: z.string().optional(),
-  fromaddress: z.string().email('Must be a valid email address'),
-  toaddresses: z.string().min(1, 'At least one recipient is required'),
+  from: z.string().email('Must be a valid email address'),
+  to: z.string().min(1, 'At least one recipient is required'),
 });
 
 const gotifyConfigSchema = z.object({
@@ -78,8 +78,8 @@ const ntfyConfigSchema = z.object({
 });
 
 const pushoverConfigSchema = z.object({
-  user: z.string().min(1, 'User key is required'),
-  token: z.string().min(1, 'API token is required'),
+  user_key: z.string().min(1, 'User key is required'),
+  app_token: z.string().min(1, 'API token is required'),
 });
 
 /**

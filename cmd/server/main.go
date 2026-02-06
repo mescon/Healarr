@@ -137,10 +137,12 @@ type serviceDeps struct {
 	notifierService      *notifier.Notifier
 	metricsService       *metrics.MetricsService
 	stopCheckpoint       func()
+	stopBackups          chan struct{}
+	stopMaintenance      chan struct{}
 }
 
 // initDatabase initializes the database and starts background maintenance goroutines.
-func initDatabase(cfg *config.Config) (*db.Repository, func()) {
+func initDatabase(cfg *config.Config) (*db.Repository, func(), chan struct{}, chan struct{}) {
 	logger.Infof("Initializing database: %s", cfg.DatabasePath)
 	repo, err := db.NewRepository(cfg.DatabasePath)
 	if err != nil {
@@ -157,35 +159,46 @@ func initDatabase(cfg *config.Config) (*db.Repository, func()) {
 	}
 
 	// Start scheduled backup goroutine (every 6 hours)
-	go runScheduledBackups(repo, cfg.DatabasePath)
+	stopBackups := make(chan struct{})
+	go runScheduledBackups(repo, cfg.DatabasePath, stopBackups)
 
 	// Start periodic WAL checkpoint (every 5 minutes)
 	stopCheckpoint := repo.StartPeriodicCheckpoint(5 * time.Minute)
 	logger.Debugf("✓ Periodic WAL checkpoint started (every 5 minutes)")
 
 	// Start scheduled maintenance goroutine (daily at 3 AM local time)
-	go runScheduledMaintenance(repo, cfg.RetentionDays)
+	stopMaintenance := make(chan struct{})
+	go runScheduledMaintenance(repo, cfg.RetentionDays, stopMaintenance)
 
-	return repo, stopCheckpoint
+	return repo, stopCheckpoint, stopBackups, stopMaintenance
 }
 
 // runScheduledBackups runs database backups every 6 hours.
-func runScheduledBackups(repo *db.Repository, dbPath string) {
+func runScheduledBackups(repo *db.Repository, dbPath string, stopCh chan struct{}) {
 	ticker := time.NewTicker(6 * time.Hour)
 	defer ticker.Stop()
-	for range ticker.C {
-		if _, err := repo.Backup(dbPath); err != nil {
-			logger.Errorf("Scheduled backup failed: %v", err)
+	for {
+		select {
+		case <-ticker.C:
+			if _, err := repo.Backup(dbPath); err != nil {
+				logger.Errorf("Scheduled backup failed: %v", err)
+			}
+		case <-stopCh:
+			return
 		}
 	}
 }
 
 // runScheduledMaintenance runs database maintenance daily at 3 AM local time.
-func runScheduledMaintenance(repo *db.Repository, retentionDays int) {
+func runScheduledMaintenance(repo *db.Repository, retentionDays int, stopCh chan struct{}) {
 	for {
 		sleepDuration := timeUntilNext3AM()
 		logger.Debugf("Next database maintenance scheduled in %v", sleepDuration)
-		time.Sleep(sleepDuration)
+		select {
+		case <-time.After(sleepDuration):
+		case <-stopCh:
+			return
+		}
 
 		if err := repo.RunMaintenance(retentionDays); err != nil {
 			logger.Errorf("Scheduled maintenance failed: %v", err)
@@ -366,6 +379,10 @@ func gracefulShutdown(deps *serviceDeps, apiServer *api.RESTServer) {
 	deps.scannerService.Shutdown()
 	logger.Infof("✓ Scanner Service stopped")
 
+	logger.Infof("Stopping Verifier Service (waiting for in-flight verifications)...")
+	deps.verifierService.Shutdown()
+	logger.Infof("✓ Verifier Service stopped")
+
 	logger.Infof("Stopping Notification Service...")
 	deps.notifierService.Stop()
 	logger.Infof("✓ Notification Service stopped")
@@ -392,6 +409,18 @@ func gracefulShutdown(deps *serviceDeps, apiServer *api.RESTServer) {
 	} else {
 		logger.Infof("✓ API Server stopped")
 	}
+
+	logger.Infof("Stopping rate limiters...")
+	api.LoginLimiter.Shutdown()
+	api.SetupLimiter.Shutdown()
+	api.WebhookLimiter.Shutdown()
+	api.APILimiter.Shutdown()
+	logger.Infof("✓ Rate limiters stopped")
+
+	logger.Infof("Stopping background maintenance goroutines...")
+	close(deps.stopBackups)
+	close(deps.stopMaintenance)
+	logger.Infof("✓ Background maintenance stopped")
 
 	logger.Infof("Closing database connection (with final checkpoint)...")
 	if err := deps.repo.GracefulClose(); err != nil {
@@ -429,7 +458,7 @@ func main() {
 	config.ValidateAndWarn()
 
 	// Initialize database with background maintenance
-	repo, stopCheckpoint := initDatabase(cfg)
+	repo, stopCheckpoint, stopBackups, stopMaintenance := initDatabase(cfg)
 	defer stopCheckpoint()
 
 	// Load base path from database if not set via environment
@@ -471,6 +500,8 @@ func main() {
 		notifierService:      notifierService,
 		metricsService:       metricsService,
 		stopCheckpoint:       stopCheckpoint,
+		stopBackups:          stopBackups,
+		stopMaintenance:      stopMaintenance,
 	}
 
 	// Start all background services

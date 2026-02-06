@@ -24,7 +24,10 @@ import (
 const notifierQueryTimeout = 10 * time.Second
 
 // logFmtDecryptFailed is the log format for config decryption failures.
-const logFmtDecryptFailed = "Failed to decrypt config for notification %d: %v"
+const logFmtDecryptFailed = "failed to decrypt config for notification %d: %v"
+
+// notificationColumns is the SQL column list for notification queries.
+const notificationColumns = `id, name, provider_type, config, events, enabled, throttle_seconds, created_at, updated_at`
 
 // Provider types
 const (
@@ -395,15 +398,35 @@ func (n *Notifier) backgroundWorker() {
 	}
 }
 
+// scanNotificationRow scans a notification config from a database row and decrypts/parses JSON fields.
+func (n *Notifier) scanNotificationRow(scanner interface {
+	Scan(dest ...interface{}) error
+}) (*NotificationConfig, error) {
+	var cfg NotificationConfig
+	var configJSON, eventsJSON string
+	if err := scanner.Scan(&cfg.ID, &cfg.Name, &cfg.ProviderType, &configJSON, &eventsJSON, &cfg.Enabled, &cfg.ThrottleSeconds, &cfg.CreatedAt, &cfg.UpdatedAt); err != nil {
+		return nil, err
+	}
+
+	decrypted, err := crypto.Decrypt(configJSON)
+	if err != nil {
+		return nil, fmt.Errorf(logFmtDecryptFailed, cfg.ID, err)
+	}
+	if err := json.Unmarshal([]byte(decrypted), &cfg.Config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config for notification %d: %w", cfg.ID, err)
+	}
+	if err := json.Unmarshal([]byte(eventsJSON), &cfg.Events); err != nil {
+		cfg.Events = []string{}
+	}
+	return &cfg, nil
+}
+
 func (n *Notifier) loadConfigs() error {
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	rows, err := n.db.QueryContext(ctx, `
-		SELECT id, name, provider_type, config, events, enabled, throttle_seconds, created_at, updated_at
-		FROM notifications
-		WHERE enabled = 1
-	`)
+	rows, err := n.db.QueryContext(ctx,
+		`SELECT `+notificationColumns+` FROM notifications WHERE enabled = 1`)
 	if err != nil {
 		return err
 	}
@@ -411,24 +434,12 @@ func (n *Notifier) loadConfigs() error {
 
 	configs := make(map[int64]*NotificationConfig)
 	for rows.Next() {
-		var cfg NotificationConfig
-		var configJSON string
-		var eventsJSON string
-		if err := rows.Scan(&cfg.ID, &cfg.Name, &cfg.ProviderType, &configJSON, &eventsJSON, &cfg.Enabled, &cfg.ThrottleSeconds, &cfg.CreatedAt, &cfg.UpdatedAt); err != nil {
-			return err
-		}
-		// Decrypt config if encrypted
-		decryptedConfig, err := crypto.Decrypt(configJSON)
+		cfg, err := n.scanNotificationRow(rows)
 		if err != nil {
-			logger.Errorf(logFmtDecryptFailed, cfg.ID, err)
+			logger.Errorf("Failed to scan notification row: %v", err)
 			continue
 		}
-		cfg.Config = json.RawMessage(decryptedConfig)
-		if err := json.Unmarshal([]byte(eventsJSON), &cfg.Events); err != nil {
-			logger.Errorf("Failed to parse events for notification %d: %v", cfg.ID, err)
-			continue
-		}
-		configs[cfg.ID] = &cfg
+		configs[cfg.ID] = cfg
 	}
 
 	if err := rows.Err(); err != nil {
@@ -465,7 +476,11 @@ func (n *Notifier) handleEvent(eventType string, data map[string]interface{}) {
 			continue
 		}
 		// Send notification asynchronously
-		go n.sendNotification(cfg, eventType, data)
+		n.wg.Add(1)
+		go func(cfg *NotificationConfig) {
+			defer n.wg.Done()
+			n.sendNotification(cfg, eventType, data)
+		}(cfg)
 	}
 }
 
@@ -478,11 +493,10 @@ func (n *Notifier) shouldNotify(cfg *NotificationConfig, eventType string) bool 
 	return false
 }
 
+// canSend checks if a notification can be sent based on throttle.
+// Caller must hold n.mu.RLock().
 func (n *Notifier) canSend(configID int64, throttleSeconds int) bool {
-	n.mu.RLock()
 	lastSent, exists := n.lastSent[configID]
-	n.mu.RUnlock()
-
 	if !exists {
 		return true
 	}
@@ -1154,11 +1168,8 @@ func (n *Notifier) GetAllConfigs() ([]*NotificationConfig, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	rows, err := n.db.QueryContext(ctx, `
-		SELECT id, name, provider_type, config, events, enabled, throttle_seconds, created_at, updated_at
-		FROM notifications
-		ORDER BY name
-	`)
+	rows, err := n.db.QueryContext(ctx,
+		`SELECT `+notificationColumns+` FROM notifications ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -1166,23 +1177,12 @@ func (n *Notifier) GetAllConfigs() ([]*NotificationConfig, error) {
 
 	configs := make([]*NotificationConfig, 0)
 	for rows.Next() {
-		var cfg NotificationConfig
-		var configJSON string
-		var eventsJSON string
-		if err := rows.Scan(&cfg.ID, &cfg.Name, &cfg.ProviderType, &configJSON, &eventsJSON, &cfg.Enabled, &cfg.ThrottleSeconds, &cfg.CreatedAt, &cfg.UpdatedAt); err != nil {
-			return nil, err
-		}
-		// Decrypt config
-		decryptedConfig, err := crypto.Decrypt(configJSON)
+		cfg, err := n.scanNotificationRow(rows)
 		if err != nil {
-			logger.Errorf(logFmtDecryptFailed, cfg.ID, err)
+			logger.Errorf("Failed to scan notification row: %v", err)
 			continue
 		}
-		cfg.Config = json.RawMessage(decryptedConfig)
-		if json.Unmarshal([]byte(eventsJSON), &cfg.Events) != nil {
-			cfg.Events = []string{}
-		}
-		configs = append(configs, &cfg)
+		configs = append(configs, cfg)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -1197,31 +1197,9 @@ func (n *Notifier) GetConfig(id int64) (*NotificationConfig, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	var cfg NotificationConfig
-	var configJSON string
-	var eventsJSON string
-
-	err := n.db.QueryRowContext(ctx, `
-		SELECT id, name, provider_type, config, events, enabled, throttle_seconds, created_at, updated_at
-		FROM notifications
-		WHERE id = ?
-	`, id).Scan(&cfg.ID, &cfg.Name, &cfg.ProviderType, &configJSON, &eventsJSON, &cfg.Enabled, &cfg.ThrottleSeconds, &cfg.CreatedAt, &cfg.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-
-	// Decrypt config
-	decryptedConfig, err := crypto.Decrypt(configJSON)
-	if err != nil {
-		logger.Errorf(logFmtDecryptFailed, id, err)
-		return nil, fmt.Errorf("failed to decrypt config: %w", err)
-	}
-	cfg.Config = json.RawMessage(decryptedConfig)
-	if json.Unmarshal([]byte(eventsJSON), &cfg.Events) != nil {
-		cfg.Events = []string{}
-	}
-
-	return &cfg, nil
+	row := n.db.QueryRowContext(ctx,
+		`SELECT `+notificationColumns+` FROM notifications WHERE id = ?`, id)
+	return n.scanNotificationRow(row)
 }
 
 // CreateConfig creates a new notification configuration

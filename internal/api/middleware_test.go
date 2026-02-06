@@ -162,7 +162,7 @@ func TestCorsMiddleware_WildcardOrigin(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
-	assert.Equal(t, "true", w.Header().Get("Access-Control-Allow-Credentials"))
+	assert.Empty(t, w.Header().Get("Access-Control-Allow-Credentials"))
 }
 
 func TestCorsMiddleware_AllowedOrigin(t *testing.T) {
@@ -235,8 +235,8 @@ func TestCorsMiddleware_NoOrigin(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	// Should still set credentials and methods headers
-	assert.Equal(t, "true", w.Header().Get("Access-Control-Allow-Credentials"))
+	// Credentials header should not be set when no origin is provided
+	assert.Empty(t, w.Header().Get("Access-Control-Allow-Credentials"))
 }
 
 // =============================================================================

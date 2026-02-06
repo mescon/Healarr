@@ -231,7 +231,7 @@ func (s *RESTServer) getDetectionPreview(c *gin.Context) {
 func (s *RESTServer) createScanPath(c *gin.Context) {
 	var req scanPathRequest
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err, false)
 		return
 	}
 
@@ -364,7 +364,7 @@ func (s *RESTServer) updateScanPath(c *gin.Context) {
 	id := c.Param("id")
 	var req scanPathRequest
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err, false)
 		return
 	}
 

@@ -25,6 +25,10 @@ type HealthMonitorService struct {
 	shutdownCh chan struct{}
 	wg         sync.WaitGroup
 
+	// Instance health tracking
+	unhealthyInstances map[string]bool // tracks instance names that are currently unhealthy
+	instanceMu         sync.Mutex      // protects unhealthyInstances
+
 	// Configuration
 	checkInterval          time.Duration
 	stuckThreshold         time.Duration
@@ -43,6 +47,7 @@ func NewHealthMonitorService(db *sql.DB, eb *eventbus.EventBus, arrClient integr
 		eventBus:               eb,
 		arrClient:              arrClient,
 		shutdownCh:             make(chan struct{}),
+		unhealthyInstances:     make(map[string]bool),
 		checkInterval:          15 * time.Minute,
 		stuckThreshold:         staleThreshold,
 		repeatedFailureCount:   2,
@@ -336,8 +341,35 @@ func (h *HealthMonitorService) checkInstanceHealth() {
 			}); pubErr != nil {
 				logger.Errorf("Failed to publish InstanceUnhealthy event for %s: %v", instance.Name, pubErr)
 			}
+
+			h.instanceMu.Lock()
+			h.unhealthyInstances[instance.Name] = true
+			h.instanceMu.Unlock()
 		} else {
-			logger.Debugf("*arr instance healthy: %s (%s)", instance.Name, instance.URL)
+			h.instanceMu.Lock()
+			wasUnhealthy := h.unhealthyInstances[instance.Name]
+			if wasUnhealthy {
+				delete(h.unhealthyInstances, instance.Name)
+			}
+			h.instanceMu.Unlock()
+
+			if wasUnhealthy {
+				if pubErr := h.eventBus.Publish(domain.Event{
+					AggregateType: "health",
+					AggregateID:   "instance_" + instance.Name,
+					EventType:     domain.InstanceHealthy,
+					EventData: map[string]interface{}{
+						"instance_name": instance.Name,
+						"instance_type": instance.Type,
+						"instance_url":  instance.URL,
+					},
+				}); pubErr != nil {
+					logger.Errorf("Failed to publish InstanceHealthy event: %v", pubErr)
+				}
+				logger.Infof("*arr instance recovered: %s (%s)", instance.Name, instance.URL)
+			} else {
+				logger.Debugf("*arr instance healthy: %s (%s)", instance.Name, instance.URL)
+			}
 		}
 	}
 }

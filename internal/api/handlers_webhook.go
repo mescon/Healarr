@@ -92,7 +92,7 @@ func (s *RESTServer) handleWebhook(c *gin.Context) {
 
 	var req WebhookRequest
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err, false)
 		return
 	}
 

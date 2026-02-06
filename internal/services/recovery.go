@@ -385,6 +385,28 @@ func (r *RecoveryService) emitRetryScheduled(item staleItem) string {
 	return "recovered"
 }
 
+// extractEpisodeIDsFromEventMetadata extracts episode IDs from nested event metadata.
+func extractEpisodeIDsFromEventMetadata(metadata map[string]interface{}) []int64 {
+	if metadata == nil {
+		return nil
+	}
+	metadataInner, ok := metadata["metadata"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	eps, ok := metadataInner["episodeIds"].([]interface{})
+	if !ok {
+		return nil
+	}
+	var ids []int64
+	for _, ep := range eps {
+		if epID, ok := ep.(float64); ok {
+			ids = append(ids, int64(epID))
+		}
+	}
+	return ids
+}
+
 // emitSearchNeeded publishes a SearchStarted event for items stuck after deletion
 func (r *RecoveryService) emitSearchNeeded(item staleItem) string {
 	// We need media_id to trigger search - if not available, fall back to retry
@@ -394,18 +416,7 @@ func (r *RecoveryService) emitSearchNeeded(item staleItem) string {
 	}
 
 	// Extract episode IDs from metadata if available
-	var episodeIDs []int64
-	if item.Metadata != nil {
-		if metadataInner, ok := item.Metadata["metadata"].(map[string]interface{}); ok {
-			if eps, ok := metadataInner["episodeIds"].([]interface{}); ok {
-				for _, ep := range eps {
-					if epID, ok := ep.(float64); ok {
-						episodeIDs = append(episodeIDs, int64(epID))
-					}
-				}
-			}
-		}
-	}
+	episodeIDs := extractEpisodeIDsFromEventMetadata(item.Metadata)
 
 	eventData := map[string]interface{}{
 		"file_path":       item.FilePath,

@@ -127,8 +127,8 @@ func corsMiddleware(corsOrigins string, allowedOrigins map[string]bool) gin.Hand
 		} else if origin != "" && allowedOrigins[origin] {
 			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
 			c.Writer.Header().Set("Vary", "Origin")
+			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Key, accept, origin, Cache-Control, X-Requested-With")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
 		if c.Request.Method == "OPTIONS" {
@@ -372,9 +372,6 @@ func (s *RESTServer) setupRoutes() {
 		// Health check endpoint (no authentication required)
 		api.GET("/health", s.handleHealth)
 
-		// System info endpoint (no authentication required - useful for debugging)
-		api.GET("/system/info", s.handleSystemInfo)
-
 		// Prometheus metrics endpoint (no authentication required for scraping)
 		api.GET(metricsEndpoint, gin.WrapH(s.metrics.Handler()))
 
@@ -399,6 +396,9 @@ func (s *RESTServer) setupRoutes() {
 			protected.GET("/auth/key", s.getAPIKey)
 			protected.POST("/auth/regenerate", s.regenerateAPIKey)
 			protected.POST("/auth/password", s.changePassword)
+
+			// System info (authenticated)
+			protected.GET("/system/info", s.handleSystemInfo)
 
 			// Config - Server settings
 			protected.PUT("/config/settings", s.updateSettings)
@@ -499,14 +499,21 @@ func (s *RESTServer) setupRoutes() {
 // Start begins listening for HTTP requests on the specified address.
 func (s *RESTServer) Start(addr string) error {
 	s.httpServer = &http.Server{
-		Addr:    addr,
-		Handler: s.router,
+		Addr:              addr,
+		Handler:           s.router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown gracefully shuts down the HTTP server
+// Shutdown gracefully shuts down the HTTP server and WebSocket hub
 func (s *RESTServer) Shutdown(ctx context.Context) error {
+	if s.hub != nil {
+		s.hub.Shutdown()
+	}
 	if s.httpServer == nil {
 		return nil
 	}

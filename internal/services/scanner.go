@@ -332,6 +332,7 @@ func (s *ScannerService) ResumeInterruptedScans() {
 
 	for _, scan := range scansToResume {
 		logger.Infof("Resuming interrupted scan for %s (starting at file %d/%d)", scan.path, scan.currentIndex, scan.totalFiles)
+		s.wg.Add(1)
 		go s.resumeScan(resumeScanConfig{
 			ScanDBID:            scan.scanDBID,
 			PathID:              scan.pathID,
@@ -351,7 +352,6 @@ func (s *ScannerService) resumeScan(cfg resumeScanConfig) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s.wg.Add(1)
 	defer s.wg.Done()
 
 	// Parse file list
@@ -1385,7 +1385,7 @@ func (s *ScannerService) emitProgress(p *ScanProgress) {
 	if err := s.eventBus.Publish(domain.Event{
 		AggregateType: "scan",
 		AggregateID:   scanID,
-		EventType:     "ScanProgress",
+		EventType:     domain.ScanProgress,
 		EventData:     eventData,
 	}); err != nil {
 		logger.Debugf("Failed to emit scan progress: %v", err)
