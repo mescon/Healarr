@@ -224,7 +224,9 @@ func NewMetricsService(eb *eventbus.EventBus) *MetricsService {
 	return m
 }
 
-// Start subscribes to events and updates metrics
+// Start subscribes to events and updates Prometheus metrics.
+// All subscriber goroutines are managed by the EventBus — they are stopped
+// when EventBus.Shutdown() is called. No separate Stop method is needed.
 func (m *MetricsService) Start() {
 	// Subscribe to all relevant events
 	m.eventBus.Subscribe(domain.CorruptionDetected, m.handleCorruptionDetected)

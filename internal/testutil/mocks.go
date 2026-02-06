@@ -103,6 +103,21 @@ func (m *MockClock) AfterFunc(d time.Duration, f func()) clock.Timer {
 	return &MockTimer{clock: m, index: index}
 }
 
+// After returns a channel that receives the mock's current time when the duration elapses.
+// Uses AfterFunc internally, so Advance() and FireAll() correctly trigger it.
+func (m *MockClock) After(d time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	m.AfterFunc(d, func() {
+		ch <- m.Now()
+	})
+	return ch
+}
+
+// Since returns the time elapsed since t, using the mock's current time.
+func (m *MockClock) Since(t time.Time) time.Duration {
+	return m.Now().Sub(t)
+}
+
 // Advance moves time forward by the given duration and executes any functions
 // whose scheduled time has passed. Returns the number of functions executed.
 func (m *MockClock) Advance(d time.Duration) int {

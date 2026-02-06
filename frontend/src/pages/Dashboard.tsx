@@ -13,43 +13,51 @@ import { useToast } from '../contexts/ToastContext';
 import { useNavigate } from 'react-router-dom';
 import ConfigWarningBanner from '../components/ConfigWarningBanner';
 
-const StatCard = ({ title, value, subtitle, icon: Icon, color, delay, onClick }: { title: string, value: string, subtitle?: string, icon: React.ElementType, color: string, delay: number, onClick?: () => void }) => (
-    <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay, duration: 0.4 }}
-        onClick={onClick}
-        className={clsx(
-            "relative overflow-hidden rounded-2xl p-6 backdrop-blur-xl border transition-all duration-300 hover:scale-[1.02]",
-            "bg-white/80 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800/50 hover:border-slate-300 dark:hover:border-slate-700/50 group",
-            onClick && "cursor-pointer"
-        )}
-    >
-        <div className={clsx("absolute -right-4 -top-4 w-24 h-24 rounded-full opacity-10 blur-2xl transition-opacity group-hover:opacity-20", color)} />
+const StatCard = ({ title, value, subtitle, icon: Icon, color, delay, onClick }: { title: string, value: string, subtitle?: string, icon: React.ElementType, color: string, delay: number, onClick?: () => void }) => {
+    const Component = onClick ? motion.button : motion.div;
+    return (
+        <Component
+            type={onClick ? "button" : undefined}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay, duration: 0.4 }}
+            onClick={onClick}
+            aria-label={onClick ? `${title}: ${value}` : undefined}
+            className={clsx(
+                "relative overflow-hidden rounded-2xl p-6 backdrop-blur-xl border transition-all duration-300 hover:scale-[1.02]",
+                "bg-white/80 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800/50 hover:border-slate-300 dark:hover:border-slate-700/50 group",
+                onClick && "cursor-pointer text-left w-full"
+            )}
+        >
+            <div className={clsx("absolute -right-4 -top-4 w-24 h-24 rounded-full opacity-10 blur-2xl transition-opacity group-hover:opacity-20", color)} />
 
-        <div className="flex items-start justify-between relative z-10">
-            <div>
-                <p className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-1">{title}</p>
-                <h3 className="text-3xl font-bold text-slate-900 dark:text-slate-100 tracking-tight">{value}</h3>
-                {subtitle && <p className="text-xs text-slate-500 mt-1">{subtitle}</p>}
+            <div className="flex items-start justify-between relative z-10">
+                <div>
+                    <p className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-1">{title}</p>
+                    <h3 className="text-3xl font-bold text-slate-900 dark:text-slate-100 tracking-tight">{value}</h3>
+                    {subtitle && <p className="text-xs text-slate-500 mt-1">{subtitle}</p>}
+                </div>
+                <div className={clsx("p-3 rounded-xl bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50", color.replace('bg-', 'text-').replace('500', '400'))}>
+                    <Icon className="w-6 h-6" />
+                </div>
             </div>
-            <div className={clsx("p-3 rounded-xl bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50", color.replace('bg-', 'text-').replace('500', '400'))}>
-                <Icon className="w-6 h-6" />
-            </div>
-        </div>
-    </motion.div>
-);
+        </Component>
+    );
+};
 
 // Mini stat card for the status breakdown section
 // urgent: highlights the card when value > 0 (for action-required items)
 const MiniStatCard = ({ title, value, icon: Icon, colorClass, onClick, urgent }: { title: string, value: number, icon: React.ElementType, colorClass: string, onClick?: () => void, urgent?: boolean }) => {
     const isUrgent = urgent && value > 0;
+    const Wrapper = onClick ? 'button' : 'div';
     return (
-        <div
+        <Wrapper
+            type={onClick ? "button" : undefined}
             onClick={onClick}
+            aria-label={onClick ? `${title}: ${value}` : undefined}
             className={clsx(
                 "flex items-center gap-3 p-4 rounded-xl border transition-colors",
-                onClick && "cursor-pointer",
+                onClick && "cursor-pointer text-left w-full",
                 isUrgent
                     ? "bg-red-500/10 dark:bg-red-500/10 border-red-500/30 dark:border-red-500/30 hover:bg-red-500/20 dark:hover:bg-red-500/20"
                     : "bg-slate-100 dark:bg-slate-800/30 border-slate-200 dark:border-slate-700/30 hover:bg-slate-200 dark:hover:bg-slate-800/50"
@@ -62,7 +70,7 @@ const MiniStatCard = ({ title, value, icon: Icon, colorClass, onClick, urgent }:
                 <p className="text-2xl font-bold text-slate-900 dark:text-white">{value}</p>
                 <p className="text-xs text-slate-600 dark:text-slate-400">{title}</p>
             </div>
-        </div>
+        </Wrapper>
     );
 };
 
@@ -103,10 +111,12 @@ const PathHealthCard = ({ path, formatTimeAgo, onClick }: { path: PathHealth; fo
     const pathName = path.local_path.split('/').pop() || path.local_path;
 
     return (
-        <div
+        <button
+            type="button"
             onClick={onClick}
+            aria-label={`${pathName}: ${path.status}, ${path.active_corruptions} active corruptions`}
             className={clsx(
-                "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all hover:scale-[1.02]",
+                "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all hover:scale-[1.02] text-left w-full",
                 bgClass
             )}
         >
@@ -128,7 +138,7 @@ const PathHealthCard = ({ path, formatTimeAgo, onClick }: { path: PathHealth; fo
                     <p className="text-sm text-slate-500">{path.resolved_count} resolved</p>
                 )}
             </div>
-        </div>
+        </button>
     );
 };
 

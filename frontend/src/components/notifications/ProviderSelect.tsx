@@ -66,6 +66,15 @@ export function ProviderSelect({
             <button
                 type="button"
                 onClick={() => setIsOpen(!isOpen)}
+                onKeyDown={(e) => {
+                    if (e.key === 'Escape') setIsOpen(false);
+                    if (e.key === 'ArrowDown' && !isOpen) {
+                        e.preventDefault();
+                        setIsOpen(true);
+                    }
+                }}
+                aria-expanded={isOpen}
+                aria-haspopup="listbox"
                 className={clsx(
                     "w-full px-3 py-2 border rounded-lg text-slate-900 dark:text-white focus:ring-2 flex items-center justify-between cursor-pointer",
                     styles.button
@@ -84,11 +93,13 @@ export function ProviderSelect({
 
             {/* Dropdown menu */}
             {isOpen && (
-                <div className="absolute z-50 w-full mt-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg shadow-lg max-h-80 overflow-y-auto">
+                <div role="listbox" aria-label="Notification providers" className="absolute z-50 w-full mt-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg shadow-lg max-h-80 overflow-y-auto">
                     {/* None/Skip option */}
                     {includeNone && (
                         <button
                             type="button"
+                            role="option"
+                            aria-selected={value === 'none'}
                             onClick={() => {
                                 onChange('none');
                                 setIsOpen(false);
@@ -121,6 +132,8 @@ export function ProviderSelect({
                                     <button
                                         key={key}
                                         type="button"
+                                        role="option"
+                                        aria-selected={value === key}
                                         onClick={() => {
                                             onChange(key);
                                             setIsOpen(false);

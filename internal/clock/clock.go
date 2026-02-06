@@ -11,6 +11,10 @@ type Clock interface {
 	AfterFunc(d time.Duration, f func()) Timer
 	// Now returns the current time.
 	Now() time.Time
+	// After waits for the duration to elapse and then sends the current time on the returned channel.
+	After(d time.Duration) <-chan time.Time
+	// Since returns the time elapsed since t.
+	Since(t time.Time) time.Duration
 }
 
 // Timer represents a pending AfterFunc callback.
@@ -36,6 +40,16 @@ func (c *RealClock) AfterFunc(d time.Duration, f func()) Timer {
 // Now implements Clock.Now using time.Now.
 func (c *RealClock) Now() time.Time {
 	return time.Now()
+}
+
+// After implements Clock.After using time.After.
+func (c *RealClock) After(d time.Duration) <-chan time.Time {
+	return time.After(d)
+}
+
+// Since implements Clock.Since using time.Since.
+func (c *RealClock) Since(t time.Time) time.Duration {
+	return time.Since(t)
 }
 
 // realTimer wraps time.Timer to implement Timer interface.

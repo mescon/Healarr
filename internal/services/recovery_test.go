@@ -2224,6 +2224,117 @@ func TestFindStaleItems_AllStateCategories(t *testing.T) {
 // extractEpisodeIDs tests
 // =============================================================================
 
+func TestFindStaleItems_RFC3339Timestamp(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// Insert a stale item with RFC3339 timestamp format (the fallback parser path)
+	oldTime := time.Now().Add(-48 * time.Hour).Format(time.RFC3339)
+	_, err := db.Exec(`
+		INSERT INTO corruption_status (corruption_id, current_state, file_path, path_id, last_updated_at, detected_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, "test-uuid-rfc3339", "DownloadProgress", "/media/rfc3339.mkv", 1, oldTime, oldTime)
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	items, err := rs.findStaleItems()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("Expected 1 item, got %d", len(items))
+	}
+	if items[0].CorruptionID != "test-uuid-rfc3339" {
+		t.Errorf("Expected corruption ID 'test-uuid-rfc3339', got %q", items[0].CorruptionID)
+	}
+	if items[0].LastUpdated.IsZero() {
+		t.Error("Expected LastUpdated to be parsed from RFC3339 format, got zero time")
+	}
+}
+
+func TestFindStaleItems_NullMediaID(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	oldTime := time.Now().Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
+
+	// Insert corruption_status with no corresponding event (so media_id subquery returns NULL)
+	_, err := db.Exec(`
+		INSERT INTO corruption_status (corruption_id, current_state, file_path, path_id, last_updated_at, detected_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, "test-uuid-nomedia", "DownloadProgress", "/media/nomedia.mkv", 1, oldTime, oldTime)
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	items, err := rs.findStaleItems()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("Expected 1 item, got %d", len(items))
+	}
+	if items[0].MediaID != 0 {
+		t.Errorf("Expected MediaID 0 for NULL media_id, got %d", items[0].MediaID)
+	}
+}
+
+func TestFindStaleItems_InvalidDeletionMetadata(t *testing.T) {
+	db := setupRecoveryTestDB(t)
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	oldTime := time.Now().Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
+
+	// Insert corruption_status
+	_, err := db.Exec(`
+		INSERT INTO corruption_status (corruption_id, current_state, file_path, path_id, last_updated_at, detected_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, "test-uuid-badjson", "DeletionCompleted", "/media/badjson.mkv", 1, oldTime, oldTime)
+	if err != nil {
+		t.Fatalf("Failed to insert corruption_status: %v", err)
+	}
+
+	// Insert a DeletionCompleted event with a JSON array instead of a JSON object.
+	// json_extract will work (returns NULL for $.media_id) but Go-level json.Unmarshal
+	// into map[string]interface{} will fail since arrays can't unmarshal into maps.
+	_, err = db.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version)
+		VALUES (?, ?, ?, ?, ?)
+	`, "corruption", "test-uuid-badjson", "DeletionCompleted", `[1, 2, 3]`, 1)
+	if err != nil {
+		t.Fatalf("Failed to insert event: %v", err)
+	}
+
+	rs := NewRecoveryService(db, eb, nil, nil, nil, 24*time.Hour)
+
+	// Should not panic — invalid metadata (non-object JSON) is silently ignored
+	items, err := rs.findStaleItems()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("Expected 1 item, got %d", len(items))
+	}
+	// Metadata should be nil since JSON unmarshal into map fails for arrays
+	if items[0].Metadata != nil {
+		t.Errorf("Expected nil Metadata for non-object JSON, got %v", items[0].Metadata)
+	}
+}
+
 func TestExtractEpisodeIDsFromEventMetadata(t *testing.T) {
 	tests := []struct {
 		name     string

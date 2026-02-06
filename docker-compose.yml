@@ -10,6 +10,10 @@ services:
     container_name: healarr
     restart: unless-stopped
     init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "3090:3090"
     environment:

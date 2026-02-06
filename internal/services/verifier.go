@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mescon/Healarr/internal/clock"
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
@@ -58,6 +59,7 @@ type VerifierService struct {
 	pathMapper integration.PathMapper
 	arrClient  integration.ArrClient
 	db         *sql.DB
+	clk        clock.Clock
 
 	// Graceful shutdown support
 	shutdownCh chan struct{}
@@ -80,13 +82,19 @@ type VerifierService struct {
 }
 
 // NewVerifierService creates a new VerifierService with the given dependencies.
-func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper, arrClient integration.ArrClient, db *sql.DB) *VerifierService {
+// An optional clock.Clock can be passed for testing; defaults to clock.RealClock.
+func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper, arrClient integration.ArrClient, db *sql.DB, clocks ...clock.Clock) *VerifierService {
+	var c clock.Clock = clock.NewRealClock()
+	if len(clocks) > 0 && clocks[0] != nil {
+		c = clocks[0]
+	}
 	return &VerifierService{
 		eventBus:     eb,
 		detector:     detector,
 		pathMapper:   pm,
 		arrClient:    arrClient,
 		db:           db,
+		clk:          c,
 		shutdownCh:   make(chan struct{}),
 		semaphore:    make(chan struct{}, maxConcurrentVerifications),
 		lastState:    make(map[string]string),
@@ -348,7 +356,7 @@ func (v *VerifierService) waitWithShutdown(d time.Duration) bool {
 	select {
 	case <-v.shutdownCh:
 		return true
-	case <-time.After(d):
+	case <-v.clk.After(d):
 		return false
 	}
 }
@@ -364,7 +372,7 @@ func (v *VerifierService) waitWithContext(ctx context.Context, d time.Duration) 
 		return true
 	case <-v.shutdownCh:
 		return true
-	case <-time.After(d):
+	case <-v.clk.After(d):
 		return false
 	}
 }
@@ -429,7 +437,7 @@ func (v *VerifierService) publishManuallyRemoved(corruptionID, lastStatus string
 // total_duration = CorruptionDetected → now
 // download_duration = first DownloadProgress → now
 func (v *VerifierService) getDurationMetrics(corruptionID string) (int64, int64) {
-	now := time.Now()
+	now := v.clk.Now()
 
 	ctx, cancel := context.WithTimeout(context.Background(), verifierQueryTimeout)
 	defer cancel()
@@ -552,7 +560,7 @@ func (v *VerifierService) startVerificationWithSemaphore(ctx context.Context, co
 		case <-ctx.Done():
 			logger.Debugf("Verifier: context cancelled while waiting for semaphore for %s", corruptionID)
 			return
-		case <-time.After(verificationSemaphoreTimeout):
+		case <-v.clk.After(verificationSemaphoreTimeout):
 			logger.Warnf("Verifier: timeout acquiring semaphore for %s after %v - verification queue full",
 				corruptionID, verificationSemaphoreTimeout)
 			// Emit DownloadTimeout so recovery can pick it up later
@@ -780,7 +788,7 @@ func (v *VerifierService) monitorDownloadProgress(ctx context.Context, corruptio
 		metadata:     metadata,
 		pollInterval: cfg.VerificationInterval,
 		timeout:      v.getVerificationTimeout(pathID),
-		startTime:    time.Now(),
+		startTime:    v.clk.Now(),
 	}
 
 	logger.Infof("Starting download monitoring for corruption %s (media ID: %d)", corruptionID, mediaID)
@@ -807,7 +815,7 @@ func (v *VerifierService) executeMonitorIteration(state *monitorState) monitorAc
 		return monitorStop
 	}
 
-	elapsed := time.Since(state.startTime)
+	elapsed := v.clk.Since(state.startTime)
 	if elapsed > state.timeout {
 		v.publishDownloadTimeout(state.corruptionID, elapsed, state.attempt, state.lastStatus)
 		return monitorStop
@@ -1021,7 +1029,7 @@ func (v *VerifierService) getHistoryWithRetry(arrPath string, mediaID int64, lim
 			select {
 			case <-v.shutdownCh:
 				return nil, errors.New(errMsgShutdownInProgress)
-			case <-time.After(backoff):
+			case <-v.clk.After(backoff):
 			}
 		}
 	}
@@ -1038,7 +1046,7 @@ func (v *VerifierService) pollForFileWithBackoff(ctx context.Context, corruption
 
 	useSmartVerification := mediaID > 0
 
-	startTime := time.Now()
+	startTime := v.clk.Now()
 	attempt := 0
 
 	for {
@@ -1054,7 +1062,7 @@ func (v *VerifierService) pollForFileWithBackoff(ctx context.Context, corruption
 			return
 		}
 
-		elapsed := time.Since(startTime)
+		elapsed := v.clk.Since(startTime)
 		if elapsed > timeout {
 			v.publishDownloadTimeout(corruptionID, elapsed, attempt, "")
 			return

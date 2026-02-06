@@ -2432,3 +2432,70 @@ func TestMonitorService_SubscribesToStuckRemediation(t *testing.T) {
 		t.Errorf("Expected retry events after Start(), got before=%d, after=%d", beforeStart, afterStart)
 	}
 }
+
+// =============================================================================
+// getCorruptionContextWithRetry tests
+// =============================================================================
+
+func TestGetCorruptionContextWithRetry_SuccessOnFirstTry(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	corruptionID := "ctx-retry-success"
+	testutil.SeedEvent(db, domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   corruptionID,
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path": "/movies/Test/movie.mkv",
+			"path_id":   int64(1),
+		},
+	})
+
+	monitor := NewMonitorService(eb, db)
+
+	filePath, pathID, err := monitor.getCorruptionContextWithRetry(corruptionID, 1)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if filePath != "/movies/Test/movie.mkv" {
+		t.Errorf("Expected file_path '/movies/Test/movie.mkv', got %q", filePath)
+	}
+	if pathID != 1 {
+		t.Errorf("Expected path_id 1, got %d", pathID)
+	}
+}
+
+func TestGetCorruptionContextWithRetry_ErrNoRowsExitsEarly(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	monitor := NewMonitorService(eb, db)
+
+	// No event seeded — should return sql.ErrNoRows immediately without retrying
+	start := time.Now()
+	_, _, err = monitor.getCorruptionContextWithRetry("nonexistent-id", 3)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("Expected sql.ErrNoRows, got %v", err)
+	}
+
+	// With 3 retries and 100ms+200ms backoff, a full retry loop would take >= 300ms.
+	// ErrNoRows should exit immediately, so elapsed should be well under 200ms.
+	if elapsed >= 200*time.Millisecond {
+		t.Errorf("Expected early exit on ErrNoRows, but took %v (retries may have occurred)", elapsed)
+	}
+}

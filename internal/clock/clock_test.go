@@ -129,6 +129,64 @@ func TestRealClock_AfterFunc_ZeroDuration(t *testing.T) {
 }
 
 // =============================================================================
+// RealClock.After tests
+// =============================================================================
+
+func TestRealClock_After(t *testing.T) {
+	c := NewRealClock()
+
+	before := time.Now()
+	ch := c.After(10 * time.Millisecond)
+
+	select {
+	case got := <-ch:
+		elapsed := got.Sub(before)
+		if elapsed < 10*time.Millisecond {
+			t.Errorf("After fired too early: %v < 10ms", elapsed)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("After channel did not receive within timeout")
+	}
+}
+
+func TestRealClock_After_ZeroDuration(t *testing.T) {
+	c := NewRealClock()
+
+	ch := c.After(0)
+	select {
+	case <-ch:
+		// ok — zero duration fires immediately
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("After(0) should fire immediately")
+	}
+}
+
+// =============================================================================
+// RealClock.Since tests
+// =============================================================================
+
+func TestRealClock_Since(t *testing.T) {
+	c := NewRealClock()
+
+	before := c.Now()
+	time.Sleep(10 * time.Millisecond)
+	elapsed := c.Since(before)
+
+	if elapsed < 10*time.Millisecond {
+		t.Errorf("Since returned %v, expected >= 10ms", elapsed)
+	}
+}
+
+func TestRealClock_Since_IsPositive(t *testing.T) {
+	c := NewRealClock()
+	past := c.Now()
+	d := c.Since(past)
+	if d < 0 {
+		t.Errorf("Since should return non-negative duration, got %v", d)
+	}
+}
+
+// =============================================================================
 // Interface compliance tests
 // =============================================================================
 

@@ -384,9 +384,9 @@ func (s *RESTServer) setupRoutes() {
 		// Onboarding/Setup endpoints (public, for first-time setup wizard)
 		api.GET("/setup/status", s.handleSetupStatus)
 		api.POST("/setup/dismiss", s.handleSetupDismiss)
-		api.POST("/setup/import", s.handleConfigImportPublic)          // Config import during setup
-		api.POST("/setup/restore", s.handleDatabaseRestorePublic)      // Database restore during setup
-		api.GET("/setup/notification-events", s.getNotificationEvents) // Static event list for wizard
+		api.POST("/setup/import", SetupLimiter.Middleware(), s.handleConfigImportPublic)     // Config import during setup
+		api.POST("/setup/restore", SetupLimiter.Middleware(), s.handleDatabaseRestorePublic) // Database restore during setup
+		api.GET("/setup/notification-events", s.getNotificationEvents)                       // Static event list for wizard
 
 		// Protected endpoints (require password authentication)
 		protected := api.Group("")
