@@ -23,6 +23,9 @@ Healarr monitors your media library for corrupted files and automatically trigge
 - 🌐 **Webhook Integration** - Scan files immediately when *arr downloads complete
 - 🎨 **Modern UI** - Dark/light themes, responsive design
 - 🗄️ **Database Maintenance** - Automatic pruning, integrity checks, and optimization
+- ♿ **Accessible UI** - WCAG 2.1 AA compliant with keyboard navigation and screen reader support
+- 🛡️ **Form Validation** - Client-side validation with clear inline error messages
+- 📈 **Observability** - Prometheus metrics, request tracing, and database performance monitoring
 
 ### Supported *arr Applications
 
@@ -47,6 +50,11 @@ services:
     image: ghcr.io/mescon/healarr:latest
     container_name: healarr
     restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "3090:3090"
     environment:
@@ -412,8 +420,13 @@ Healarr can notify you about:
 - Remediation started/completed/failed
 - Verification success/failure
 - Scan completed
+- *arr instance health changes (unhealthy/recovered)
+- Stuck remediations that need attention
+- User actions (corruption ignored)
 
 Supported providers: Discord, Slack, Telegram, Pushover, Gotify, ntfy, Email (SMTP), Custom webhooks
+
+Configure per-event filtering so you only receive the notifications that matter to you.
 
 ## Reverse Proxy
 
