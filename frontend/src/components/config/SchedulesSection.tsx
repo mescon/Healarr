@@ -124,7 +124,7 @@ const SchedulesSection = () => {
                 icon={Clock}
                 iconColor="text-purple-400"
                 title="Scheduled Scans"
-                defaultExpanded={false}
+                defaultExpanded={!!schedules && schedules.length > 0}
                 delay={0.3}
             >
                 {/* Add Schedule Form */}
