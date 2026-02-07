@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-02-07
+
+### Added
+- **Form Validation**: Configuration forms now check your input before saving
+  - Clear error messages shown next to each field
+  - Validates *arr instances, scan paths, and notification settings
+- **Crash Recovery**: If something goes wrong in the UI, you get a friendly error screen with a retry button instead of a blank page
+- **Monitoring Metrics**: Prometheus-compatible metrics endpoint for Grafana or similar monitoring stacks
+  - HTTP request duration and count
+  - Database query performance
+  - WebSocket connection tracking
+- **Keyboard Navigation**: Notification provider dropdown and dashboard cards fully support keyboard-only navigation
+- **Screen Reader Support**: Improved accessibility throughout the UI
+  - Skip navigation link for keyboard users
+  - Dashboard cards use proper button semantics
+  - Dropdown menus use ARIA listbox pattern
+
+### Fixed
+- **Gotify/ntfy Notifications Broken**: Fixed "Please fill in all required fields" error when adding Gotify or ntfy notification providers, even though all fields were filled correctly (#105)
+- **Container Restart Hangs**: Healarr could hang when restarting the Docker container if a verification was in progress
+  - Verifier service now included in graceful shutdown sequence
+- **Background Tasks Leaking**: Database maintenance tasks now stop cleanly on shutdown instead of continuing to run in the background
+- **Error Messages Exposing Internals**: API error responses no longer show raw Go type information
+  - All handler error messages sanitized
+
+### Improved
+- **Docker Security**: Container now runs with `no-new-privileges` and drops all Linux capabilities by default
+- **Server Timeouts**: HTTP server now enforces read (15s), write (30s), and idle (120s) timeouts to prevent connections from hanging indefinitely
+- **Setup Wizard**: Split into smaller, faster-loading step components for a smoother first-run experience
+- **Rate Limiting**: Config import and database restore endpoints during setup are now rate-limited to prevent abuse
+- **System Info**: The system info endpoint now requires authentication
+
+### Dependencies
+- Upgraded Zod from v3 to v4 for faster form validation
+- Upgraded Vitest from v3 to v4
+- Bumped framer-motion, lucide-react, recharts, jsdom, @types/node
+- Bumped Go dependencies (SQLite driver, crypto, validator)
+
 ## [1.1.33] - 2026-01-13
 
 ### Added
