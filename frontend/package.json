@@ -15,7 +15,7 @@
   "dependencies": {
     "@tanstack/react-query": "^5.90.12",
     "@testing-library/dom": "^10.4.1",
-    "axios": "^1.13.2",
+    "axios": "^1.13.5",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "framer-motion": "^12.33.0",
