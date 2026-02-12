@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- exports both a hook and a helper component */
 import { useState, useCallback } from 'react';
 import { type z, type ZodError } from 'zod';
 

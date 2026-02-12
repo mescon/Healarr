@@ -524,21 +524,17 @@ interface ServerSettingsSectionProps {
 
 const ServerSettingsSection = ({ runtimeConfig, queryClient, toast }: ServerSettingsSectionProps) => {
     const [isEditing, setIsEditing] = useState(false);
-    const [basePath, setBasePath] = useState(runtimeConfig?.base_path || '/');
+    const [editBasePath, setEditBasePath] = useState<string | null>(null);
+    const basePath = editBasePath ?? runtimeConfig?.base_path ?? '/';
     const [showRestartConfirm, setShowRestartConfirm] = useState(false);
     const [pendingRestart, setPendingRestart] = useState(false);
-
-    useEffect(() => {
-        if (runtimeConfig?.base_path) {
-            setBasePath(runtimeConfig.base_path);
-        }
-    }, [runtimeConfig?.base_path]);
 
     const updateSettingsMutation = useMutation({
         mutationFn: updateSettings,
         onSuccess: (data) => {
             queryClient.invalidateQueries({ queryKey: ['runtimeConfig'] });
             toast.success('Base path saved! A restart is required for changes to take effect.');
+            setEditBasePath(null);
             setIsEditing(false);
             if (data.restart_required) {
                 setPendingRestart(true);
@@ -573,7 +569,7 @@ const ServerSettingsSection = ({ runtimeConfig, queryClient, toast }: ServerSett
     };
 
     const handleCancel = () => {
-        setBasePath(runtimeConfig?.base_path || '/');
+        setEditBasePath(null);
         setIsEditing(false);
     };
 
@@ -599,7 +595,7 @@ const ServerSettingsSection = ({ runtimeConfig, queryClient, toast }: ServerSett
                                     <input
                                         type="text"
                                         value={basePath}
-                                        onChange={(e) => setBasePath(e.target.value)}
+                                        onChange={(e) => setEditBasePath(e.target.value)}
                                         placeholder="/"
                                         className="flex-1 px-3 py-2 bg-white dark:bg-slate-900 border border-slate-600 rounded-lg text-slate-900 dark:text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500"
                                     />
@@ -754,12 +750,11 @@ const Config = () => {
 
     // Collapsible state
     const [isAdvancedExpanded, setIsAdvancedExpanded] = useState(false);
-    const [isAboutExpanded, setIsAboutExpanded] = useState(false);
+    const [isAboutExpanded, setIsAboutExpanded] = useState(location.hash === '#about');
 
-    // Handle hash navigation (e.g., /config#about)
+    // Scroll to About section on hash navigation
     useEffect(() => {
         if (location.hash === '#about') {
-            setIsAboutExpanded(true);
             setTimeout(() => {
                 aboutSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }, 100);

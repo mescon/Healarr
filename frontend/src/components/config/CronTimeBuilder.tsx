@@ -22,13 +22,14 @@ const CronTimeBuilder = ({ value, onChange }: CronTimeBuilderProps) => {
         { value: 6, label: 'Sat' },
     ];
 
-    // Parse existing cron value when switching to visual mode
+    // Parse existing cron value when switching to visual mode.
+    // setState in this effect is intentional: syncing parent's cron prop into local editing state.
     useEffect(() => {
         if (value && useVisual) {
             const parts = value.split(' ');
             if (parts.length >= 5) {
                 const [min, hr, , , dow] = parts;
-                // Only parse simple numeric values
+                /* eslint-disable react-hooks/set-state-in-effect -- intentional sync of prop into local editing state */
                 if (/^\d+$/.test(min)) setMinute(parseInt(min, 10));
                 if (/^\d+$/.test(hr)) setHour(parseInt(hr, 10));
                 if (dow !== '*') {
@@ -37,6 +38,7 @@ const CronTimeBuilder = ({ value, onChange }: CronTimeBuilderProps) => {
                 } else {
                     setSelectedDays([]);
                 }
+                /* eslint-enable react-hooks/set-state-in-effect */
             }
         }
     }, [value, useVisual]);

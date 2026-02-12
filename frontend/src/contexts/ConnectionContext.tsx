@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- context provider exports both component and hook */
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { getApiBasePath } from '../lib/basePath';
 

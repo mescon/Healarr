@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, createElement } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ShieldCheck, AlertOctagon, Loader2, X, Clock, AlertTriangle, EyeOff, CheckCircle2, FileSearch, TrendingUp, HandMetal, Play, ChevronDown, ScanSearch, PlayCircle, AlertCircle, ArrowRight } from 'lucide-react';
 import clsx from 'clsx';
@@ -105,7 +105,6 @@ const getPathStatusBg = (status: PathHealth['status']) => {
 };
 
 const PathHealthCard = ({ path, formatTimeAgo, onClick }: { path: PathHealth; formatTimeAgo: (date: string) => string; onClick: () => void }) => {
-    const Icon = getPathStatusIcon(path.status);
     const colorClass = getPathStatusColor(path.status);
     const bgClass = getPathStatusBg(path.status);
     const pathName = path.local_path.split('/').pop() || path.local_path;
@@ -121,7 +120,7 @@ const PathHealthCard = ({ path, formatTimeAgo, onClick }: { path: PathHealth; fo
             )}
         >
             <div className={clsx("p-2 rounded-lg", bgClass)}>
-                <Icon className={clsx("w-5 h-5", colorClass)} />
+                {createElement(getPathStatusIcon(path.status), { className: clsx("w-5 h-5", colorClass) })}
             </div>
             <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-slate-900 dark:text-white truncate" title={path.local_path}>
