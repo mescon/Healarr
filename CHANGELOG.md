@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-02-12
+
+### Improved
+- **Code Quality Enforcement**: Lint and type checking are now required to pass in CI
+  - Previously these checks ran but failures were silently ignored
+  - Pull requests with lint or type errors will now be blocked until fixed
+- **Cleaner React Patterns**: Replaced several state-syncing effects with derived state
+  - "How to Update" section now expands automatically when an update is available, without extra re-renders
+  - Configuration warning banner loads faster by reading session state upfront
+  - Base path and About section settings initialize without flicker
+
+### Dependencies
+- Bumped axios, typescript-eslint, eslint-plugin-react-refresh, react-router-dom
+
 ## [1.2.0] - 2026-02-07
 
 ### Added
