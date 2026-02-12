@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { AlertTriangle, X, ExternalLink } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
@@ -22,16 +22,15 @@ interface HealthResponse {
  */
 export default function ConfigWarningBanner() {
     const [warnings, setWarnings] = useState<ConfigWarning[]>([]);
-    const [dismissed, setDismissed] = useState(false);
-    const [loading, setLoading] = useState(true);
+    const [dismissed, setDismissed] = useState(
+        () => sessionStorage.getItem('configWarningDismissed') === 'true'
+    );
+    const [loading, setLoading] = useState(() => !dismissed);
+    const hasFetched = useRef(false);
 
     useEffect(() => {
-        // Check if already dismissed this session
-        if (sessionStorage.getItem('configWarningDismissed') === 'true') {
-            setDismissed(true);
-            setLoading(false);
-            return;
-        }
+        if (dismissed || hasFetched.current) return;
+        hasFetched.current = true;
 
         // Fetch health endpoint to check for warnings
         const basePath = (window as unknown as { __BASE_PATH__?: string }).__BASE_PATH__ || '';
@@ -46,7 +45,7 @@ export default function ConfigWarningBanner() {
                 // Silently fail - don't show errors for health check
             })
             .finally(() => setLoading(false));
-    }, []);
+    }, [dismissed]);
 
     const handleDismiss = () => {
         sessionStorage.setItem('configWarningDismissed', 'true');

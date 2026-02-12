@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- test utility file, not subject to HMR */
 import React, { type ReactElement } from 'react';
 import { render, type RenderOptions } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';

@@ -147,7 +147,7 @@ const Corruptions = () => {
             toast.success(result.message);
             setSelectedIds(new Set());
             queryClient.invalidateQueries({ queryKey: ['corruptions'] });
-        } catch (error) {
+        } catch {
             toast.error('Failed to retry corruptions');
         }
     };
@@ -159,7 +159,7 @@ const Corruptions = () => {
             toast.success(result.message);
             setSelectedIds(new Set());
             queryClient.invalidateQueries({ queryKey: ['corruptions'] });
-        } catch (error) {
+        } catch {
             toast.error('Failed to ignore corruptions');
         }
     };
@@ -173,7 +173,7 @@ const Corruptions = () => {
             setSelectedIds(new Set());
             setShowDeleteConfirm(false);
             queryClient.invalidateQueries({ queryKey: ['corruptions'] });
-        } catch (error) {
+        } catch {
             toast.error('Failed to delete corruptions');
         } finally {
             setIsDeleting(false);
@@ -256,7 +256,7 @@ const Corruptions = () => {
                                         toast.success(result.message);
                                         queryClient.invalidateQueries({ queryKey: ['corruptions'] });
                                     }
-                                } catch (error) {
+                                } catch {
                                     toast.error('Failed to retry items');
                                 }
                             }}

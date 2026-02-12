@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -56,15 +56,9 @@ const AboutSection = ({ showAsAccordion = false }: AboutSectionProps) => {
     // Determine platform from system info
     const currentPlatform = systemInfo?.environment === 'docker' ? 'docker' : systemInfo?.os || 'unknown';
 
-    // Update instructions collapsed state - expanded by default when update available
-    const [updateInstructionsExpanded, setUpdateInstructionsExpanded] = useState(false);
-
-    // Auto-expand when update becomes available
-    useEffect(() => {
-        if (updateInfo?.update_available) {
-            setUpdateInstructionsExpanded(true);
-        }
-    }, [updateInfo?.update_available]);
+    // Update instructions: auto-expand when update available, but respect manual toggle
+    const [manualToggle, setManualToggle] = useState<boolean | null>(null);
+    const updateInstructionsExpanded = manualToggle ?? !!updateInfo?.update_available;
 
     // Parse inline markdown elements (bold, links, URLs, code) into React nodes
     const parseInlineMarkdown = (text: string, keyPrefix: string): React.ReactNode[] => {
@@ -77,7 +71,7 @@ const AboutSection = ({ showAsAccordion = false }: AboutSectionProps) => {
             const mdLinkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
             const boldMatch = remaining.match(/\*\*([^*]+)\*\*/);
             const codeMatch = remaining.match(/`([^`]+)`/);
-            const urlMatch = remaining.match(/(https?:\/\/[^\s<>\[\]()]+)/);
+            const urlMatch = remaining.match(/(https?:\/\/[^\s<>[\]()]+)/);
 
             // Find the earliest match
             const matches = [
@@ -395,7 +389,7 @@ const AboutSection = ({ showAsAccordion = false }: AboutSectionProps) => {
             {/* Update Instructions - Always visible, collapsible */}
             <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/40 overflow-hidden">
                 <button
-                    onClick={() => setUpdateInstructionsExpanded(!updateInstructionsExpanded)}
+                    onClick={() => setManualToggle(!updateInstructionsExpanded)}
                     className="w-full px-4 py-3 bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700/50 transition-colors"
                 >
                     <h4 className="font-semibold text-slate-900 dark:text-white">How to Update</h4>

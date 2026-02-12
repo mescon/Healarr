@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- exports both component and constants */
 /**
  * ProviderIcon - Displays the appropriate icon for a notification provider.
  * Uses SVG icons when available, falls back to emojis.
