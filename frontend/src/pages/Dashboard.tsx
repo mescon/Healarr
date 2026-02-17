@@ -213,8 +213,17 @@ const ActiveScansTable = () => {
                                     "hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors",
                                     scan.scan_db_id && "cursor-pointer"
                                 )}
+                                tabIndex={scan.scan_db_id ? 0 : undefined}
+                                role={scan.scan_db_id ? "link" : undefined}
+                                aria-label={scan.scan_db_id ? `View scan details for ${scan.path}` : undefined}
                                 onClick={() => {
                                     if (scan.scan_db_id) {
+                                        navigate(`/scans/${scan.scan_db_id}`);
+                                    }
+                                }}
+                                onKeyDown={(e) => {
+                                    if (scan.scan_db_id && (e.key === 'Enter' || e.key === ' ')) {
+                                        e.preventDefault();
                                         navigate(`/scans/${scan.scan_db_id}`);
                                     }
                                 }}
