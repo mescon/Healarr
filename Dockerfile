@@ -80,8 +80,9 @@ RUN chmod +x /app/docker-entrypoint.sh
 # Create config directory with logs subdirectory
 RUN mkdir -p /config/logs && chown -R healarr:healarr /config /app
 
-# Note: We run as root initially so entrypoint can modify UID/GID
-# The entrypoint script drops privileges to the healarr user via su-exec
+# Security: Container starts as root to support PUID/PGID user mapping in entrypoint.
+# Privileges are dropped immediately via su-exec before the application starts.
+# Combined with no-new-privileges and cap_drop:ALL, the app process cannot escalate.
 
 # Environment defaults
 ENV HEALARR_PORT=3090 \

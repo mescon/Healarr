@@ -9,6 +9,10 @@ services:
     image: ghcr.io/mescon/healarr:latest
     container_name: healarr
     restart: unless-stopped
+    # Security hardening:
+    # - init: prevents zombie processes
+    # - no-new-privileges: prevents privilege escalation after entrypoint drops to non-root
+    # - cap_drop ALL: removes all Linux capabilities from the container
     init: true
     security_opt:
       - no-new-privileges:true
