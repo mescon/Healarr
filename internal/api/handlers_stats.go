@@ -249,49 +249,55 @@ func (s *RESTServer) getPathHealth(c *gin.Context) {
 
 	// For each path, get last scan and corruption stats
 	for i := range paths {
-		pathID := paths[i].PathID
-
-		// Get last completed scan for this path
-		var lastScanID sql.NullInt64
-		var lastScanTime sql.NullString
-		err := s.db.QueryRow(`
-			SELECT id, completed_at
-			FROM scans
-			WHERE path_id = ? AND status = 'completed' AND completed_at IS NOT NULL
-			ORDER BY completed_at DESC
-			LIMIT 1
-		`, pathID).Scan(&lastScanID, &lastScanTime)
-		if err == nil {
-			if lastScanID.Valid {
-				id := int(lastScanID.Int64)
-				paths[i].LastScanID = &id
-			}
-			if lastScanTime.Valid {
-				paths[i].LastScanTime = &lastScanTime.String
-			}
-		}
-
-		// Get corruption counts for this path
-		var active, total, resolved int
-		err = s.db.QueryRow(`
-			SELECT
-				COUNT(DISTINCT CASE WHEN current_state NOT IN ('VerificationSuccess', 'MaxRetriesReached', 'CorruptionIgnored') THEN corruption_id END),
-				COUNT(DISTINCT corruption_id),
-				COUNT(DISTINCT CASE WHEN current_state = 'VerificationSuccess' THEN corruption_id END)
-			FROM corruption_status
-			WHERE path_id = ?
-		`, pathID).Scan(&active, &total, &resolved)
-		if err == nil {
-			paths[i].ActiveCorruptions = active
-			paths[i].TotalCorruptions = total
-			paths[i].ResolvedCount = resolved
-		}
-
-		// Determine health status
+		paths[i].LastScanID, paths[i].LastScanTime = s.loadPathLastScan(paths[i].PathID)
+		paths[i].ActiveCorruptions, paths[i].TotalCorruptions, paths[i].ResolvedCount = s.loadPathCorruptionStats(paths[i].PathID)
 		paths[i].Status = determinePathHealthStatus(paths[i])
 	}
 
 	c.JSON(http.StatusOK, paths)
+}
+
+// loadPathLastScan queries the last completed scan for a given path, returning nullable ID and time.
+func (s *RESTServer) loadPathLastScan(pathID int) (*int, *string) {
+	var lastScanID sql.NullInt64
+	var lastScanTime sql.NullString
+	err := s.db.QueryRow(`
+		SELECT id, completed_at
+		FROM scans
+		WHERE path_id = ? AND status = 'completed' AND completed_at IS NOT NULL
+		ORDER BY completed_at DESC
+		LIMIT 1
+	`, pathID).Scan(&lastScanID, &lastScanTime)
+	if err != nil {
+		return nil, nil
+	}
+
+	var idPtr *int
+	if lastScanID.Valid {
+		id := int(lastScanID.Int64)
+		idPtr = &id
+	}
+	var timePtr *string
+	if lastScanTime.Valid {
+		timePtr = &lastScanTime.String
+	}
+	return idPtr, timePtr
+}
+
+// loadPathCorruptionStats queries active, total, and resolved corruption counts for a given path.
+func (s *RESTServer) loadPathCorruptionStats(pathID int) (active, total, resolved int) {
+	err := s.db.QueryRow(`
+		SELECT
+			COUNT(DISTINCT CASE WHEN current_state NOT IN ('VerificationSuccess', 'MaxRetriesReached', 'CorruptionIgnored') THEN corruption_id END),
+			COUNT(DISTINCT corruption_id),
+			COUNT(DISTINCT CASE WHEN current_state = 'VerificationSuccess' THEN corruption_id END)
+		FROM corruption_status
+		WHERE path_id = ?
+	`, pathID).Scan(&active, &total, &resolved)
+	if err != nil {
+		return 0, 0, 0
+	}
+	return active, total, resolved
 }
 
 // determinePathHealthStatus calculates the health status based on corruption counts and scan recency.

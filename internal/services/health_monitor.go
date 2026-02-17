@@ -322,55 +322,62 @@ func (h *HealthMonitorService) checkInstanceHealth() {
 	}
 
 	for _, instance := range instances {
-		// Check instance health using the system status endpoint
-		err := h.arrClient.CheckInstanceHealth(instance.ID)
-		if err != nil {
-			logger.Warnf("*arr instance unreachable: %s (%s) - %v", instance.Name, instance.URL, err)
-
-			// Emit event for monitoring
-			if pubErr := h.eventBus.Publish(domain.Event{
-				AggregateType: "health",
-				AggregateID:   "instance_" + instance.Name,
-				EventType:     domain.InstanceUnhealthy,
-				EventData: map[string]interface{}{
-					"instance_name": instance.Name,
-					"instance_type": instance.Type,
-					"instance_url":  instance.URL,
-					"error":         err.Error(),
-				},
-			}); pubErr != nil {
-				logger.Errorf("Failed to publish InstanceUnhealthy event for %s: %v", instance.Name, pubErr)
-			}
-
-			h.instanceMu.Lock()
-			h.unhealthyInstances[instance.Name] = true
-			h.instanceMu.Unlock()
+		if err := h.arrClient.CheckInstanceHealth(instance.ID); err != nil {
+			h.handleInstanceUnhealthy(instance, err)
 		} else {
-			h.instanceMu.Lock()
-			wasUnhealthy := h.unhealthyInstances[instance.Name]
-			if wasUnhealthy {
-				delete(h.unhealthyInstances, instance.Name)
-			}
-			h.instanceMu.Unlock()
-
-			if wasUnhealthy {
-				if pubErr := h.eventBus.Publish(domain.Event{
-					AggregateType: "health",
-					AggregateID:   "instance_" + instance.Name,
-					EventType:     domain.InstanceHealthy,
-					EventData: map[string]interface{}{
-						"instance_name": instance.Name,
-						"instance_type": instance.Type,
-						"instance_url":  instance.URL,
-					},
-				}); pubErr != nil {
-					logger.Errorf("Failed to publish InstanceHealthy event: %v", pubErr)
-				}
-				logger.Infof("*arr instance recovered: %s (%s)", instance.Name, instance.URL)
-			} else {
-				logger.Debugf("*arr instance healthy: %s (%s)", instance.Name, instance.URL)
-			}
+			h.handleInstanceRecovered(instance)
 		}
+	}
+}
+
+// handleInstanceUnhealthy logs, publishes an InstanceUnhealthy event, and marks the instance as unhealthy.
+func (h *HealthMonitorService) handleInstanceUnhealthy(instance *integration.ArrInstanceInfo, err error) {
+	logger.Warnf("*arr instance unreachable: %s (%s) - %v", instance.Name, instance.URL, err)
+
+	if pubErr := h.eventBus.Publish(domain.Event{
+		AggregateType: "health",
+		AggregateID:   "instance_" + instance.Name,
+		EventType:     domain.InstanceUnhealthy,
+		EventData: map[string]interface{}{
+			"instance_name": instance.Name,
+			"instance_type": instance.Type,
+			"instance_url":  instance.URL,
+			"error":         err.Error(),
+		},
+	}); pubErr != nil {
+		logger.Errorf("Failed to publish InstanceUnhealthy event for %s: %v", instance.Name, pubErr)
+	}
+
+	h.instanceMu.Lock()
+	h.unhealthyInstances[instance.Name] = true
+	h.instanceMu.Unlock()
+}
+
+// handleInstanceRecovered checks if the instance was previously unhealthy and publishes a recovery event if so.
+func (h *HealthMonitorService) handleInstanceRecovered(instance *integration.ArrInstanceInfo) {
+	h.instanceMu.Lock()
+	wasUnhealthy := h.unhealthyInstances[instance.Name]
+	if wasUnhealthy {
+		delete(h.unhealthyInstances, instance.Name)
+	}
+	h.instanceMu.Unlock()
+
+	if wasUnhealthy {
+		if pubErr := h.eventBus.Publish(domain.Event{
+			AggregateType: "health",
+			AggregateID:   "instance_" + instance.Name,
+			EventType:     domain.InstanceHealthy,
+			EventData: map[string]interface{}{
+				"instance_name": instance.Name,
+				"instance_type": instance.Type,
+				"instance_url":  instance.URL,
+			},
+		}); pubErr != nil {
+			logger.Errorf("Failed to publish InstanceHealthy event: %v", pubErr)
+		}
+		logger.Infof("*arr instance recovered: %s (%s)", instance.Name, instance.URL)
+	} else {
+		logger.Debugf("*arr instance healthy: %s (%s)", instance.Name, instance.URL)
 	}
 }
 
