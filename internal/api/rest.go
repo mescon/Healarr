@@ -100,7 +100,7 @@ func requestIDMiddleware() gin.HandlerFunc {
 // metricsMiddleware records HTTP request duration and count.
 func metricsMiddleware(metricsService *metrics.MetricsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if c.Request.URL.Path == metricsEndpoint {
+		if strings.HasSuffix(c.Request.URL.Path, metricsEndpoint) {
 			c.Next()
 			return
 		}
@@ -364,10 +364,6 @@ func (s *RESTServer) setupRoutes() {
 	cfg := config.Get()
 	basePath := cfg.BasePath
 
-	// Prometheus metrics endpoint at root level (standard convention, not behind base path)
-	// This makes it easy for Prometheus to discover and scrape without knowing the base path
-	s.router.GET(metricsEndpoint, gin.WrapH(s.metrics.Handler()))
-
 	// Create a group for the base path (or use root if basePath is "/")
 	var base *gin.RouterGroup
 	if basePath == "/" {
@@ -387,9 +383,6 @@ func (s *RESTServer) setupRoutes() {
 
 		// Health check endpoint (no authentication required)
 		api.GET("/health", s.handleHealth)
-
-		// Prometheus metrics endpoint (no authentication required for scraping)
-		api.GET(metricsEndpoint, gin.WrapH(s.metrics.Handler()))
 
 		// Public auth endpoints with rate limiting
 		api.POST("/auth/setup", SetupLimiter.Middleware(), s.handleAuthSetup)
@@ -416,6 +409,9 @@ func (s *RESTServer) setupRoutes() {
 
 			// System info (authenticated)
 			protected.GET("/system/info", s.handleSystemInfo)
+
+			// Prometheus metrics (authenticated — use Bearer token for scraping)
+			protected.GET(metricsEndpoint, gin.WrapH(s.metrics.Handler()))
 
 			// Config - Server settings
 			protected.PUT("/config/settings", s.updateSettings)
