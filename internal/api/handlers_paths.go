@@ -109,7 +109,7 @@ func prepareScanPathRequest(req *scanPathRequest, c *gin.Context) ([]byte, bool)
 func (s *RESTServer) getScanPaths(c *gin.Context) {
 	rows, err := s.db.Query("SELECT id, local_path, arr_path, arr_instance_id, enabled, auto_remediate, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours FROM scan_paths")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	defer rows.Close()
@@ -246,7 +246,7 @@ func (s *RESTServer) createScanPath(c *gin.Context) {
 		req.LocalPath, req.ArrPath, req.ArrInstanceID, req.Enabled, req.AutoRemediate,
 		req.DetectionMethod, detectionArgsJSON, req.DetectionMode, req.MaxRetries, req.VerificationTimeoutHours)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	if err := s.pathMapper.Reload(); err != nil {
@@ -261,7 +261,7 @@ func (s *RESTServer) deleteScanPath(c *gin.Context) {
 	id := c.Param("id")
 	_, err := s.db.Exec("DELETE FROM scan_paths WHERE id = ?", id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	if err := s.pathMapper.Reload(); err != nil {
@@ -382,7 +382,7 @@ func (s *RESTServer) updateScanPath(c *gin.Context) {
 		req.AutoRemediate, req.DetectionMethod, detectionArgsJSON,
 		req.DetectionMode, req.MaxRetries, req.VerificationTimeoutHours, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	if err := s.pathMapper.Reload(); err != nil {
@@ -475,7 +475,7 @@ func (s *RESTServer) validateScanPath(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 

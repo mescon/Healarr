@@ -55,7 +55,7 @@ func validateArrURL(rawURL string) error {
 func (s *RESTServer) getArrInstances(c *gin.Context) {
 	rows, err := s.db.Query("SELECT id, name, type, url, api_key, enabled FROM arr_instances")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	defer rows.Close()
@@ -173,7 +173,7 @@ func (s *RESTServer) createArrInstance(c *gin.Context) {
 	_, err = s.db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
 		instanceName, req.Type, req.URL, encryptedKey, req.Enabled)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	c.Status(http.StatusCreated)
@@ -183,7 +183,7 @@ func (s *RESTServer) deleteArrInstance(c *gin.Context) {
 	id := c.Param("id")
 	_, err := s.db.Exec("DELETE FROM arr_instances WHERE id = ?", id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -220,7 +220,7 @@ func (s *RESTServer) updateArrInstance(c *gin.Context) {
 	_, err = s.db.Exec("UPDATE arr_instances SET name = ?, type = ?, url = ?, api_key = ?, enabled = ? WHERE id = ?",
 		req.Name, req.Type, req.URL, encryptedKey, req.Enabled, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	c.Status(http.StatusOK)

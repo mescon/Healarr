@@ -121,7 +121,7 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	var total int
 	countQuery := "SELECT COUNT(*) " + baseQuery + whereClause // NOSONAR - uses parameterized query with args
 	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -142,7 +142,7 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 
 	rows, err := s.db.QueryContext(ctx, query, args...) // NOSONAR
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	defer rows.Close()
@@ -341,14 +341,14 @@ func (s *RESTServer) getRemediations(c *gin.Context) {
 	// Get total count
 	var total int
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM corruption_status WHERE current_state = ?", string(domain.VerificationSuccess)).Scan(&total); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
 	// Get paginated data
 	rows, err := s.db.QueryContext(ctx, "SELECT corruption_id, file_path, last_updated_at FROM corruption_status WHERE current_state = ? ORDER BY last_updated_at DESC LIMIT ? OFFSET ?", string(domain.VerificationSuccess), p.Limit, p.Offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	defer rows.Close()
@@ -387,7 +387,7 @@ func (s *RESTServer) getCorruptionHistory(c *gin.Context) {
 	id := c.Param("id")
 	rows, err := s.db.QueryContext(ctx, "SELECT event_type, event_data, created_at FROM events WHERE aggregate_id = ? ORDER BY created_at ASC", id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	defer rows.Close()

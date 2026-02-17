@@ -133,7 +133,8 @@ func (s *RESTServer) checkDatabaseHealth(ctx context.Context) (gin.H, bool) {
 	if err := s.db.PingContext(ctx); err != nil {
 		healthy = false
 		dbHealth["status"] = "error"
-		dbHealth["error"] = err.Error()
+		dbHealth["error"] = "unavailable"
+		logger.Debugf("Health check database error: %v", err)
 	} else {
 		dbPath := config.Get().DatabasePath
 		if info, err := os.Stat(dbPath); err == nil {

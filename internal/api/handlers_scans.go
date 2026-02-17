@@ -63,7 +63,7 @@ func (s *RESTServer) getScans(c *gin.Context) {
 	var total int
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM scans").Scan(&total); err != nil {
 		logger.Errorf("Failed to query scans count: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -82,7 +82,7 @@ func (s *RESTServer) getScans(c *gin.Context) {
 	rows, err := s.db.Query(query, p.Limit, p.Offset)                                                                                                         // NOSONAR
 	if err != nil {
 		logger.Errorf("Failed to query scans: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	defer rows.Close()
@@ -138,7 +138,7 @@ func (s *RESTServer) cancelScan(c *gin.Context) {
 func (s *RESTServer) pauseScan(c *gin.Context) {
 	scanID := c.Param("scan_id")
 	if err := s.scanner.PauseScan(scanID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondWithError(c, http.StatusBadRequest, ErrMsgInvalidRequest, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Scan paused"})
@@ -147,7 +147,7 @@ func (s *RESTServer) pauseScan(c *gin.Context) {
 func (s *RESTServer) resumeScan(c *gin.Context) {
 	scanID := c.Param("scan_id")
 	if err := s.scanner.ResumeScan(scanID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondWithError(c, http.StatusBadRequest, ErrMsgInvalidRequest, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Scan resumed"})
@@ -204,7 +204,7 @@ func (s *RESTServer) rescanPath(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -228,7 +228,7 @@ func (s *RESTServer) rescanPath(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -272,7 +272,7 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -338,7 +338,7 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 	countQuery := "SELECT COUNT(*) FROM scan_files " + whereClause // NOSONAR - parameterized query
 	err = s.db.QueryRow(countQuery, args...).Scan(&total)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -354,7 +354,7 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 
 	rows, err := s.db.Query(query, args...) // NOSONAR
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	defer rows.Close()
@@ -397,7 +397,7 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 func (s *RESTServer) triggerScanAll(c *gin.Context) {
 	rows, err := s.db.Query("SELECT id, local_path FROM scan_paths WHERE enabled = 1")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	defer rows.Close()

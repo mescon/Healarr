@@ -230,7 +230,7 @@ func TestAddSchedule_ServiceError(t *testing.T) {
 
 	var response map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &response)
-	assert.Contains(t, response["error"], "invalid cron expression")
+	assert.Equal(t, "Internal server error", response["error"])
 }
 
 func TestAddSchedule_InvalidJSON(t *testing.T) {

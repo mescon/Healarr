@@ -14,7 +14,7 @@ func (s *RESTServer) getSchedules(c *gin.Context) {
 		JOIN scan_paths p ON s.scan_path_id = p.id
 	`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondDatabaseError(c, err)
 		return
 	}
 	defer rows.Close()
@@ -54,7 +54,7 @@ func (s *RESTServer) addSchedule(c *gin.Context) {
 
 	id, err := s.scheduler.AddSchedule(req.ScanPathID, req.CronExpression)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondWithError(c, http.StatusInternalServerError, ErrMsgInternalError, err)
 		return
 	}
 
@@ -70,7 +70,7 @@ func (s *RESTServer) deleteSchedule(c *gin.Context) {
 	}
 
 	if err := s.scheduler.DeleteSchedule(id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondWithError(c, http.StatusInternalServerError, ErrMsgInternalError, err)
 		return
 	}
 
@@ -107,7 +107,7 @@ func (s *RESTServer) updateSchedule(c *gin.Context) {
 	}
 
 	if err := s.scheduler.UpdateSchedule(id, req.CronExpression, enabled); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondWithError(c, http.StatusInternalServerError, ErrMsgInternalError, err)
 		return
 	}
 
