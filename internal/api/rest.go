@@ -157,6 +157,22 @@ func NewRESTServer(deps ServerDeps) *RESTServer {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 
+	// Configure trusted proxies for accurate client IP detection (used by rate limiters).
+	// Without this, X-Forwarded-For can be spoofed to bypass rate limiting.
+	if trustedProxies := os.Getenv("HEALARR_TRUSTED_PROXIES"); trustedProxies != "" {
+		proxies := strings.Split(trustedProxies, ",")
+		for i := range proxies {
+			proxies[i] = strings.TrimSpace(proxies[i])
+		}
+		if err := r.SetTrustedProxies(proxies); err != nil {
+			logger.Warnf("Failed to set trusted proxies: %v", err)
+		}
+	} else {
+		// Default: trust no proxies — use direct remote address.
+		// Set HEALARR_TRUSTED_PROXIES if running behind a reverse proxy.
+		_ = r.SetTrustedProxies(nil)
+	}
+
 	// Apply middleware
 	r.Use(requestIDMiddleware())
 	r.Use(metricsMiddleware(deps.Metrics))
@@ -391,6 +407,7 @@ func (s *RESTServer) setupRoutes() {
 		// Protected endpoints (require password authentication)
 		protected := api.Group("")
 		protected.Use(s.authMiddleware())
+		protected.Use(APILimiter.Middleware())
 		{
 			// Auth management
 			protected.GET("/auth/key", s.getAPIKey)

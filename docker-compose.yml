@@ -26,6 +26,7 @@ services:
       # - HEALARR_BASE_PATH=/healarr         # For reverse proxy subdirectory
       # - HEALARR_VERIFICATION_TIMEOUT=72h   # How long to wait for re-download
       # - HEALARR_DEFAULT_MAX_RETRIES=3      # Max remediation attempts
+      # - HEALARR_TRUSTED_PROXIES=172.18.0.0/16  # Your reverse proxy subnet
 
       # Custom binary paths (optional - for newer ffmpeg/mediainfo/handbrake):
       # - HEALARR_FFPROBE_PATH=/config/tools/ffprobe
