@@ -267,3 +267,155 @@ func TestReplayUnprocessedEvents_OnlyReplayCorruptionDetected(t *testing.T) {
 		// Expected - other events should not be replayed
 	}
 }
+
+func TestReplayUnprocessedEvents_CorruptedEventData(t *testing.T) {
+	service, eb, _, cleanup := setupEventReplayTest(t)
+	defer cleanup()
+
+	// Track events received by subscriber
+	received := make(chan domain.Event, 10)
+	eb.Subscribe(domain.CorruptionDetected, func(event domain.Event) {
+		received <- event
+	})
+
+	// Give subscriber time to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Insert an event with corrupted JSON in event_data
+	_, err := service.db.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES (?, ?, ?, ?, 1, ?)
+	`, "Corruption", "corrupted-json-id", domain.CorruptionDetected, "not valid json{{{", time.Now().UTC().Add(-time.Second))
+	if err != nil {
+		t.Fatalf("Failed to insert corrupted event: %v", err)
+	}
+
+	// Insert a valid event after the corrupted one
+	validData, _ := json.Marshal(domain.CorruptionEventData{
+		FilePath:       "/test/valid-file.mkv",
+		CorruptionType: "corruption:video",
+		Source:         "test",
+	})
+	_, err = service.db.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES (?, ?, ?, ?, 1, ?)
+	`, "Corruption", "valid-after-corrupted", domain.CorruptionDetected, validData, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("Failed to insert valid event: %v", err)
+	}
+
+	// Run replay - should not error (corrupted events are skipped with logger.Warnf)
+	if err := service.ReplayUnprocessedEvents(); err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// The valid event should still be received
+	select {
+	case event := <-received:
+		if event.AggregateID != "valid-after-corrupted" {
+			t.Errorf("Expected aggregate ID valid-after-corrupted, got %s", event.AggregateID)
+		}
+	case <-time.After(time.Second):
+		t.Error("Timed out waiting for valid event after corrupted one")
+	}
+}
+
+func TestReplayUnprocessedEvents_EmptyEventData(t *testing.T) {
+	service, eb, _, cleanup := setupEventReplayTest(t)
+	defer cleanup()
+
+	// Track events received by subscriber
+	received := make(chan domain.Event, 10)
+	eb.Subscribe(domain.CorruptionDetected, func(event domain.Event) {
+		received <- event
+	})
+
+	// Give subscriber time to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Insert an event with empty string as event_data
+	_, err := service.db.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES (?, ?, ?, ?, 1, ?)
+	`, "Corruption", "empty-data-id", domain.CorruptionDetected, "", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("Failed to insert event with empty data: %v", err)
+	}
+
+	// Run replay
+	if err := service.ReplayUnprocessedEvents(); err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Event should be received (empty data is valid - len(eventDataBytes) > 0 guard skips unmarshal)
+	select {
+	case event := <-received:
+		if event.AggregateID != "empty-data-id" {
+			t.Errorf("Expected aggregate ID empty-data-id, got %s", event.AggregateID)
+		}
+		if event.EventData != nil {
+			t.Errorf("Expected nil EventData for empty event_data, got %v", event.EventData)
+		}
+	case <-time.After(time.Second):
+		t.Error("Timed out waiting for event with empty data")
+	}
+}
+
+func TestReplayUnprocessedEvents_NullUserID(t *testing.T) {
+	service, eb, _, cleanup := setupEventReplayTest(t)
+	defer cleanup()
+
+	// Track events received by subscriber
+	received := make(chan domain.Event, 10)
+	eb.Subscribe(domain.CorruptionDetected, func(event domain.Event) {
+		received <- event
+	})
+
+	// Give subscriber time to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Insert an event with explicit NULL user_id
+	eventData, _ := json.Marshal(domain.CorruptionEventData{
+		FilePath:       "/test/null-user.mkv",
+		CorruptionType: "corruption:video",
+		Source:         "test",
+	})
+	_, err := service.db.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at, user_id)
+		VALUES (?, ?, ?, ?, 1, ?, NULL)
+	`, "Corruption", "null-user-id", domain.CorruptionDetected, eventData, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("Failed to insert event with null user_id: %v", err)
+	}
+
+	// Run replay
+	if err := service.ReplayUnprocessedEvents(); err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Event should be received with empty string UserID (sql.NullString path)
+	select {
+	case event := <-received:
+		if event.AggregateID != "null-user-id" {
+			t.Errorf("Expected aggregate ID null-user-id, got %s", event.AggregateID)
+		}
+		if event.UserID != "" {
+			t.Errorf("Expected empty UserID for NULL user_id, got %q", event.UserID)
+		}
+	case <-time.After(time.Second):
+		t.Error("Timed out waiting for event with null user_id")
+	}
+}
+
+func TestReplayUnprocessedEvents_DBError(t *testing.T) {
+	service, _, _, cleanup := setupEventReplayTest(t)
+
+	// Close DB immediately to simulate a database error
+	cleanup()
+
+	// Run replay - should return an error since the DB is closed
+	err := service.ReplayUnprocessedEvents()
+	if err == nil {
+		t.Fatal("Expected an error when DB is closed, got nil")
+	}
+}
