@@ -10,6 +10,9 @@ export function formatCorruptionType(type: string): string {
         'CodecError': 'Format Error',
         'InvalidFormat': 'Invalid Format',
         'BitrateError': 'Bitrate Error',
+        'BlackVideo': 'Black Video',
+        'FrozenVideo': 'Frozen Video',
+        'SilentAudio': 'Silent Audio',
         'Unknown': 'Unknown Issue',
     };
 
