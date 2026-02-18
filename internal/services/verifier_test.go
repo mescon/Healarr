@@ -2722,7 +2722,7 @@ func TestVerifierService_HandleDisappearedQueueItem(t *testing.T) {
 			apiFailureCount: 0,
 		}
 
-		action := v.handleDisappearedQueueItem(state, 5*time.Minute)
+		action := v.handleDisappearedQueueItem(context.Background(), state, 5*time.Minute)
 
 		if action != monitorContinue {
 			t.Errorf("Expected monitorContinue when import found, got %v", action)
@@ -2746,7 +2746,7 @@ func TestVerifierService_HandleDisappearedQueueItem(t *testing.T) {
 			apiFailureCount: 0,
 		}
 
-		action := v.handleDisappearedQueueItem(state, 5*time.Minute)
+		action := v.handleDisappearedQueueItem(context.Background(), state, 5*time.Minute)
 
 		if action != monitorStop {
 			t.Errorf("Expected monitorStop when no import found, got %v", action)
@@ -2781,7 +2781,7 @@ func TestVerifierService_HandleDisappearedQueueItem(t *testing.T) {
 			apiFailureCount: 0,
 		}
 
-		action := v.handleDisappearedQueueItem(state, 5*time.Minute)
+		action := v.handleDisappearedQueueItem(context.Background(), state, 5*time.Minute)
 
 		// Should continue monitoring on first API failure
 		if action != monitorContinue {
@@ -2813,7 +2813,6 @@ func TestVerifierService_HandleDisappearedQueueItem(t *testing.T) {
 		defer v.Shutdown()
 
 		state := &monitorState{
-			ctx:             context.Background(),
 			corruptionID:    "retry-complete-test",
 			arrPath:         "/media/movies/complete.mkv",
 			mediaID:         123,
@@ -2822,7 +2821,7 @@ func TestVerifierService_HandleDisappearedQueueItem(t *testing.T) {
 			apiFailureCount: 0,
 		}
 
-		action := v.handleDisappearedQueueItem(state, 5*time.Minute)
+		action := v.handleDisappearedQueueItem(context.Background(), state, 5*time.Minute)
 
 		// Should continue monitoring (import found after retries)
 		if action != monitorContinue {
@@ -2849,7 +2848,6 @@ func TestVerifierService_HandleDisappearedQueueItem(t *testing.T) {
 		cancel()
 
 		state := &monitorState{
-			ctx:             ctx,
 			corruptionID:    "cancel-retry-test",
 			arrPath:         "/media/movies/cancel.mkv",
 			mediaID:         456,
@@ -2858,7 +2856,7 @@ func TestVerifierService_HandleDisappearedQueueItem(t *testing.T) {
 			apiFailureCount: 0,
 		}
 
-		action := v.handleDisappearedQueueItem(state, 5*time.Minute)
+		action := v.handleDisappearedQueueItem(ctx, state, 5*time.Minute)
 
 		// Should stop due to context cancellation
 		if action != monitorStop {
@@ -2977,7 +2975,6 @@ func TestVerifierService_HandleNoQueueItems(t *testing.T) {
 		defer v.Shutdown()
 
 		state := &monitorState{
-			ctx:          context.Background(),
 			corruptionID: "history-import-test",
 			arrPath:      "/media/test.mkv",
 			mediaID:      123,
@@ -2985,7 +2982,7 @@ func TestVerifierService_HandleNoQueueItems(t *testing.T) {
 			timeout:      6 * time.Hour,
 		}
 
-		action := v.handleNoQueueItems(state, 30*time.Minute)
+		action := v.handleNoQueueItems(context.Background(), state, 30*time.Minute)
 
 		if action != monitorStop {
 			t.Errorf("Expected monitorStop when import found in history, got %v", action)
@@ -3005,7 +3002,6 @@ func TestVerifierService_HandleNoQueueItems(t *testing.T) {
 		defer v.Shutdown()
 
 		state := &monitorState{
-			ctx:          context.Background(),
 			corruptionID: "no-import-test",
 			arrPath:      "/media/test.mkv",
 			mediaID:      456,
@@ -3014,7 +3010,7 @@ func TestVerifierService_HandleNoQueueItems(t *testing.T) {
 			timeout:      6 * time.Hour,
 		}
 
-		action := v.handleNoQueueItems(state, 30*time.Minute)
+		action := v.handleNoQueueItems(context.Background(), state, 30*time.Minute)
 
 		if action != monitorContinue {
 			t.Errorf("Expected monitorContinue when no import and not in queue, got %v", action)
