@@ -419,6 +419,15 @@ var validationMediaExtensions = map[string]bool{
 	".ts": true, ".m2ts": true, ".mpg": true, ".mpeg": true,
 }
 
+// relPathOrName returns the path relative to basePath, falling back to name on error.
+func relPathOrName(basePath, fullPath, name string) string {
+	rel, err := filepath.Rel(basePath, fullPath)
+	if err != nil {
+		return name
+	}
+	return rel
+}
+
 // countMediaFiles walks a directory and counts media files, collecting samples.
 // maxFiles limits the count to prevent slow responses on very large libraries.
 func countMediaFiles(basePath string, maxSamples, maxFiles int) (int, []string, bool) {
@@ -444,11 +453,7 @@ func countMediaFiles(basePath string, maxSamples, maxFiles int) (int, []string, 
 
 		fileCount++
 		if len(sampleFiles) < maxSamples {
-			relPath, relErr := filepath.Rel(basePath, path)
-			if relErr != nil {
-				relPath = d.Name()
-			}
-			sampleFiles = append(sampleFiles, relPath)
+			sampleFiles = append(sampleFiles, relPathOrName(basePath, path, d.Name()))
 		}
 
 		// Stop early if we've counted enough files (performance optimization)

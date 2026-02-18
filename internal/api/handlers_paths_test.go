@@ -1736,3 +1736,42 @@ func TestDeleteScanPath_PathMapperReloadError(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &response)
 	assert.Contains(t, response["error"], "path mapping update failed")
 }
+
+func TestRelPathOrName(t *testing.T) {
+	tests := []struct {
+		name     string
+		base     string
+		full     string
+		fallback string
+		want     string
+	}{
+		{
+			name:     "valid relative path",
+			base:     "/media/tv",
+			full:     "/media/tv/show/episode.mkv",
+			fallback: "episode.mkv",
+			want:     "show/episode.mkv",
+		},
+		{
+			name:     "same directory",
+			base:     "/media",
+			full:     "/media/file.mkv",
+			fallback: "file.mkv",
+			want:     "file.mkv",
+		},
+		{
+			name:     "falls back to name on error",
+			base:     "",
+			full:     "/media/file.mkv",
+			fallback: "file.mkv",
+			want:     "file.mkv",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := relPathOrName(tt.base, tt.full, tt.fallback)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
