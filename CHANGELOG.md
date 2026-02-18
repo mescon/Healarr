@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-02-18
+
+### Added
+- **Content Analysis Detection**: Detect corruptions that pass basic integrity checks
+  - Black video detection: finds files where video is entirely black frames
+  - Frozen video detection: finds files where video is a single still frame
+  - Silent audio detection: finds files with no audible audio track
+  - Configurable per scan path alongside existing detection modes
+
+### Security
+- **API Hardening**: Strengthened endpoint protection across the board
+  - Rate limiting now applied to all protected API routes
+  - Metrics endpoint (`/metrics`) now requires authentication
+  - API error responses no longer expose internal Go type information (29 handlers fixed)
+  - CORS wildcard mode now sets `Vary: Origin` to prevent cache poisoning
+  - Setup dismiss endpoint now rate-limited like other setup endpoints
+
+### Improved
+- **Accessibility**: Active scans table rows now fully keyboard-navigable
+- **Code Quality**: Drove SonarCloud to zero issues across all categories
+  - 0 bugs, 0 vulnerabilities, 0 security hotspots, 0 code smells
+  - Reduced cognitive complexity in several critical functions
+  - 84.7% test coverage maintained throughout
+
+### Dependencies
+- Bumped modernc.org/sqlite, quic-go, prometheus, golang.org/x/net, protobuf
+- Bumped lucide-react, framer-motion, tailwindcss, recharts, axios, msw, typescript-eslint
+
 ## [1.2.1] - 2026-02-12
 
 ### Improved
