@@ -201,7 +201,7 @@ func (r *RecoveryService) findStaleItems() ([]staleItem, error) {
 		// Parse deletion metadata if available
 		if deletionMetadataRaw.Valid && deletionMetadataRaw.String != "" {
 			var metadata map[string]interface{}
-			if err := json.Unmarshal([]byte(deletionMetadataRaw.String), &metadata); err == nil {
+			if json.Unmarshal([]byte(deletionMetadataRaw.String), &metadata) == nil {
 				item.Metadata = metadata
 			}
 		}

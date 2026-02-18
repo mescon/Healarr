@@ -421,7 +421,7 @@ func (n *Notifier) scanNotificationRow(scanner interface {
 	if err := json.Unmarshal([]byte(decrypted), &cfg.Config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config for notification %d: %w", cfg.ID, err)
 	}
-	if err := json.Unmarshal([]byte(eventsJSON), &cfg.Events); err != nil {
+	if json.Unmarshal([]byte(eventsJSON), &cfg.Events) != nil {
 		cfg.Events = []string{}
 	}
 	return &cfg, nil
@@ -1093,7 +1093,7 @@ var eventTitles = map[string]string{
 	string(domain.CorruptionIgnored):    "🙈 Corruption Ignored by User",
 }
 
-func (n *Notifier) formatTitle(eventType string, fileName string) string {
+func (n *Notifier) formatTitle(eventType, fileName string) string {
 	// Special case: CorruptionDetected includes filename
 	if eventType == string(domain.CorruptionDetected) {
 		if fileName != "" {

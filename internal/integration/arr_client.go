@@ -1468,7 +1468,7 @@ func (c *HTTPArrClient) FindQueueItemsByMediaIDForPath(arrPath string, mediaID i
 }
 
 // GetDownloadStatusForPath implements ArrClient interface
-func (c *HTTPArrClient) GetDownloadStatusForPath(arrPath string, downloadID string) (status string, progress float64, errMsg string, err error) {
+func (c *HTTPArrClient) GetDownloadStatusForPath(arrPath, downloadID string) (status string, progress float64, errMsg string, err error) {
 	instance, err := c.getInstanceForPath(arrPath)
 	if err != nil {
 		return "", 0, "", err

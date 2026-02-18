@@ -1705,7 +1705,7 @@ func TestScannerService_ScanFile_RaceConditionPrevention(t *testing.T) {
 
 	// Create a mock health checker that always returns healthy
 	mockHC := &testutil.MockHealthChecker{
-		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 			return true, nil
 		},
 	}
@@ -2088,7 +2088,7 @@ func TestScannerService_ProcessPendingRescans(t *testing.T) {
 	defer db.Close()
 
 	mockHC := &testutil.MockHealthChecker{
-		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 			return true, nil // All files are healthy
 		},
 	}
@@ -2132,7 +2132,7 @@ func TestScannerService_ProcessPendingRescans(t *testing.T) {
 	t.Run("handles still inaccessible files", func(t *testing.T) {
 		// Create a new scanner with a health checker that returns inaccessible error
 		mockHC2 := &testutil.MockHealthChecker{
-			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 				return false, &integration.HealthCheckError{
 					Type:    integration.ErrorTypeMountLost,
 					Message: "Still inaccessible",
@@ -2176,7 +2176,7 @@ func TestScannerService_ProcessPendingRescans(t *testing.T) {
 
 		// Create a scanner with health checker that returns corruption error
 		mockHC3 := &testutil.MockHealthChecker{
-			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 				return false, &integration.HealthCheckError{
 					Type:    integration.ErrorTypeCorruptHeader,
 					Message: "Corrupt file",
@@ -2218,7 +2218,7 @@ func TestScannerService_ProcessPendingRescans(t *testing.T) {
 	t.Run("abandons after max retries", func(t *testing.T) {
 		// Create a scanner with health checker that returns inaccessible error
 		mockHC4 := &testutil.MockHealthChecker{
-			CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+			CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 				return false, &integration.HealthCheckError{
 					Type:    integration.ErrorTypeMountLost,
 					Message: "Still inaccessible",
@@ -2272,7 +2272,7 @@ func TestScannerService_ScanPath(t *testing.T) {
 	defer eb.Shutdown()
 
 	mockHC := &testutil.MockHealthChecker{
-		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 			return true, nil
 		},
 		CheckWithConfigFunc: func(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError) {
@@ -3176,7 +3176,7 @@ func TestScannerService_ScanFile_WithCorruption(t *testing.T) {
 	}
 
 	mockHC := &testutil.MockHealthChecker{
-		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 			return false, &integration.HealthCheckError{
 				Type:    integration.ErrorTypeCorruptHeader,
 				Message: "File is corrupted",
@@ -3234,7 +3234,7 @@ func TestScannerService_ScanFile_WithRecoverableError(t *testing.T) {
 	}
 
 	mockHC := &testutil.MockHealthChecker{
-		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 			return false, &integration.HealthCheckError{
 				Type:    integration.ErrorTypeMountLost,
 				Message: "Transport endpoint not connected",
@@ -3302,7 +3302,7 @@ func TestScannerService_ScanFile_SkipsDuplicate(t *testing.T) {
 	}
 
 	mockHC := &testutil.MockHealthChecker{
-		CheckFunc: func(path string, mode string) (bool, *integration.HealthCheckError) {
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
 			return false, &integration.HealthCheckError{
 				Type:    integration.ErrorTypeCorruptHeader,
 				Message: "File is corrupted",

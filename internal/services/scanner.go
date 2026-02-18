@@ -1336,7 +1336,7 @@ func (s *ScannerService) handleHealthCheckResult(
 ) scanLoopAction {
 	// Handle recoverable errors (infrastructure issues)
 	if healthErr.IsRecoverable() {
-		if action := s.handleRecoverableError(progress, sfc, healthErr); action == scanReturn {
+		if s.handleRecoverableError(progress, sfc, healthErr) == scanReturn {
 			return scanReturn
 		}
 		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
@@ -1344,7 +1344,7 @@ func (s *ScannerService) handleHealthCheckResult(
 	}
 
 	// Handle true corruption
-	if action := s.handleTrueCorruption(ctx, progress, sfc, healthErr); action == scanReturn {
+	if s.handleTrueCorruption(ctx, progress, sfc, healthErr) == scanReturn {
 		return scanReturn
 	}
 	s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
