@@ -28,6 +28,9 @@ func TestHealthCheckError_IsRecoverable(t *testing.T) {
 		{ErrorTypeIOError, true},
 		{ErrorTypeTimeout, true},
 		{ErrorTypeInvalidConfig, true},
+		{ErrorTypeBlackVideo, false},
+		{ErrorTypeFrozenVideo, false},
+		{ErrorTypeSilentAudio, false},
 	}
 
 	for _, tt := range tests {
@@ -49,6 +52,9 @@ func TestHealthCheckError_IsTrueCorruption(t *testing.T) {
 		{ErrorTypeCorruptHeader, true},
 		{ErrorTypeCorruptStream, true},
 		{ErrorTypeInvalidFormat, true},
+		{ErrorTypeBlackVideo, true},
+		{ErrorTypeFrozenVideo, true},
+		{ErrorTypeSilentAudio, true},
 		{ErrorTypeAccessDenied, false},
 		{ErrorTypePathNotFound, false},
 		{ErrorTypeMountLost, false},

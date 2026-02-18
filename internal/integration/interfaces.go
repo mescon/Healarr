@@ -170,6 +170,11 @@ const (
 	ErrorTypeCorruptStream = "CorruptStream" // Stream-level corruption
 	ErrorTypeInvalidFormat = "InvalidFormat" // Not a valid media file
 
+	// Content analysis types - structurally valid but content is corrupt
+	ErrorTypeBlackVideo  = "BlackVideo"  // Video is entirely/mostly black
+	ErrorTypeFrozenVideo = "FrozenVideo" // Video is frozen on a single frame
+	ErrorTypeSilentAudio = "SilentAudio" // Audio is completely silent
+
 	// Accessibility types - transient/infrastructure issues (should NOT trigger remediation)
 	ErrorTypeAccessDenied  = "AccessDenied"  // Permission error
 	ErrorTypePathNotFound  = "PathNotFound"  // File or parent directory missing
@@ -202,7 +207,8 @@ func (e *HealthCheckError) IsRecoverable() bool {
 // that warrants remediation (re-download).
 func (e *HealthCheckError) IsTrueCorruption() bool {
 	switch e.Type {
-	case ErrorTypeZeroByte, ErrorTypeCorruptHeader, ErrorTypeCorruptStream, ErrorTypeInvalidFormat:
+	case ErrorTypeZeroByte, ErrorTypeCorruptHeader, ErrorTypeCorruptStream, ErrorTypeInvalidFormat,
+		ErrorTypeBlackVideo, ErrorTypeFrozenVideo, ErrorTypeSilentAudio:
 		return true
 	default:
 		return false
