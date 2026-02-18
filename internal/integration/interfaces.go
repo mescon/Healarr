@@ -40,7 +40,7 @@ type ArrClient interface {
 	// Queue monitoring - track active downloads
 	GetQueueForPath(arrPath string) ([]QueueItemInfo, error)
 	FindQueueItemsByMediaIDForPath(arrPath string, mediaID int64) ([]QueueItemInfo, error)
-	GetDownloadStatusForPath(arrPath string, downloadID string) (status string, progress float64, errMsg string, err error)
+	GetDownloadStatusForPath(arrPath, downloadID string) (status string, progress float64, errMsg string, err error)
 
 	// History - detect completed imports
 	GetRecentHistoryForMediaByPath(arrPath string, mediaID int64, limit int) ([]HistoryItemInfo, error)
@@ -151,7 +151,7 @@ func itoa(n int) string {
 
 // HealthChecker defines the interface for checking file health
 type HealthChecker interface {
-	Check(path string, mode string) (bool, *HealthCheckError)
+	Check(path, mode string) (bool, *HealthCheckError)
 	CheckWithConfig(path string, config DetectionConfig) (bool, *HealthCheckError)
 	AnalyzeContent(path string) (bool, *HealthCheckError)
 }

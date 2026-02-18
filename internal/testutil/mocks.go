@@ -211,7 +211,7 @@ type MockArrClient struct {
 	GetRootFoldersFunc                  func(instanceID int64) ([]integration.RootFolder, error)
 	GetQueueForPathFunc                 func(arrPath string) ([]integration.QueueItemInfo, error)
 	FindQueueItemsByMediaIDForPathFunc  func(arrPath string, mediaID int64) ([]integration.QueueItemInfo, error)
-	GetDownloadStatusForPathFunc        func(arrPath string, downloadID string) (status string, progress float64, errMsg string, err error)
+	GetDownloadStatusForPathFunc        func(arrPath, downloadID string) (status string, progress float64, errMsg string, err error)
 	GetRecentHistoryForMediaByPathFunc  func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error)
 	RemoveFromQueueByPathFunc           func(arrPath string, queueID int64, removeFromClient, blocklist bool) error
 	RefreshMonitoredDownloadsByPathFunc func(arrPath string) error
@@ -342,7 +342,7 @@ func (m *MockArrClient) FindQueueItemsByMediaIDForPath(arrPath string, mediaID i
 	return nil, nil
 }
 
-func (m *MockArrClient) GetDownloadStatusForPath(arrPath string, downloadID string) (status string, progress float64, errMsg string, err error) {
+func (m *MockArrClient) GetDownloadStatusForPath(arrPath, downloadID string) (status string, progress float64, errMsg string, err error) {
 	m.recordCall("GetDownloadStatusForPath", arrPath, downloadID)
 	if m.GetDownloadStatusForPathFunc != nil {
 		return m.GetDownloadStatusForPathFunc(arrPath, downloadID)
@@ -461,7 +461,7 @@ func (m *MockPathMapper) CallCount(method string) int {
 
 // MockHealthChecker implements integration.HealthChecker for testing.
 type MockHealthChecker struct {
-	CheckFunc           func(path string, mode string) (bool, *integration.HealthCheckError)
+	CheckFunc           func(path, mode string) (bool, *integration.HealthCheckError)
 	CheckWithConfigFunc func(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError)
 	AnalyzeContentFunc  func(path string) (bool, *integration.HealthCheckError)
 
@@ -475,7 +475,7 @@ func (m *MockHealthChecker) recordCall(method string, args ...interface{}) {
 	m.Calls = append(m.Calls, MockCall{Method: method, Args: args})
 }
 
-func (m *MockHealthChecker) Check(path string, mode string) (bool, *integration.HealthCheckError) {
+func (m *MockHealthChecker) Check(path, mode string) (bool, *integration.HealthCheckError) {
 	m.recordCall("Check", path, mode)
 	if m.CheckFunc != nil {
 		return m.CheckFunc(path, mode)

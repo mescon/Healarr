@@ -232,7 +232,7 @@ func (s *RESTServer) getPathHealth(c *gin.Context) {
 	var paths []PathHealth
 	for pathRows.Next() {
 		var p PathHealth
-		if err := pathRows.Scan(&p.PathID, &p.LocalPath, &p.Enabled); err != nil {
+		if pathRows.Scan(&p.PathID, &p.LocalPath, &p.Enabled) != nil {
 			continue
 		}
 		paths = append(paths, p)
