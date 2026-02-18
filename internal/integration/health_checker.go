@@ -710,3 +710,11 @@ func (hc *CmdHealthChecker) GetTimeoutDescription(method DetectionMethod, mode s
 		return "unknown"
 	}
 }
+
+// AnalyzeContent checks for content-level issues (black video, frozen video, silent audio)
+// in files that have already passed structural health checks.
+// Only meaningful in thorough mode — call after CheckWithConfig passes.
+func (hc *CmdHealthChecker) AnalyzeContent(path string) (bool, *HealthCheckError) {
+	// TODO: implement in Task 4
+	return true, nil
+}

@@ -463,6 +463,7 @@ func (m *MockPathMapper) CallCount(method string) int {
 type MockHealthChecker struct {
 	CheckFunc           func(path string, mode string) (bool, *integration.HealthCheckError)
 	CheckWithConfigFunc func(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError)
+	AnalyzeContentFunc  func(path string) (bool, *integration.HealthCheckError)
 
 	mu    sync.Mutex
 	Calls []MockCall
@@ -489,6 +490,15 @@ func (m *MockHealthChecker) CheckWithConfig(path string, config integration.Dete
 		return m.CheckWithConfigFunc(path, config)
 	}
 	// Default: file is healthy
+	return true, nil
+}
+
+func (m *MockHealthChecker) AnalyzeContent(path string) (bool, *integration.HealthCheckError) {
+	m.recordCall("AnalyzeContent", path)
+	if m.AnalyzeContentFunc != nil {
+		return m.AnalyzeContentFunc(path)
+	}
+	// Default: content is healthy
 	return true, nil
 }
 

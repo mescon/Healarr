@@ -153,6 +153,7 @@ func itoa(n int) string {
 type HealthChecker interface {
 	Check(path string, mode string) (bool, *HealthCheckError)
 	CheckWithConfig(path string, config DetectionConfig) (bool, *HealthCheckError)
+	AnalyzeContent(path string) (bool, *HealthCheckError)
 }
 
 // PathMapper defines the interface for translating paths
