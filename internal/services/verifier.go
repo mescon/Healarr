@@ -587,7 +587,6 @@ func (v *VerifierService) startVerificationWithSemaphore(ctx context.Context, co
 
 // monitorState tracks the state during download monitoring
 type monitorState struct {
-	ctx             context.Context
 	corruptionID    string
 	filePath        string
 	arrPath         string
@@ -667,7 +666,7 @@ func isImportState(state string) bool {
 }
 
 // handleNoQueueItems handles the case when no items are in the download queue
-func (v *VerifierService) handleNoQueueItems(state *monitorState, elapsed time.Duration) monitorAction {
+func (v *VerifierService) handleNoQueueItems(ctx context.Context, state *monitorState, elapsed time.Duration) monitorAction {
 	// Check history for completed import (includes file verification)
 	if v.checkHistoryForImport(state.corruptionID, state.arrPath, state.mediaID, state.filePath, state.metadata) {
 		return monitorStop
@@ -675,7 +674,7 @@ func (v *VerifierService) handleNoQueueItems(state *monitorState, elapsed time.D
 
 	// If item was in queue but now gone, check if it was imported vs manually removed
 	if state.wasInQueue {
-		action := v.handleDisappearedQueueItem(state, elapsed)
+		action := v.handleDisappearedQueueItem(ctx, state, elapsed)
 		if action == monitorStop {
 			return monitorStop
 		}
@@ -691,7 +690,7 @@ func (v *VerifierService) handleNoQueueItems(state *monitorState, elapsed time.D
 
 // handleDisappearedQueueItem handles the case when an item was in queue but is now gone.
 // It checks if the item was imported (files may not be accessible yet) vs manually removed.
-func (v *VerifierService) handleDisappearedQueueItem(state *monitorState, elapsed time.Duration) monitorAction {
+func (v *VerifierService) handleDisappearedQueueItem(ctx context.Context, state *monitorState, elapsed time.Duration) monitorAction {
 	// BUG-1 FIX: If download was near complete (importPending or 100%), the history API may not
 	// have registered the import yet due to timing. Retry multiple times before giving up.
 	downloadWasComplete := state.lastStatus == "importPending" ||
@@ -706,7 +705,7 @@ func (v *VerifierService) handleDisappearedQueueItem(state *monitorState, elapse
 		// Retry history check multiple times with delay (BUG-1 fix)
 		for i := 0; i < historyRetryMaxAttempts; i++ {
 			// Check for shutdown/cancellation between retries
-			if v.waitWithContext(state.ctx, historyRetryInterval) {
+			if v.waitWithContext(ctx, historyRetryInterval) {
 				return monitorStop
 			}
 
@@ -780,7 +779,6 @@ func (v *VerifierService) monitorDownloadProgress(ctx context.Context, corruptio
 
 	cfg := config.Get()
 	state := &monitorState{
-		ctx:          ctx,
 		corruptionID: corruptionID,
 		filePath:     filePath,
 		arrPath:      arrPath,
@@ -794,7 +792,7 @@ func (v *VerifierService) monitorDownloadProgress(ctx context.Context, corruptio
 	logger.Infof("Starting download monitoring for corruption %s (media ID: %d)", corruptionID, mediaID)
 
 	for {
-		action := v.executeMonitorIteration(state)
+		action := v.executeMonitorIteration(ctx, state)
 		if action == monitorStop {
 			return
 		}
@@ -803,9 +801,9 @@ func (v *VerifierService) monitorDownloadProgress(ctx context.Context, corruptio
 
 // executeMonitorIteration performs a single iteration of download monitoring.
 // Returns monitorStop if monitoring should end, monitorContinue to keep polling.
-func (v *VerifierService) executeMonitorIteration(state *monitorState) monitorAction {
+func (v *VerifierService) executeMonitorIteration(ctx context.Context, state *monitorState) monitorAction {
 	// Check for context cancellation (happens when a new retry starts for same corruption)
-	if state.ctx != nil && state.ctx.Err() != nil {
+	if ctx != nil && ctx.Err() != nil {
 		logger.Debugf("Verifier: context cancelled for %s, stopping old goroutine", state.corruptionID)
 		return monitorStop
 	}
@@ -830,18 +828,18 @@ func (v *VerifierService) executeMonitorIteration(state *monitorState) monitorAc
 	}
 
 	if len(queueItems) > 0 {
-		return v.handleActiveDownload(state, queueItems[0])
+		return v.handleActiveDownload(ctx, state, queueItems[0])
 	}
 
-	return v.handleInactiveDownload(state, elapsed)
+	return v.handleInactiveDownload(ctx, state, elapsed)
 }
 
 // handleActiveDownload processes the case where a download is in the queue.
-func (v *VerifierService) handleActiveDownload(state *monitorState, queueItem integration.QueueItemInfo) monitorAction {
+func (v *VerifierService) handleActiveDownload(ctx context.Context, state *monitorState, queueItem integration.QueueItemInfo) monitorAction {
 	if v.handleQueueItem(state, queueItem) == monitorStop {
 		return monitorStop
 	}
-	if v.waitWithContext(state.ctx, state.pollInterval) {
+	if v.waitWithContext(ctx, state.pollInterval) {
 		logger.Infof(logMsgDownloadMonitorShutdown, state.corruptionID)
 		return monitorStop
 	}
@@ -849,8 +847,8 @@ func (v *VerifierService) handleActiveDownload(state *monitorState, queueItem in
 }
 
 // handleInactiveDownload processes the case where no download is in the queue.
-func (v *VerifierService) handleInactiveDownload(state *monitorState, elapsed time.Duration) monitorAction {
-	if v.handleNoQueueItems(state, elapsed) == monitorStop {
+func (v *VerifierService) handleInactiveDownload(ctx context.Context, state *monitorState, elapsed time.Duration) monitorAction {
+	if v.handleNoQueueItems(ctx, state, elapsed) == monitorStop {
 		return monitorStop
 	}
 
@@ -859,7 +857,7 @@ func (v *VerifierService) handleInactiveDownload(state *monitorState, elapsed ti
 	if state.attempt%10 == 0 {
 		logger.Debugf("Verification poll #%d for %s, no queue activity, next check in %s", state.attempt, state.corruptionID, backoff)
 	}
-	if v.waitWithContext(state.ctx, backoff) {
+	if v.waitWithContext(ctx, backoff) {
 		logger.Infof(logMsgDownloadMonitorShutdown, state.corruptionID)
 		return monitorStop
 	}
