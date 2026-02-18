@@ -1135,6 +1135,21 @@ func TestNotifier_FormatMessage(t *testing.T) {
 			contains:  []string{"No replacement found", "simple.mkv"},
 		},
 		{
+			eventType: string(domain.CorruptionIgnored),
+			data:      map[string]interface{}{"file_path": "/media/ignored.mkv", "reason": "user request"},
+			contains:  []string{"Corruption ignored", "ignored.mkv", "Reason: user request"},
+		},
+		{
+			eventType: string(domain.StuckRemediation),
+			data:      map[string]interface{}{"file_path": "/media/stuck.mkv", "reason": "no progress for 24h"},
+			contains:  []string{"Stuck remediation", "stuck.mkv", "no progress for 24h"},
+		},
+		{
+			eventType: string(domain.InstanceHealthy),
+			data:      map[string]interface{}{"reason": "connection restored"},
+			contains:  []string{"recovered", "connection restored"},
+		},
+		{
 			eventType: "UnknownEvent",
 			data:      map[string]interface{}{},
 			contains:  []string{"Event:", "UnknownEvent"},

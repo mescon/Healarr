@@ -2372,3 +2372,41 @@ func TestExtractEpisodeIDsFromEventMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestParseTimestamp(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  time.Time
+	}{
+		{
+			name:  "SQLite datetime format",
+			input: "2026-01-15 10:30:00",
+			want:  time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC),
+		},
+		{
+			name:  "RFC3339 format",
+			input: "2026-01-15T10:30:00Z",
+			want:  time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC),
+		},
+		{
+			name:  "invalid format returns zero time",
+			input: "not-a-date",
+			want:  time.Time{},
+		},
+		{
+			name:  "empty string returns zero time",
+			input: "",
+			want:  time.Time{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseTimestamp(tt.input)
+			if !got.Equal(tt.want) {
+				t.Errorf("parseTimestamp(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}

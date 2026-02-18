@@ -26,6 +26,12 @@ const notifierQueryTimeout = 10 * time.Second
 // logFmtDecryptFailed is the log format for config decryption failures.
 const logFmtDecryptFailed = "failed to decrypt config for notification %d: %v"
 
+// Message detail format strings used across notification formatters.
+const (
+	msgFmtReason = "\n📋 Reason: %s"
+	msgFmtDetail = "\n📋 %s"
+)
+
 // notificationColumns is the SQL column list for notification queries.
 const notificationColumns = `id, name, provider_type, config, events, enabled, throttle_seconds, created_at, updated_at`
 
@@ -840,7 +846,7 @@ func fmtSearchExhausted(ctx messageContext) string {
 		msg += fmt.Sprintf("\n📊 Attempts: %d", ctx.Attempts)
 	}
 	if ctx.Reason != "" {
-		msg += fmt.Sprintf("\n📋 Reason: %s", ctx.Reason)
+		msg += fmt.Sprintf(msgFmtReason, ctx.Reason)
 	}
 	msg += "\n👉 Check your indexers or manually search in Sonarr/Radarr"
 	return msg
@@ -852,7 +858,7 @@ func fmtDownloadFailed(ctx messageContext) string {
 		msg += fmt.Sprintf("\n⚠️ %s", ctx.ErrorMsg)
 	}
 	if ctx.Reason != "" {
-		msg += fmt.Sprintf("\n📋 Reason: %s", ctx.Reason)
+		msg += fmt.Sprintf(msgFmtReason, ctx.Reason)
 	}
 	return msg
 }
@@ -860,7 +866,7 @@ func fmtDownloadFailed(ctx messageContext) string {
 func fmtSystemHealthDegraded(ctx messageContext) string {
 	msg := "⚠️ System health degraded"
 	if ctx.ErrorMsg != "" {
-		msg += fmt.Sprintf("\n📋 %s", ctx.ErrorMsg)
+		msg += fmt.Sprintf(msgFmtDetail, ctx.ErrorMsg)
 	}
 	return msg
 }
@@ -868,7 +874,7 @@ func fmtSystemHealthDegraded(ctx messageContext) string {
 func fmtInstanceUnhealthy(ctx messageContext) string {
 	msg := "🔴 Arr instance unreachable"
 	if ctx.Reason != "" {
-		msg += fmt.Sprintf("\n📋 %s", ctx.Reason)
+		msg += fmt.Sprintf(msgFmtDetail, ctx.Reason)
 	}
 	if ctx.ErrorMsg != "" {
 		msg += fmt.Sprintf("\n⚠️ %s", ctx.ErrorMsg)
@@ -879,7 +885,7 @@ func fmtInstanceUnhealthy(ctx messageContext) string {
 func fmtInstanceHealthy(ctx messageContext) string {
 	msg := "🟢 Arr instance recovered"
 	if ctx.Reason != "" {
-		msg += fmt.Sprintf("\n📋 %s", ctx.Reason)
+		msg += fmt.Sprintf(msgFmtDetail, ctx.Reason)
 	}
 	return msg
 }
@@ -890,7 +896,7 @@ func fmtStuckRemediation(ctx messageContext) string {
 		msg += fmt.Sprintf(": %s", ctx.FileName)
 	}
 	if ctx.Reason != "" {
-		msg += fmt.Sprintf("\n📋 %s", ctx.Reason)
+		msg += fmt.Sprintf(msgFmtDetail, ctx.Reason)
 	}
 	return msg + "\n👉 Remediation has shown no progress - manual check recommended"
 }
@@ -898,7 +904,7 @@ func fmtStuckRemediation(ctx messageContext) string {
 func fmtCorruptionIgnored(ctx messageContext) string {
 	msg := fmt.Sprintf("🙈 Corruption ignored: %s", ctx.FileName)
 	if ctx.Reason != "" {
-		msg += fmt.Sprintf("\n📋 Reason: %s", ctx.Reason)
+		msg += fmt.Sprintf(msgFmtReason, ctx.Reason)
 	}
 	return msg
 }

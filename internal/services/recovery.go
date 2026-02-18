@@ -192,12 +192,7 @@ func (r *RecoveryService) findStaleItems() ([]staleItem, error) {
 			continue
 		}
 
-		// Parse last updated time
-		if t, err := time.Parse("2006-01-02 15:04:05", lastUpdated); err == nil {
-			item.LastUpdated = t
-		} else if t, err := time.Parse(time.RFC3339, lastUpdated); err == nil {
-			item.LastUpdated = t
-		}
+		item.LastUpdated = parseTimestamp(lastUpdated)
 
 		if mediaIDRaw.Valid {
 			item.MediaID = int64(mediaIDRaw.Float64)
@@ -215,6 +210,17 @@ func (r *RecoveryService) findStaleItems() ([]staleItem, error) {
 	}
 
 	return items, rows.Err()
+}
+
+// parseTimestamp parses a timestamp string in SQLite datetime or RFC3339 format.
+func parseTimestamp(s string) time.Time {
+	if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
+		return t
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	return time.Time{}
 }
 
 // checkArrStatus checks queue and file status in arr for the item.
