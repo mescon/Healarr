@@ -124,6 +124,7 @@ func corsMiddleware(corsOrigins string, allowedOrigins map[string]bool) gin.Hand
 		origin := c.GetHeader("Origin")
 		if corsOrigins == "*" {
 			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+			c.Writer.Header().Set("Vary", "Origin")
 		} else if origin != "" && allowedOrigins[origin] {
 			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
 			c.Writer.Header().Set("Vary", "Origin")
@@ -392,7 +393,7 @@ func (s *RESTServer) setupRoutes() {
 
 		// Onboarding/Setup endpoints (public, for first-time setup wizard)
 		api.GET("/setup/status", s.handleSetupStatus)
-		api.POST("/setup/dismiss", s.handleSetupDismiss)
+		api.POST("/setup/dismiss", SetupLimiter.Middleware(), s.handleSetupDismiss)
 		api.POST("/setup/import", SetupLimiter.Middleware(), s.handleConfigImportPublic)     // Config import during setup
 		api.POST("/setup/restore", SetupLimiter.Middleware(), s.handleDatabaseRestorePublic) // Database restore during setup
 		api.GET("/setup/notification-events", s.getNotificationEvents)                       // Static event list for wizard

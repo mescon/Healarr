@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/notifier"
 )
 
@@ -39,7 +40,7 @@ func (s *RESTServer) createNotification(c *gin.Context) {
 
 	var req notifier.NotificationConfig
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, true)
+		respondBadRequest(c, err, false)
 		return
 	}
 
@@ -71,7 +72,7 @@ func (s *RESTServer) updateNotification(c *gin.Context) {
 
 	var req notifier.NotificationConfig
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, true)
+		respondBadRequest(c, err, false)
 		return
 	}
 	req.ID = id
@@ -111,14 +112,15 @@ func (s *RESTServer) testNotification(c *gin.Context) {
 
 	var req notifier.NotificationConfig
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, true)
+		respondBadRequest(c, err, false)
 		return
 	}
 
 	if err := s.notifier.SendTestNotification(&req); err != nil {
+		logger.Debugf("Test notification failed for provider %s: %v", req.ProviderType, err)
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"error":   err.Error(),
+			"error":   "Test notification failed",
 		})
 		return
 	}
