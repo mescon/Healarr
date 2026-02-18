@@ -1316,3 +1316,122 @@ func TestRunCommandWithTimeout_CommandNotFound(t *testing.T) {
 		t.Error("Expected error from nonexistent command")
 	}
 }
+
+// =============================================================================
+// Content analysis parsing tests
+// =============================================================================
+
+func TestParseDurations_BlackDetect(t *testing.T) {
+	tests := []struct {
+		name     string
+		stderr   string
+		expected float64
+	}{
+		{
+			"single black segment",
+			`[blackdetect @ 0x55f] black_start:0 black_end:120 black_duration:120`,
+			120.0,
+		},
+		{
+			"multiple black segments",
+			`[blackdetect @ 0x55f] black_start:0 black_end:60 black_duration:60
+[blackdetect @ 0x55f] black_start:100 black_end:160 black_duration:60`,
+			120.0,
+		},
+		{
+			"no black segments",
+			`frame=12345 fps=100 q=-0.0 Lsize=N/A time=00:02:00.00`,
+			0.0,
+		},
+		{
+			"fractional duration",
+			`[blackdetect @ 0x55f] black_start:0 black_end:3600.5 black_duration:3600.5`,
+			3600.5,
+		},
+		{
+			"empty input",
+			``,
+			0.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseDurations(blackDurationRe, tt.stderr)
+			if result != tt.expected {
+				t.Errorf("got %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseDurations_FreezeDetect(t *testing.T) {
+	tests := []struct {
+		name     string
+		stderr   string
+		expected float64
+	}{
+		{
+			"lavfi format",
+			`[freezedetect @ 0x55f] lavfi.freezedetect.freeze_start: 0
+[freezedetect @ 0x55f] lavfi.freezedetect.freeze_duration: 3600
+[freezedetect @ 0x55f] lavfi.freezedetect.freeze_end: 3600`,
+			3600.0,
+		},
+		{
+			"multiple freeze segments",
+			`[freezedetect @ 0x55f] lavfi.freezedetect.freeze_duration: 60
+[freezedetect @ 0x55f] lavfi.freezedetect.freeze_duration: 90`,
+			150.0,
+		},
+		{
+			"no freeze segments",
+			`[Parsed_blackdetect_0 @ 0x55f] config_input`,
+			0.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseDurations(freezeDurationRe, tt.stderr)
+			if result != tt.expected {
+				t.Errorf("got %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseDurations_SilenceDetect(t *testing.T) {
+	tests := []struct {
+		name     string
+		stderr   string
+		expected float64
+	}{
+		{
+			"standard format",
+			`[silencedetect @ 0x55f] silence_start: 0
+[silencedetect @ 0x55f] silence_end: 3600 | silence_duration: 3600`,
+			3600.0,
+		},
+		{
+			"multiple silence segments",
+			`[silencedetect @ 0x55f] silence_end: 60 | silence_duration: 60
+[silencedetect @ 0x55f] silence_end: 180 | silence_duration: 90`,
+			150.0,
+		},
+		{
+			"fractional duration with pipe delimiter",
+			`[silencedetect @ 0x55f] silence_end: 120.5 | silence_duration: 120.5`,
+			120.5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseDurations(silenceDurationRe, tt.stderr)
+			if result != tt.expected {
+				t.Errorf("got %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}

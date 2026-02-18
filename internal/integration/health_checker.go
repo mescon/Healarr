@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,6 +80,29 @@ const (
 	// ModeThorough performs full stream decoding (slow but comprehensive).
 	ModeThorough = "thorough"
 )
+
+// Content analysis constants
+//
+//nolint:unused // used in AnalyzeContent (Task 4)
+const contentAnalysisThreshold = 0.90 // Flag if >90% of duration is affected
+
+// Compiled regexes for parsing ffmpeg detection filter output
+var (
+	blackDurationRe   = regexp.MustCompile(`black_duration:\s*([\d.]+)`)
+	freezeDurationRe  = regexp.MustCompile(`freeze_duration:\s*([\d.]+)`)
+	silenceDurationRe = regexp.MustCompile(`silence_duration:\s*([\d.]+)`)
+)
+
+// parseDurations sums all duration values matching the given regex in ffmpeg stderr output.
+func parseDurations(re *regexp.Regexp, stderr string) float64 {
+	var total float64
+	for _, match := range re.FindAllStringSubmatch(stderr, -1) {
+		if val, err := strconv.ParseFloat(match[1], 64); err == nil {
+			total += val
+		}
+	}
+	return total
+}
 
 // DetectionConfig specifies how to check media file health.
 type DetectionConfig struct {
