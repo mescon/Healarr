@@ -502,6 +502,19 @@ func (m *MockHealthChecker) AnalyzeContent(path string) (bool, *integration.Heal
 	return true, nil
 }
 
+// CallCount returns the number of times a method was called.
+func (m *MockHealthChecker) CallCount(method string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for _, call := range m.Calls {
+		if call.Method == method {
+			count++
+		}
+	}
+	return count
+}
+
 // MockEventBus provides a simple in-memory event bus for testing.
 // It captures all published events and allows synchronous subscription.
 // Implements eventbus.Publisher interface.
