@@ -82,8 +82,6 @@ const (
 )
 
 // Content analysis constants
-//
-//nolint:unused // used in AnalyzeContent (Task 4)
 const contentAnalysisThreshold = 0.90 // Flag if >90% of duration is affected
 
 // Compiled regexes for parsing ffmpeg detection filter output
@@ -736,10 +734,185 @@ func (hc *CmdHealthChecker) GetTimeoutDescription(method DetectionMethod, mode s
 	}
 }
 
+// contentAnalysisResult holds parsed durations for threshold evaluation.
+type contentAnalysisResult struct {
+	BlackDuration   float64
+	FreezeDuration  float64
+	SilenceDuration float64
+	TotalDuration   float64
+	HasVideo        bool
+	HasAudio        bool
+}
+
+// evaluateContentAnalysis checks if any content issue exceeds the corruption threshold.
+// Priority: black > frozen > silent (returns first match).
+func evaluateContentAnalysis(r contentAnalysisResult) (bool, *HealthCheckError) {
+	if r.TotalDuration <= 0 {
+		return true, nil
+	}
+
+	if r.HasVideo {
+		if r.BlackDuration/r.TotalDuration > contentAnalysisThreshold {
+			return false, &HealthCheckError{
+				Type: ErrorTypeBlackVideo,
+				Message: fmt.Sprintf("video is %.0f%% black (%.1fs of %.1fs)",
+					r.BlackDuration/r.TotalDuration*100, r.BlackDuration, r.TotalDuration),
+			}
+		}
+		if r.FreezeDuration/r.TotalDuration > contentAnalysisThreshold {
+			return false, &HealthCheckError{
+				Type: ErrorTypeFrozenVideo,
+				Message: fmt.Sprintf("video is %.0f%% frozen (%.1fs of %.1fs)",
+					r.FreezeDuration/r.TotalDuration*100, r.FreezeDuration, r.TotalDuration),
+			}
+		}
+	}
+
+	if r.HasAudio {
+		if r.SilenceDuration/r.TotalDuration > contentAnalysisThreshold {
+			return false, &HealthCheckError{
+				Type: ErrorTypeSilentAudio,
+				Message: fmt.Sprintf("audio is %.0f%% silent (%.1fs of %.1fs)",
+					r.SilenceDuration/r.TotalDuration*100, r.SilenceDuration, r.TotalDuration),
+			}
+		}
+	}
+
+	return true, nil
+}
+
+// mediaProbeInfo holds duration and stream type information from ffprobe.
+type mediaProbeInfo struct {
+	Duration float64
+	HasVideo bool
+	HasAudio bool
+}
+
+// getMediaProbeInfo uses ffprobe to get file duration and stream types in a single call.
+func (hc *CmdHealthChecker) getMediaProbeInfo(path string) (*mediaProbeInfo, error) {
+	cmd := exec.Command(hc.FFprobePath, "-v", "error",
+		"-show_entries", "format=duration:stream=codec_type",
+		"-of", "json", path)
+
+	output, err := runCommandWithTimeout(cmd, 30*time.Second, "ffprobe")
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Streams []struct {
+			CodecType string `json:"codec_type"`
+		} `json:"streams"`
+		Format struct {
+			Duration string `json:"duration"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse ffprobe JSON: %v", err)
+	}
+
+	info := &mediaProbeInfo{}
+	for _, s := range result.Streams {
+		switch s.CodecType {
+		case "video":
+			info.HasVideo = true
+		case "audio":
+			info.HasAudio = true
+		}
+	}
+
+	if result.Format.Duration == "" {
+		return nil, fmt.Errorf("no duration in ffprobe output")
+	}
+	dur, err := strconv.ParseFloat(result.Format.Duration, 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse duration %q: %v", result.Format.Duration, err)
+	}
+	info.Duration = dur
+
+	return info, nil
+}
+
 // AnalyzeContent checks for content-level issues (black video, frozen video, silent audio)
 // in files that have already passed structural health checks.
 // Only meaningful in thorough mode — call after CheckWithConfig passes.
 func (hc *CmdHealthChecker) AnalyzeContent(path string) (bool, *HealthCheckError) {
-	// TODO: implement in Task 4
-	return true, nil
+	if err := validateMediaPath(path); err != nil {
+		return false, &HealthCheckError{
+			Type:    ErrorTypeInvalidConfig,
+			Message: fmt.Sprintf("invalid media path: %v", err),
+		}
+	}
+
+	// Probe file for duration and stream types
+	info, err := hc.getMediaProbeInfo(path)
+	if err != nil {
+		logger.Warnf("Content analysis skipped (probe failed): %s: %v", path, err)
+		return true, nil
+	}
+
+	if info.Duration <= 0 {
+		logger.Warnf("Content analysis skipped (invalid duration %.2f): %s", info.Duration, path)
+		return true, nil
+	}
+
+	if !info.HasVideo && !info.HasAudio {
+		return true, nil
+	}
+
+	// Build ffmpeg command with appropriate filters
+	ffmpegArgs := []string{"-nostats", "-v", "info", "-i", path}
+
+	var vf []string
+	if info.HasVideo {
+		vf = append(vf, "blackdetect=d=10:pix_th=0.10", "freezedetect=n=0.003:d=10")
+	}
+	if len(vf) > 0 {
+		ffmpegArgs = append(ffmpegArgs, "-vf", strings.Join(vf, ","))
+	}
+
+	if info.HasAudio {
+		ffmpegArgs = append(ffmpegArgs, "-af", "silencedetect=n=-50dB:d=10")
+	}
+
+	ffmpegArgs = append(ffmpegArgs, "-f", "null", "-")
+
+	// Run ffmpeg with detection filters
+	cmd := exec.Command(hc.FFmpegPath, ffmpegArgs...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	timeout := 10 * time.Minute
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Run()
+	}()
+
+	select {
+	case <-time.After(timeout):
+		if cmd.Process != nil {
+			if killErr := cmd.Process.Kill(); killErr != nil {
+				logger.Debugf("Content analysis kill returned: %v", killErr)
+			}
+			<-done
+		}
+		logger.Warnf("Content analysis timed out after %v: %s", timeout, path)
+		return true, nil
+	case err := <-done:
+		if err != nil {
+			logger.Warnf("Content analysis ffmpeg error (treating as healthy): %s: %v", path, err)
+			return true, nil
+		}
+	}
+
+	// Parse results and evaluate against threshold
+	output := stderr.String()
+	return evaluateContentAnalysis(contentAnalysisResult{
+		BlackDuration:   parseDurations(blackDurationRe, output),
+		FreezeDuration:  parseDurations(freezeDurationRe, output),
+		SilenceDuration: parseDurations(silenceDurationRe, output),
+		TotalDuration:   info.Duration,
+		HasVideo:        info.HasVideo,
+		HasAudio:        info.HasAudio,
+	})
 }

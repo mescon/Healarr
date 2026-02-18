@@ -1321,6 +1321,139 @@ func TestRunCommandWithTimeout_CommandNotFound(t *testing.T) {
 // Content analysis parsing tests
 // =============================================================================
 
+// =============================================================================
+// Content analysis threshold tests
+// =============================================================================
+
+func TestEvaluateContentAnalysis(t *testing.T) {
+	tests := []struct {
+		name        string
+		result      contentAnalysisResult
+		wantHealthy bool
+		wantType    string
+	}{
+		{
+			"healthy - no detections",
+			contentAnalysisResult{TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			true, "",
+		},
+		{
+			"healthy - 2% black (legitimate dark scenes)",
+			contentAnalysisResult{BlackDuration: 144, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			true, "",
+		},
+		{
+			"healthy - 89% black (just below threshold)",
+			contentAnalysisResult{BlackDuration: 6408, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			true, "",
+		},
+		{
+			"corrupt - 91% black (above threshold)",
+			contentAnalysisResult{BlackDuration: 6552, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			false, ErrorTypeBlackVideo,
+		},
+		{
+			"corrupt - 100% black",
+			contentAnalysisResult{BlackDuration: 7200, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			false, ErrorTypeBlackVideo,
+		},
+		{
+			"corrupt - 95% frozen",
+			contentAnalysisResult{FreezeDuration: 6840, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			false, ErrorTypeFrozenVideo,
+		},
+		{
+			"corrupt - 100% silent",
+			contentAnalysisResult{SilenceDuration: 7200, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			false, ErrorTypeSilentAudio,
+		},
+		{
+			"priority - black beats frozen when both exceed threshold",
+			contentAnalysisResult{
+				BlackDuration: 7200, FreezeDuration: 7200,
+				TotalDuration: 7200, HasVideo: true, HasAudio: true,
+			},
+			false, ErrorTypeBlackVideo,
+		},
+		{
+			"priority - black beats silent when both exceed threshold",
+			contentAnalysisResult{
+				BlackDuration: 7200, SilenceDuration: 7200,
+				TotalDuration: 7200, HasVideo: true, HasAudio: true,
+			},
+			false, ErrorTypeBlackVideo,
+		},
+		{
+			"priority - frozen beats silent",
+			contentAnalysisResult{
+				FreezeDuration: 7200, SilenceDuration: 7200,
+				TotalDuration: 7200, HasVideo: true, HasAudio: true,
+			},
+			false, ErrorTypeFrozenVideo,
+		},
+		{
+			"audio-only file - skip video checks",
+			contentAnalysisResult{
+				SilenceDuration: 7200, TotalDuration: 7200,
+				HasVideo: false, HasAudio: true,
+			},
+			false, ErrorTypeSilentAudio,
+		},
+		{
+			"audio-only file - healthy audio",
+			contentAnalysisResult{
+				SilenceDuration: 100, TotalDuration: 7200,
+				HasVideo: false, HasAudio: true,
+			},
+			true, "",
+		},
+		{
+			"video-only file - skip audio checks",
+			contentAnalysisResult{
+				BlackDuration: 7200, TotalDuration: 7200,
+				HasVideo: true, HasAudio: false,
+			},
+			false, ErrorTypeBlackVideo,
+		},
+		{
+			"zero duration - treat as healthy",
+			contentAnalysisResult{TotalDuration: 0, HasVideo: true, HasAudio: true},
+			true, "",
+		},
+		{
+			"negative duration - treat as healthy",
+			contentAnalysisResult{TotalDuration: -1, HasVideo: true, HasAudio: true},
+			true, "",
+		},
+		{
+			"no streams - treat as healthy",
+			contentAnalysisResult{TotalDuration: 7200, HasVideo: false, HasAudio: false},
+			true, "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			healthy, err := evaluateContentAnalysis(tt.result)
+			if healthy != tt.wantHealthy {
+				t.Errorf("healthy = %v, want %v", healthy, tt.wantHealthy)
+			}
+			if tt.wantType == "" {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatalf("expected error type %s, got nil", tt.wantType)
+				}
+				if err.Type != tt.wantType {
+					t.Errorf("error type = %s, want %s", err.Type, tt.wantType)
+				}
+			}
+		})
+	}
+}
+
 func TestParseDurations_BlackDetect(t *testing.T) {
 	tests := []struct {
 		name     string
