@@ -4148,3 +4148,115 @@ func TestScannerService_MarkFileProcessed(t *testing.T) {
 		}
 	})
 }
+
+func TestScannerService_ContentAnalysis_ThoroughMode(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockHC := &testutil.MockHealthChecker{
+		// Structural check passes
+		CheckWithConfigFunc: func(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+		// Content analysis detects black video
+		AnalyzeContentFunc: func(path string) (bool, *integration.HealthCheckError) {
+			return false, &integration.HealthCheckError{
+				Type:    integration.ErrorTypeBlackVideo,
+				Message: "video is 100% black",
+			}
+		},
+	}
+
+	scanner := NewScannerService(db, eb, mockHC, &testutil.MockPathMapper{})
+
+	// Create temp dir with a media file
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.mkv")
+	if err := os.WriteFile(testFile, []byte("fake media content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Backdate mtime to bypass recently-modified check
+	oldTime := time.Now().Add(-10 * time.Minute)
+	os.Chtimes(testFile, oldTime, oldTime)
+
+	// Insert scan path with thorough mode
+	_, err = db.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run, detection_method, detection_mode)
+		VALUES (500, ?, ?, 1, 1, 0, 0, 'ffprobe', 'thorough')`, tmpDir, tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run the scan
+	err = scanner.ScanPath(500, tmpDir)
+	if err != nil {
+		t.Fatalf("ScanPath failed: %v", err)
+	}
+
+	// Verify AnalyzeContent was called
+	if mockHC.CallCount("AnalyzeContent") == 0 {
+		t.Error("Expected AnalyzeContent to be called in thorough mode")
+	}
+
+	// Verify corruption event was emitted with BlackVideo type
+	var corruptionType string
+	err = db.QueryRow(`
+		SELECT json_extract(event_data, '$.corruption_type')
+		FROM events WHERE event_type = 'CorruptionDetected'
+		ORDER BY id DESC LIMIT 1
+	`).Scan(&corruptionType)
+	if err != nil {
+		t.Fatalf("Expected CorruptionDetected event, got error: %v", err)
+	}
+	if corruptionType != "BlackVideo" {
+		t.Errorf("Expected corruption_type=BlackVideo, got %s", corruptionType)
+	}
+}
+
+func TestScannerService_ContentAnalysis_QuickMode_Skipped(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckWithConfigFunc: func(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+		AnalyzeContentFunc: func(path string) (bool, *integration.HealthCheckError) {
+			t.Error("AnalyzeContent should NOT be called in quick mode")
+			return true, nil
+		},
+	}
+
+	scanner := NewScannerService(db, eb, mockHC, &testutil.MockPathMapper{})
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.mkv")
+	os.WriteFile(testFile, []byte("fake media content"), 0644)
+	oldTime := time.Now().Add(-10 * time.Minute)
+	os.Chtimes(testFile, oldTime, oldTime)
+
+	// Insert scan path with quick mode
+	_, err = db.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run, detection_method, detection_mode)
+		VALUES (501, ?, ?, 1, 1, 0, 0, 'ffprobe', 'quick')`, tmpDir, tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	scanner.ScanPath(501, tmpDir)
+
+	// AnalyzeContent should not have been called
+	if mockHC.CallCount("AnalyzeContent") != 0 {
+		t.Error("AnalyzeContent should not be called in quick mode")
+	}
+}

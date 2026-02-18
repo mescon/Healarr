@@ -153,6 +153,7 @@ func itoa(n int) string {
 type HealthChecker interface {
 	Check(path string, mode string) (bool, *HealthCheckError)
 	CheckWithConfig(path string, config DetectionConfig) (bool, *HealthCheckError)
+	AnalyzeContent(path string) (bool, *HealthCheckError)
 }
 
 // PathMapper defines the interface for translating paths
@@ -169,6 +170,11 @@ const (
 	ErrorTypeCorruptHeader = "CorruptHeader" // Container/header corruption
 	ErrorTypeCorruptStream = "CorruptStream" // Stream-level corruption
 	ErrorTypeInvalidFormat = "InvalidFormat" // Not a valid media file
+
+	// Content analysis types - structurally valid but content is corrupt
+	ErrorTypeBlackVideo  = "BlackVideo"  // Video is entirely/mostly black
+	ErrorTypeFrozenVideo = "FrozenVideo" // Video is frozen on a single frame
+	ErrorTypeSilentAudio = "SilentAudio" // Audio is completely silent
 
 	// Accessibility types - transient/infrastructure issues (should NOT trigger remediation)
 	ErrorTypeAccessDenied  = "AccessDenied"  // Permission error
@@ -202,7 +208,8 @@ func (e *HealthCheckError) IsRecoverable() bool {
 // that warrants remediation (re-download).
 func (e *HealthCheckError) IsTrueCorruption() bool {
 	switch e.Type {
-	case ErrorTypeZeroByte, ErrorTypeCorruptHeader, ErrorTypeCorruptStream, ErrorTypeInvalidFormat:
+	case ErrorTypeZeroByte, ErrorTypeCorruptHeader, ErrorTypeCorruptStream, ErrorTypeInvalidFormat,
+		ErrorTypeBlackVideo, ErrorTypeFrozenVideo, ErrorTypeSilentAudio:
 		return true
 	default:
 		return false

@@ -1309,6 +1309,13 @@ func (s *ScannerService) checkAndHandleFile(
 	healthy, healthErr := s.detector.CheckWithConfig(sfc.filePath, cfg.DetectionConfig)
 
 	if healthy {
+		// In thorough mode, run content analysis on structurally healthy files
+		if cfg.DetectionConfig.Mode == integration.ModeThorough {
+			healthy, healthErr = s.detector.AnalyzeContent(sfc.filePath)
+			if !healthy {
+				return s.handleHealthCheckResult(ctx, progress, cfg, fileIndex, sfc, healthErr)
+			}
+		}
 		s.recordHealthyFile(sfc)
 		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
 		return scanContinue

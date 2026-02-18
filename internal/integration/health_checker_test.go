@@ -28,6 +28,9 @@ func TestHealthCheckError_IsRecoverable(t *testing.T) {
 		{ErrorTypeIOError, true},
 		{ErrorTypeTimeout, true},
 		{ErrorTypeInvalidConfig, true},
+		{ErrorTypeBlackVideo, false},
+		{ErrorTypeFrozenVideo, false},
+		{ErrorTypeSilentAudio, false},
 	}
 
 	for _, tt := range tests {
@@ -49,6 +52,9 @@ func TestHealthCheckError_IsTrueCorruption(t *testing.T) {
 		{ErrorTypeCorruptHeader, true},
 		{ErrorTypeCorruptStream, true},
 		{ErrorTypeInvalidFormat, true},
+		{ErrorTypeBlackVideo, true},
+		{ErrorTypeFrozenVideo, true},
+		{ErrorTypeSilentAudio, true},
 		{ErrorTypeAccessDenied, false},
 		{ErrorTypePathNotFound, false},
 		{ErrorTypeMountLost, false},
@@ -1308,5 +1314,257 @@ func TestRunCommandWithTimeout_CommandNotFound(t *testing.T) {
 
 	if err == nil {
 		t.Error("Expected error from nonexistent command")
+	}
+}
+
+// =============================================================================
+// Content analysis parsing tests
+// =============================================================================
+
+// =============================================================================
+// Content analysis threshold tests
+// =============================================================================
+
+func TestEvaluateContentAnalysis(t *testing.T) {
+	tests := []struct {
+		name        string
+		result      contentAnalysisResult
+		wantHealthy bool
+		wantType    string
+	}{
+		{
+			"healthy - no detections",
+			contentAnalysisResult{TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			true, "",
+		},
+		{
+			"healthy - 2% black (legitimate dark scenes)",
+			contentAnalysisResult{BlackDuration: 144, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			true, "",
+		},
+		{
+			"healthy - 89% black (just below threshold)",
+			contentAnalysisResult{BlackDuration: 6408, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			true, "",
+		},
+		{
+			"corrupt - 91% black (above threshold)",
+			contentAnalysisResult{BlackDuration: 6552, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			false, ErrorTypeBlackVideo,
+		},
+		{
+			"corrupt - 100% black",
+			contentAnalysisResult{BlackDuration: 7200, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			false, ErrorTypeBlackVideo,
+		},
+		{
+			"corrupt - 95% frozen",
+			contentAnalysisResult{FreezeDuration: 6840, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			false, ErrorTypeFrozenVideo,
+		},
+		{
+			"corrupt - 100% silent",
+			contentAnalysisResult{SilenceDuration: 7200, TotalDuration: 7200, HasVideo: true, HasAudio: true},
+			false, ErrorTypeSilentAudio,
+		},
+		{
+			"priority - black beats frozen when both exceed threshold",
+			contentAnalysisResult{
+				BlackDuration: 7200, FreezeDuration: 7200,
+				TotalDuration: 7200, HasVideo: true, HasAudio: true,
+			},
+			false, ErrorTypeBlackVideo,
+		},
+		{
+			"priority - black beats silent when both exceed threshold",
+			contentAnalysisResult{
+				BlackDuration: 7200, SilenceDuration: 7200,
+				TotalDuration: 7200, HasVideo: true, HasAudio: true,
+			},
+			false, ErrorTypeBlackVideo,
+		},
+		{
+			"priority - frozen beats silent",
+			contentAnalysisResult{
+				FreezeDuration: 7200, SilenceDuration: 7200,
+				TotalDuration: 7200, HasVideo: true, HasAudio: true,
+			},
+			false, ErrorTypeFrozenVideo,
+		},
+		{
+			"audio-only file - skip video checks",
+			contentAnalysisResult{
+				SilenceDuration: 7200, TotalDuration: 7200,
+				HasVideo: false, HasAudio: true,
+			},
+			false, ErrorTypeSilentAudio,
+		},
+		{
+			"audio-only file - healthy audio",
+			contentAnalysisResult{
+				SilenceDuration: 100, TotalDuration: 7200,
+				HasVideo: false, HasAudio: true,
+			},
+			true, "",
+		},
+		{
+			"video-only file - skip audio checks",
+			contentAnalysisResult{
+				BlackDuration: 7200, TotalDuration: 7200,
+				HasVideo: true, HasAudio: false,
+			},
+			false, ErrorTypeBlackVideo,
+		},
+		{
+			"zero duration - treat as healthy",
+			contentAnalysisResult{TotalDuration: 0, HasVideo: true, HasAudio: true},
+			true, "",
+		},
+		{
+			"negative duration - treat as healthy",
+			contentAnalysisResult{TotalDuration: -1, HasVideo: true, HasAudio: true},
+			true, "",
+		},
+		{
+			"no streams - treat as healthy",
+			contentAnalysisResult{TotalDuration: 7200, HasVideo: false, HasAudio: false},
+			true, "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			healthy, err := evaluateContentAnalysis(tt.result)
+			if healthy != tt.wantHealthy {
+				t.Errorf("healthy = %v, want %v", healthy, tt.wantHealthy)
+			}
+			if tt.wantType == "" {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatalf("expected error type %s, got nil", tt.wantType)
+				}
+				if err.Type != tt.wantType {
+					t.Errorf("error type = %s, want %s", err.Type, tt.wantType)
+				}
+			}
+		})
+	}
+}
+
+func TestParseDurations_BlackDetect(t *testing.T) {
+	tests := []struct {
+		name     string
+		stderr   string
+		expected float64
+	}{
+		{
+			"single black segment",
+			`[blackdetect @ 0x55f] black_start:0 black_end:120 black_duration:120`,
+			120.0,
+		},
+		{
+			"multiple black segments",
+			`[blackdetect @ 0x55f] black_start:0 black_end:60 black_duration:60
+[blackdetect @ 0x55f] black_start:100 black_end:160 black_duration:60`,
+			120.0,
+		},
+		{
+			"no black segments",
+			`frame=12345 fps=100 q=-0.0 Lsize=N/A time=00:02:00.00`,
+			0.0,
+		},
+		{
+			"fractional duration",
+			`[blackdetect @ 0x55f] black_start:0 black_end:3600.5 black_duration:3600.5`,
+			3600.5,
+		},
+		{
+			"empty input",
+			``,
+			0.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseDurations(blackDurationRe, tt.stderr)
+			if result != tt.expected {
+				t.Errorf("got %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseDurations_FreezeDetect(t *testing.T) {
+	tests := []struct {
+		name     string
+		stderr   string
+		expected float64
+	}{
+		{
+			"lavfi format",
+			`[freezedetect @ 0x55f] lavfi.freezedetect.freeze_start: 0
+[freezedetect @ 0x55f] lavfi.freezedetect.freeze_duration: 3600
+[freezedetect @ 0x55f] lavfi.freezedetect.freeze_end: 3600`,
+			3600.0,
+		},
+		{
+			"multiple freeze segments",
+			`[freezedetect @ 0x55f] lavfi.freezedetect.freeze_duration: 60
+[freezedetect @ 0x55f] lavfi.freezedetect.freeze_duration: 90`,
+			150.0,
+		},
+		{
+			"no freeze segments",
+			`[Parsed_blackdetect_0 @ 0x55f] config_input`,
+			0.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseDurations(freezeDurationRe, tt.stderr)
+			if result != tt.expected {
+				t.Errorf("got %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseDurations_SilenceDetect(t *testing.T) {
+	tests := []struct {
+		name     string
+		stderr   string
+		expected float64
+	}{
+		{
+			"standard format",
+			`[silencedetect @ 0x55f] silence_start: 0
+[silencedetect @ 0x55f] silence_end: 3600 | silence_duration: 3600`,
+			3600.0,
+		},
+		{
+			"multiple silence segments",
+			`[silencedetect @ 0x55f] silence_end: 60 | silence_duration: 60
+[silencedetect @ 0x55f] silence_end: 180 | silence_duration: 90`,
+			150.0,
+		},
+		{
+			"fractional duration with pipe delimiter",
+			`[silencedetect @ 0x55f] silence_end: 120.5 | silence_duration: 120.5`,
+			120.5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseDurations(silenceDurationRe, tt.stderr)
+			if result != tt.expected {
+				t.Errorf("got %v, want %v", result, tt.expected)
+			}
+		})
 	}
 }

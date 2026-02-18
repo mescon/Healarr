@@ -169,6 +169,10 @@ func (m *mockHealthChecker) CheckWithConfig(_ string, _ integration.DetectionCon
 	return m.healthy, m.err
 }
 
+func (m *mockHealthChecker) AnalyzeContent(_ string) (bool, *integration.HealthCheckError) {
+	return m.healthy, m.err
+}
+
 // mockPathMapper implements integration.PathMapper for testing
 type mockPathMapper struct{}
 
