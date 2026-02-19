@@ -42,6 +42,7 @@ func setupPathsTestDB(t *testing.T) (*sql.DB, func()) {
 		ALTER TABLE scan_paths ADD COLUMN detection_mode TEXT DEFAULT 'quick';
 		ALTER TABLE scan_paths ADD COLUMN max_retries INTEGER DEFAULT 3;
 		ALTER TABLE scan_paths ADD COLUMN verification_timeout_hours INTEGER;
+		ALTER TABLE scan_paths ADD COLUMN dry_run INTEGER DEFAULT 0;
 	`
 	_, err := db.Exec(schema)
 	require.NoError(t, err)
@@ -194,7 +195,207 @@ func TestGetScanPaths_WithNullDetectionArgs(t *testing.T) {
 	var response []map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &response)
 	assert.Len(t, response, 1)
-	assert.Equal(t, "", response[0]["detection_args"]) // NULL becomes empty string
+	assert.Nil(t, response[0]["detection_args"]) // NULL returns as JSON null
+}
+
+func TestGetScanPaths_DetectionArgsAsArray(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create arr instance
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	result, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := result.LastInsertId()
+
+	// Create scan path with JSON array detection_args
+	_, err := db.Exec(`INSERT INTO scan_paths
+		(local_path, arr_path, arr_instance_id, enabled, auto_remediate, detection_args)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		"/media/movies", "/movies", arrID, true, false, `["-v","error"]`)
+	require.NoError(t, err)
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/paths", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response []map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Len(t, response, 1)
+
+	// detection_args should be a JSON array, not a string
+	args, ok := response[0]["detection_args"].([]interface{})
+	assert.True(t, ok, "detection_args should be an array")
+	assert.Len(t, args, 2)
+	assert.Equal(t, "-v", args[0])
+	assert.Equal(t, "error", args[1])
+}
+
+func TestGetScanPaths_ArrInstanceIDNull(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// The base test schema has NOT NULL on arr_instance_id,
+	// so we need to alter it for this specific test
+	_, err := db.Exec("CREATE TABLE scan_paths_backup AS SELECT * FROM scan_paths")
+	require.NoError(t, err)
+	_, err = db.Exec("DROP TABLE scan_paths")
+	require.NoError(t, err)
+	_, err = db.Exec(`CREATE TABLE scan_paths (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		local_path TEXT NOT NULL,
+		arr_path TEXT NOT NULL,
+		arr_instance_id INTEGER REFERENCES arr_instances(id) ON DELETE SET NULL,
+		enabled INTEGER DEFAULT 1,
+		auto_remediate INTEGER DEFAULT 0,
+		dry_run INTEGER DEFAULT 0,
+		detection_method TEXT DEFAULT 'ffprobe',
+		detection_args TEXT,
+		detection_mode TEXT DEFAULT 'quick',
+		max_retries INTEGER DEFAULT 3,
+		verification_timeout_hours INTEGER,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	require.NoError(t, err)
+
+	// Create scan path with NULL arr_instance_id
+	_, err = db.Exec(`INSERT INTO scan_paths
+		(local_path, arr_path, arr_instance_id, enabled, auto_remediate)
+		VALUES (?, ?, ?, ?, ?)`,
+		"/media/movies", "/movies", nil, true, false)
+	require.NoError(t, err)
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/paths", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response []map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Len(t, response, 1)
+	assert.Nil(t, response[0]["arr_instance_id"], "NULL arr_instance_id should be JSON null, not 0")
+}
+
+func TestGetScanPaths_DryRunField(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create arr instance for foreign key
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	result, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := result.LastInsertId()
+
+	// Create scan path with dry_run
+	_, err := db.Exec(`INSERT INTO scan_paths
+		(local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		"/media/movies", "/movies", arrID, true, false, true)
+	require.NoError(t, err)
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/paths", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response []map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Len(t, response, 1)
+	assert.Equal(t, true, response[0]["dry_run"])
+}
+
+func TestCreateScanPath_WithDryRun(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create arr instance
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	result, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := result.LastInsertId()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	body := bytes.NewBufferString(fmt.Sprintf(`{
+		"local_path": "/media/test",
+		"arr_instance_id": %d,
+		"enabled": true,
+		"dry_run": true
+	}`, arrID))
+
+	req, _ := http.NewRequest("POST", "/api/config/paths", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+
+	// Verify dry_run was stored
+	var dryRun bool
+	db.QueryRow("SELECT dry_run FROM scan_paths WHERE local_path = ?", "/media/test").Scan(&dryRun)
+	assert.True(t, dryRun)
+}
+
+func TestUpdateScanPath_WithDryRun(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	// Create arr instance
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	arrResult, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := arrResult.LastInsertId()
+
+	// Create path with dry_run = false
+	result, err := db.Exec(`INSERT INTO scan_paths
+		(local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		"/test/path", "/test/arr", arrID, true, false, false)
+	require.NoError(t, err)
+	id, _ := result.LastInsertId()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	body := bytes.NewBufferString(fmt.Sprintf(`{
+		"local_path": "/test/path",
+		"arr_path": "/test/arr",
+		"arr_instance_id": %d,
+		"enabled": true,
+		"auto_remediate": false,
+		"dry_run": true
+	}`, arrID))
+
+	req, _ := http.NewRequest("PUT", fmt.Sprintf("/api/config/paths/%d", id), body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Verify dry_run was updated
+	var dryRun bool
+	db.QueryRow("SELECT dry_run FROM scan_paths WHERE id = ?", id).Scan(&dryRun)
+	assert.True(t, dryRun)
 }
 
 // =============================================================================

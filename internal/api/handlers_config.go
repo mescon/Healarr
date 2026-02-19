@@ -144,7 +144,12 @@ func (s *RESTServer) exportScanPaths() []gin.H {
 			path["arr_instance_id"] = arrInstanceID.Int64
 		}
 		if detectionArgs.Valid && detectionArgs.String != "" {
-			path["detection_args"] = detectionArgs.String
+			var args []string
+			if err := json.Unmarshal([]byte(detectionArgs.String), &args); err == nil {
+				path["detection_args"] = args
+			} else {
+				path["detection_args"] = detectionArgs.String
+			}
 		}
 		if verificationTimeout.Valid {
 			path["verification_timeout_hours"] = verificationTimeout.Int64
@@ -248,17 +253,17 @@ type importArrInstance struct {
 }
 
 type importScanPath struct {
-	LocalPath                string `json:"local_path"`
-	ArrPath                  string `json:"arr_path"`
-	ArrInstanceID            *int   `json:"arr_instance_id"`
-	Enabled                  bool   `json:"enabled"`
-	AutoRemediate            bool   `json:"auto_remediate"`
-	DryRun                   bool   `json:"dry_run"`
-	DetectionMethod          string `json:"detection_method"`
-	DetectionArgs            string `json:"detection_args"`
-	DetectionMode            string `json:"detection_mode"`
-	MaxRetries               int    `json:"max_retries"`
-	VerificationTimeoutHours *int   `json:"verification_timeout_hours"`
+	LocalPath                string          `json:"local_path"`
+	ArrPath                  string          `json:"arr_path"`
+	ArrInstanceID            *int            `json:"arr_instance_id"`
+	Enabled                  bool            `json:"enabled"`
+	AutoRemediate            bool            `json:"auto_remediate"`
+	DryRun                   bool            `json:"dry_run"`
+	DetectionMethod          string          `json:"detection_method"`
+	DetectionArgs            json.RawMessage `json:"detection_args"`
+	DetectionMode            string          `json:"detection_mode"`
+	MaxRetries               int             `json:"max_retries"`
+	VerificationTimeoutHours *int            `json:"verification_timeout_hours"`
 }
 
 type importSchedule struct {
@@ -322,6 +327,36 @@ func normalizeScanPathDefaults(path *importScanPath) {
 	}
 }
 
+// normalizeDetectionArgs converts detection_args from various import formats to the DB storage format.
+// Accepts: null/empty, []string (new format), or string containing JSON array (legacy format).
+// Returns the JSON string for DB storage, or empty string if not set.
+func normalizeDetectionArgs(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	// Try as []string (new export format: ["--verbose", "--threads 2"])
+	var args []string
+	if err := json.Unmarshal(raw, &args); err == nil {
+		if len(args) == 0 {
+			return ""
+		}
+		b, err := json.Marshal(args)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
+
+	// Try as string (legacy format: "[\"--verbose\",\"--threads 2\"]")
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+
+	return ""
+}
+
 // importScanPaths imports scan paths and returns count and path ID mapping.
 // Skips duplicates based on local_path to prevent creating multiple entries for the same path.
 func (s *RESTServer) importScanPaths(paths []importScanPath) (int, map[string]int64) {
@@ -346,7 +381,7 @@ func (s *RESTServer) importScanPaths(paths []importScanPath) (int, map[string]in
 			(local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			path.LocalPath, path.ArrPath, path.ArrInstanceID, path.Enabled, path.AutoRemediate, path.DryRun,
-			path.DetectionMethod, path.DetectionArgs, path.DetectionMode, path.MaxRetries, path.VerificationTimeoutHours)
+			path.DetectionMethod, normalizeDetectionArgs(path.DetectionArgs), path.DetectionMode, path.MaxRetries, path.VerificationTimeoutHours)
 		if err == nil {
 			count++
 			if newID, idErr := result.LastInsertId(); idErr == nil {

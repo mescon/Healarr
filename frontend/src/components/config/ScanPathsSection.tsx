@@ -64,6 +64,10 @@ const PathValidationStatus = ({ pathId }: { pathId: number }) => {
     );
 };
 
+// Form state uses detection_args as a comma-separated string for the input field,
+// while the API returns it as string[]. This type bridges that gap.
+type ScanPathFormState = Omit<Partial<ScanPath>, 'detection_args'> & { detection_args?: string };
+
 interface ScanPathsSectionProps {
     onScrollToDetectionTools?: () => void;
 }
@@ -80,7 +84,7 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
     const [editingId, setEditingId] = useState<number | null>(null);
     const [showFileBrowser, setShowFileBrowser] = useState(false);
     const [fileBrowserTarget, setFileBrowserTarget] = useState<'new' | number>('new');
-    const [newPath, setNewPath] = useState<Partial<ScanPath>>({
+    const [newPath, setNewPath] = useState<ScanPathFormState>({
         enabled: true,
         auto_remediate: true,
         detection_method: 'ffprobe',
@@ -212,17 +216,9 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
     };
 
     const handleEdit = (path: ScanPath) => {
-        let detectionArgsStr = '';
-        if (path.detection_args) {
-            try {
-                const argsArray = JSON.parse(path.detection_args);
-                if (Array.isArray(argsArray)) {
-                    detectionArgsStr = argsArray.join(', ');
-                }
-            } catch {
-                detectionArgsStr = path.detection_args;
-            }
-        }
+        const detectionArgsStr = Array.isArray(path.detection_args)
+            ? path.detection_args.join(', ')
+            : '';
 
         setNewPath({
             local_path: path.local_path,

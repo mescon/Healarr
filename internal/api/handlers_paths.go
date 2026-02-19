@@ -58,6 +58,7 @@ type scanPathRequest struct {
 	ArrInstanceID            *int     `json:"arr_instance_id"`
 	Enabled                  bool     `json:"enabled"`
 	AutoRemediate            bool     `json:"auto_remediate"`
+	DryRun                   bool     `json:"dry_run"`
 	DetectionMethod          string   `json:"detection_method"`
 	DetectionArgs            []string `json:"detection_args"`
 	DetectionMode            string   `json:"detection_mode"`
@@ -98,8 +99,8 @@ func prepareScanPathRequest(req *scanPathRequest, c *gin.Context) ([]byte, bool)
 		var err error
 		detectionArgsJSON, err = json.Marshal(req.DetectionArgs)
 		if err != nil {
-			logger.Warnf("Failed to marshal detection_args: %v, using empty object", err)
-			detectionArgsJSON = []byte("{}")
+			logger.Warnf("Failed to marshal detection_args: %v, using empty array", err)
+			detectionArgsJSON = []byte("[]")
 		}
 	}
 
@@ -107,7 +108,7 @@ func prepareScanPathRequest(req *scanPathRequest, c *gin.Context) ([]byte, bool)
 }
 
 func (s *RESTServer) getScanPaths(c *gin.Context) {
-	rows, err := s.db.Query("SELECT id, local_path, arr_path, arr_instance_id, enabled, auto_remediate, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours FROM scan_paths")
+	rows, err := s.db.Query("SELECT id, local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours FROM scan_paths")
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
@@ -119,25 +120,39 @@ func (s *RESTServer) getScanPaths(c *gin.Context) {
 		var id int
 		var localPath, arrPath string
 		var arrInstanceID sql.NullInt64
-		var enabled, autoRemediate bool
+		var enabled, autoRemediate, dryRun bool
 		var detectionMethod, detectionMode string
 		var detectionArgs sql.NullString
 		var maxRetries int
 		var verificationTimeoutHours sql.NullInt64
-		if rows.Scan(&id, &localPath, &arrPath, &arrInstanceID, &enabled, &autoRemediate, &detectionMethod, &detectionArgs, &detectionMode, &maxRetries, &verificationTimeoutHours) != nil {
+		if rows.Scan(&id, &localPath, &arrPath, &arrInstanceID, &enabled, &autoRemediate, &dryRun, &detectionMethod, &detectionArgs, &detectionMode, &maxRetries, &verificationTimeoutHours) != nil {
 			continue
 		}
 		path := gin.H{
 			"id":               id,
 			"local_path":       localPath,
 			"arr_path":         arrPath,
-			"arr_instance_id":  arrInstanceID.Int64,
 			"enabled":          enabled,
 			"auto_remediate":   autoRemediate,
+			"dry_run":          dryRun,
 			"detection_method": detectionMethod,
-			"detection_args":   detectionArgs.String,
 			"detection_mode":   detectionMode,
 			"max_retries":      maxRetries,
+		}
+		if arrInstanceID.Valid {
+			path["arr_instance_id"] = arrInstanceID.Int64
+		} else {
+			path["arr_instance_id"] = nil
+		}
+		if detectionArgs.Valid && detectionArgs.String != "" {
+			var args []string
+			if err := json.Unmarshal([]byte(detectionArgs.String), &args); err == nil {
+				path["detection_args"] = args
+			} else {
+				path["detection_args"] = detectionArgs.String
+			}
+		} else {
+			path["detection_args"] = nil
 		}
 		if verificationTimeoutHours.Valid {
 			path["verification_timeout_hours"] = verificationTimeoutHours.Int64
@@ -241,10 +256,10 @@ func (s *RESTServer) createScanPath(c *gin.Context) {
 	}
 
 	_, err := s.db.Exec(`INSERT INTO scan_paths
-		(local_path, arr_path, arr_instance_id, enabled, auto_remediate, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.LocalPath, req.ArrPath, req.ArrInstanceID, req.Enabled, req.AutoRemediate,
-		req.DetectionMethod, detectionArgsJSON, req.DetectionMode, req.MaxRetries, req.VerificationTimeoutHours)
+		req.DryRun, req.DetectionMethod, detectionArgsJSON, req.DetectionMode, req.MaxRetries, req.VerificationTimeoutHours)
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
@@ -375,11 +390,11 @@ func (s *RESTServer) updateScanPath(c *gin.Context) {
 
 	_, err := s.db.Exec(`UPDATE scan_paths SET
 		local_path = ?, arr_path = ?, arr_instance_id = ?, enabled = ?,
-		auto_remediate = ?, detection_method = ?, detection_args = ?,
+		auto_remediate = ?, dry_run = ?, detection_method = ?, detection_args = ?,
 		detection_mode = ?, max_retries = ?, verification_timeout_hours = ?
 		WHERE id = ?`,
 		req.LocalPath, req.ArrPath, req.ArrInstanceID, req.Enabled,
-		req.AutoRemediate, req.DetectionMethod, detectionArgsJSON,
+		req.AutoRemediate, req.DryRun, req.DetectionMethod, detectionArgsJSON,
 		req.DetectionMode, req.MaxRetries, req.VerificationTimeoutHours, id)
 	if err != nil {
 		respondDatabaseError(c, err)

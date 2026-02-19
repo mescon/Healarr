@@ -255,7 +255,7 @@ export interface ScanPath {
     auto_remediate: boolean;
     dry_run?: boolean;  // Per-path dry run mode
     detection_method?: 'zero_byte' | 'ffprobe' | 'mediainfo' | 'handbrake';
-    detection_args?: string;  // JSON string from API
+    detection_args?: string[] | null;  // Array from API
     detection_mode?: 'quick' | 'thorough';
     max_retries?: number;
     verification_timeout_hours?: number | null;  // NULL = use global setting
@@ -615,8 +615,9 @@ export interface ConfigExport {
         arr_instance_id?: number;
         enabled: boolean;
         auto_remediate: boolean;
+        dry_run?: boolean;
         detection_method: string;
-        detection_args?: string;
+        detection_args?: string[];
         detection_mode: string;
         max_retries: number;
         verification_timeout_hours?: number;
