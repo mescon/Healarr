@@ -164,6 +164,7 @@ const Logs = () => {
         if (lastMessage && typeof lastMessage === 'object' && 'type' in lastMessage && !isPaused) {
             const msg = lastMessage as { type: string; data: LogEntry };
             if (msg.type === 'log') {
+                // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to WebSocket message state
                 setLogs(prev => [...prev, msg.data].slice(-1000));
             }
         }

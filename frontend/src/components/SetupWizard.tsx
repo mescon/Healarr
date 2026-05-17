@@ -169,6 +169,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
 
     useEffect(() => {
         if (createdArrId) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetch on prop change; pre-TanStack Query pattern
             loadRootFolders(createdArrId);
         }
     }, [createdArrId, loadRootFolders]);

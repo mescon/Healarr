@@ -53,6 +53,7 @@ const ScanDetails = () => {
         if (lastMessage && typeof lastMessage === 'object' && 'type' in lastMessage) {
             const msg = lastMessage as { type: string; data: ScanProgress };
             if (msg.type === 'ScanProgress' && msg.data.scan_db_id === scanId) {
+                // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to WebSocket message state
                 setCurrentFile(msg.data.current_file);
                 setScanProgress({
                     filesDone: msg.data.files_done,
