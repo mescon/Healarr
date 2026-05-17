@@ -1305,6 +1305,131 @@ func TestImportConfigSkipsDuplicateNotifications(t *testing.T) {
 	assert.Equal(t, 2, count, "should have 2 total notifications")
 }
 
+func TestExportConfig_DetectionArgsAsArray(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	// Create path with detection_args stored as JSON string in DB
+	_, err := db.Exec(`INSERT INTO scan_paths (local_path, arr_path, enabled, detection_args)
+		VALUES (?, ?, ?, ?)`,
+		"/media/tv", "/tv", true, `["-v","error"]`)
+	require.NoError(t, err)
+
+	mockPathMapper := &testutil.MockPathMapper{}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	req, _ := http.NewRequest("GET", "/api/config/export", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+
+	paths := response["scan_paths"].([]interface{})
+	assert.Len(t, paths, 1)
+	path := paths[0].(map[string]interface{})
+
+	// detection_args should be a JSON array, not a string
+	args, ok := path["detection_args"].([]interface{})
+	assert.True(t, ok, "exported detection_args should be an array")
+	assert.Len(t, args, 2)
+	assert.Equal(t, "-v", args[0])
+	assert.Equal(t, "error", args[1])
+}
+
+func TestImportConfig_DetectionArgsArrayFormat(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	mockPathMapper := &testutil.MockPathMapper{
+		ReloadFunc: func() error { return nil },
+	}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	// Import with new array format
+	body := bytes.NewBufferString(`{
+		"scan_paths": [
+			{"local_path": "/media/tv", "arr_path": "/tv", "enabled": true,
+			 "detection_args": ["--verbose", "--threads 2"]}
+		]
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Verify detection_args stored as JSON string in DB
+	var storedArgs string
+	err := db.QueryRow("SELECT detection_args FROM scan_paths WHERE local_path = ?", "/media/tv").Scan(&storedArgs)
+	require.NoError(t, err)
+	assert.Equal(t, `["--verbose","--threads 2"]`, storedArgs)
+}
+
+func TestImportConfig_DetectionArgsLegacyFormat(t *testing.T) {
+	db, cleanup := setupConfigTestDB(t)
+	defer cleanup()
+
+	mockPathMapper := &testutil.MockPathMapper{
+		ReloadFunc: func() error { return nil },
+	}
+	router, apiKey, serverCleanup := setupConfigTestServer(t, db, mockPathMapper, false)
+	defer serverCleanup()
+
+	// Import with legacy string format (JSON-encoded string containing array)
+	body := bytes.NewBufferString(`{
+		"scan_paths": [
+			{"local_path": "/media/tv", "arr_path": "/tv", "enabled": true,
+			 "detection_args": "[\"--verbose\",\"--threads 2\"]"}
+		]
+	}`)
+
+	req, _ := http.NewRequest("POST", "/api/config/import", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Legacy format: the string value is stored as-is (it's already a valid JSON array string)
+	var storedArgs string
+	err := db.QueryRow("SELECT detection_args FROM scan_paths WHERE local_path = ?", "/media/tv").Scan(&storedArgs)
+	require.NoError(t, err)
+	assert.Equal(t, `["--verbose","--threads 2"]`, storedArgs)
+}
+
+func TestNormalizeDetectionArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    json.RawMessage
+		expected string
+	}{
+		{"nil input", nil, ""},
+		{"null JSON", json.RawMessage(`null`), ""},
+		{"empty input", json.RawMessage(``), ""},
+		{"array format", json.RawMessage(`["--verbose","--threads 2"]`), `["--verbose","--threads 2"]`},
+		{"empty array", json.RawMessage(`[]`), ""},
+		{"string format (legacy)", json.RawMessage(`"[\"--verbose\"]"`), `["--verbose"]`},
+		{"empty string", json.RawMessage(`""`), ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := normalizeDetectionArgs(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 // TestNormalizeScanPathDefaults verifies the default value normalization for scan paths.
 func TestNormalizeScanPathDefaults(t *testing.T) {
 	// Save and restore config
