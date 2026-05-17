@@ -50,6 +50,7 @@ const Corruptions = () => {
     useEffect(() => {
         const urlStatus = searchParams.get('status');
         if (urlStatus && urlStatus !== statusFilter) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect -- URL ↔ state bidirectional sync
             setStatusFilter(urlStatus);
             setPage(1); // Reset to first page when filter changes via URL
         }
@@ -343,8 +344,8 @@ const Corruptions = () => {
                         hideOnMobile: true, // We use mobileCardTitle for this
                         accessorKey: (row) => {
                             // Format media title like "Colony S01E08" or "The Matrix (1999)"
-                            let displayTitle = '';
-                            let subtitle = '';
+                            let displayTitle: string;
+                            let subtitle: string;
                             const hasMediaInfo = row.media_title || row.media_type;
 
                             if (row.media_title) {
