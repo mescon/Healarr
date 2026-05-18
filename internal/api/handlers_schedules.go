@@ -93,14 +93,7 @@ func (s *RESTServer) updateSchedule(c *gin.Context) {
 		return
 	}
 
-	// If enabled is missing, default to true (or maybe we should require it?)
-	// Actually, for an update, we might want to keep existing if nil.
-	// But for simplicity, let's assume the frontend sends everything or we fetch-modify-save.
-	// Let's enforce Enabled is present for now, or handle it carefully.
-	// In the service, we require enabled boolean.
-
-	// Default enabled to true; if provided, use the provided value
-	// Note: Service signature requires explicit enabled, so client must send full state
+	// Default enabled to true when omitted; UpdateSchedule requires explicit value.
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
