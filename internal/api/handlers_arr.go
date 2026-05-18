@@ -12,6 +12,7 @@ import (
 
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/network"
 )
 
 // errInvalidURLScheme is returned when a URL has an invalid scheme.
@@ -47,6 +48,13 @@ func validateArrURL(rawURL string) error {
 	// Ensure host is present
 	if parsed.Host == "" {
 		return errors.New("URL must include a host")
+	}
+
+	// SSRF guard: when HEALARR_BLOCK_PRIVATE_TARGETS=true, refuse RFC1918 /
+	// loopback / link-local / multicast destinations. No-op by default to
+	// preserve the homelab use case where *arr lives on the same LAN.
+	if err := network.ValidateDestination(rawURL); err != nil {
+		return err
 	}
 
 	return nil
@@ -262,9 +270,10 @@ func (s *RESTServer) testArrConnection(c *gin.Context) {
 
 	httpReq, err := http.NewRequest("GET", targetURL, nil) // #nosec G107 -- URL is validated above
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
+		logger.Debugf("testArrConnection create request error: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{
 			"success": false,
-			"error":   fmt.Sprintf("Failed to create request: %v", err),
+			"error":   "Failed to create connection request",
 		})
 		return
 	}
@@ -272,20 +281,24 @@ func (s *RESTServer) testArrConnection(c *gin.Context) {
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		// Don't echo the underlying error; that lets an attacker probe internal
+		// hosts via the failure message ("connection refused on 10.0.0.5:22").
 		logger.Debugf("Connection test failed: %v", err)
-		c.JSON(http.StatusOK, gin.H{
+		c.JSON(http.StatusBadGateway, gin.H{
 			"success": false,
-			"error":   fmt.Sprintf("Connection failed: %v", err),
+			"error":   "Connection failed",
 		})
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// Don't echo the upstream status; it lets an attacker fingerprint
+		// what kind of service is at the destination.
 		logger.Debugf("Connection test returned status: %d", resp.StatusCode)
-		c.JSON(http.StatusOK, gin.H{
+		c.JSON(http.StatusBadGateway, gin.H{
 			"success": false,
-			"error":   fmt.Sprintf("Server returned status %d", resp.StatusCode),
+			"error":   "Server did not respond with a successful status",
 		})
 		return
 	}
