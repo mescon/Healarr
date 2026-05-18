@@ -2908,3 +2908,85 @@ func TestEventTitles_IncludesNewEvents(t *testing.T) {
 		}
 	}
 }
+
+// =============================================================================
+// Throttle behavior — fix for P0-2 (E2 in the review)
+// Regression test: a failed send must NOT arm the throttle window, otherwise
+// a burst of events after a transient webhook outage silently drops every
+// subsequent alert until the window expires.
+// =============================================================================
+
+func newGenericNotifierWithURL(t *testing.T, webhookURL string) (*Notifier, *NotificationConfig) {
+	t.Helper()
+	tdb := newTestDB(t)
+	t.Cleanup(tdb.Close)
+
+	eb := eventbus.NewEventBus(tdb.DB)
+	t.Cleanup(eb.Shutdown)
+
+	n := NewNotifier(tdb.DB, eb)
+
+	cfg := &NotificationConfig{
+		ID:              42,
+		Name:            "throttle-test",
+		ProviderType:    ProviderGeneric,
+		Config:          json.RawMessage(fmt.Sprintf(`{"webhook_url":%q}`, webhookURL)),
+		Events:          []string{string(domain.CorruptionDetected)},
+		Enabled:         true,
+		ThrottleSeconds: 60,
+	}
+	return n, cfg
+}
+
+func TestNotifier_Throttle_NotArmedOnSendFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	n, cfg := newGenericNotifierWithURL(t, srv.URL)
+
+	n.sendNotification(cfg, string(domain.CorruptionDetected), map[string]interface{}{
+		"file_path": "/x.mkv",
+	})
+
+	n.mu.RLock()
+	_, throttled := n.lastSent[cfg.ID]
+	n.mu.RUnlock()
+
+	if throttled {
+		t.Fatal("lastSent must not be set after a failed send — a burst of events would silently drop every alert in the throttle window")
+	}
+
+	if n.canSend(cfg.ID, cfg.ThrottleSeconds) != true {
+		t.Fatal("canSend should still return true after a failed send")
+	}
+}
+
+func TestNotifier_Throttle_ArmedOnSendSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n, cfg := newGenericNotifierWithURL(t, srv.URL)
+
+	before := time.Now()
+	n.sendNotification(cfg, string(domain.CorruptionDetected), map[string]interface{}{
+		"file_path": "/x.mkv",
+	})
+
+	n.mu.RLock()
+	ts, armed := n.lastSent[cfg.ID]
+	n.mu.RUnlock()
+
+	if !armed {
+		t.Fatal("lastSent must be set after a successful send (otherwise throttle never kicks in)")
+	}
+	if ts.Before(before) {
+		t.Errorf("lastSent timestamp %v is before the call started at %v", ts, before)
+	}
+	if n.canSend(cfg.ID, cfg.ThrottleSeconds) {
+		t.Error("canSend should return false immediately after a successful send within the throttle window")
+	}
+}
