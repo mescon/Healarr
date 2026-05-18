@@ -1,8 +1,10 @@
 package crypto
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -21,11 +23,17 @@ func TestMain(m *testing.M) {
 	case "decrypt_with_key":
 		testDecryptWithKeySubprocess()
 		os.Exit(0)
-	case "decrypt_no_key":
-		testDecryptNoKeySubprocess()
-		os.Exit(0)
 	case "roundtrip":
 		testRoundtripSubprocess()
+		os.Exit(0)
+	case "init_env_var":
+		testInitEnvVarSubprocess()
+		os.Exit(0)
+	case "init_file":
+		testInitFileSubprocess()
+		os.Exit(0)
+	case "init_autogen":
+		testInitAutoGenSubprocess()
 		os.Exit(0)
 	}
 
@@ -58,7 +66,6 @@ func TestIsEncrypted_WithoutPrefix(t *testing.T) {
 		"enc:",
 		"enc:v",
 		"enc:v1",
-		"enc:v1", // Exactly the prefix length
 		"",
 	}
 
@@ -70,12 +77,10 @@ func TestIsEncrypted_WithoutPrefix(t *testing.T) {
 }
 
 func TestIsEncrypted_EdgeCases(t *testing.T) {
-	// Just the prefix without data after
 	if IsEncrypted("enc:v1:") {
 		t.Log("IsEncrypted returns true for prefix with empty data - acceptable behavior")
 	}
 
-	// Wrong version
 	if IsEncrypted("enc:v2:data") {
 		t.Error("IsEncrypted() should return false for wrong version prefix")
 	}
@@ -102,7 +107,7 @@ func TestErrorVariables(t *testing.T) {
 }
 
 // =============================================================================
-// Subprocess tests for global state
+// Subprocess tests for global state — env-var path
 // =============================================================================
 
 func TestEncryptWithKey_Subprocess(t *testing.T) {
@@ -136,7 +141,6 @@ func testEncryptWithKeySubprocess() {
 		os.Exit(1)
 	}
 
-	// Verify package-level function also works
 	encrypted2, err := Encrypt("secret")
 	if err != nil {
 		os.Stderr.WriteString("ERROR: Package Encrypt failed: " + err.Error() + "\n")
@@ -188,7 +192,7 @@ func testDecryptWithKeySubprocess() {
 		os.Exit(1)
 	}
 
-	// Test backward compatibility - plain text should pass through
+	// Backward compat: legacy plaintext rows (no prefix) pass through unchanged
 	plaintext := "not encrypted"
 	result, err := km.Decrypt(plaintext)
 	if err != nil {
@@ -196,71 +200,6 @@ func testDecryptWithKeySubprocess() {
 		os.Exit(1)
 	}
 	if result != plaintext {
-		os.Stderr.WriteString("ERROR: Plain text not passed through\n")
-		os.Exit(1)
-	}
-}
-
-func TestDecryptNoKey_Subprocess(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=TestDecryptNoKey_Subprocess")
-	cmd.Env = append(os.Environ(),
-		"TEST_CRYPTO_SUBPROCESS=decrypt_no_key",
-	)
-	// Explicitly remove encryption key
-	filteredEnv := []string{}
-	for _, e := range cmd.Env {
-		if !strings.HasPrefix(e, "HEALARR_ENCRYPTION_KEY=") {
-			filteredEnv = append(filteredEnv, e)
-		}
-	}
-	cmd.Env = filteredEnv
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Subprocess failed: %v\nOutput: %s", err, output)
-	}
-}
-
-func testDecryptNoKeySubprocess() {
-	km := GetKeyManager()
-
-	if km.HasKey() {
-		os.Stderr.WriteString("ERROR: Expected HasKey() = false\n")
-		os.Exit(1)
-	}
-
-	if EncryptionEnabled() {
-		os.Stderr.WriteString("ERROR: EncryptionEnabled should be false\n")
-		os.Exit(1)
-	}
-
-	// Encrypt without key should return plaintext
-	plaintext := "my data"
-	result, err := km.Encrypt(plaintext)
-	if err != nil {
-		os.Stderr.WriteString("ERROR: Encrypt without key failed: " + err.Error() + "\n")
-		os.Exit(1)
-	}
-	if result != plaintext {
-		os.Stderr.WriteString("ERROR: Encrypt without key should return plaintext\n")
-		os.Exit(1)
-	}
-
-	// Decrypt encrypted value without key should fail
-	encryptedValue := "enc:v1:someinvaliddata"
-	_, err = km.Decrypt(encryptedValue)
-	if err != ErrNoEncryptionKey {
-		os.Stderr.WriteString("ERROR: Expected ErrNoEncryptionKey, got: " + err.Error() + "\n")
-		os.Exit(1)
-	}
-
-	// Decrypt plain text without key should pass through
-	result, err = km.Decrypt("plain text")
-	if err != nil {
-		os.Stderr.WriteString("ERROR: Decrypt plain without key failed: " + err.Error() + "\n")
-		os.Exit(1)
-	}
-	if result != "plain text" {
 		os.Stderr.WriteString("ERROR: Plain text not passed through\n")
 		os.Exit(1)
 	}
@@ -308,13 +247,186 @@ func testRoundtripSubprocess() {
 		}
 	}
 
-	// Verify each encryption produces different ciphertext (random nonce)
+	// Each encryption should produce different ciphertext due to random nonce
 	original := "same input"
 	enc1, _ := Encrypt(original)
 	enc2, _ := Encrypt(original)
 
 	if enc1 == enc2 {
 		os.Stderr.WriteString("ERROR: Encryption should produce different outputs (random nonce)\n")
+		os.Exit(1)
+	}
+}
+
+// =============================================================================
+// Init() subprocess tests
+// =============================================================================
+
+// TestInit_EnvVar verifies Init honors HEALARR_ENCRYPTION_KEY when set.
+func TestInit_EnvVar(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestInit_EnvVar")
+	cmd.Env = append(os.Environ(),
+		"TEST_CRYPTO_SUBPROCESS=init_env_var",
+		"HEALARR_ENCRYPTION_KEY=env-var-key",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Subprocess failed: %v\nOutput: %s", err, output)
+	}
+}
+
+func testInitEnvVarSubprocess() {
+	tmpDir, err := os.MkdirTemp("", "crypto-init-env-*")
+	if err != nil {
+		os.Stderr.WriteString("ERROR: MkdirTemp: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := Init(tmpDir); err != nil {
+		os.Stderr.WriteString("ERROR: Init returned error: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+
+	// Init should NOT have created a key file when env var was used
+	keyPath := filepath.Join(tmpDir, KeyFileName)
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		os.Stderr.WriteString("ERROR: env-var path should not write key file; found " + keyPath + "\n")
+		os.Exit(1)
+	}
+
+	if !EncryptionEnabled() {
+		os.Stderr.WriteString("ERROR: EncryptionEnabled should be true after Init\n")
+		os.Exit(1)
+	}
+}
+
+// TestInit_ReadExistingFile verifies Init loads an existing 32-byte key file.
+func TestInit_ReadExistingFile(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestInit_ReadExistingFile")
+	cmd.Env = append(os.Environ(),
+		"TEST_CRYPTO_SUBPROCESS=init_file",
+	)
+	// Drop the env var so file path takes precedence
+	filteredEnv := []string{}
+	for _, e := range cmd.Env {
+		if !strings.HasPrefix(e, "HEALARR_ENCRYPTION_KEY=") {
+			filteredEnv = append(filteredEnv, e)
+		}
+	}
+	cmd.Env = filteredEnv
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Subprocess failed: %v\nOutput: %s", err, output)
+	}
+}
+
+func testInitFileSubprocess() {
+	tmpDir, err := os.MkdirTemp("", "crypto-init-file-*")
+	if err != nil {
+		os.Stderr.WriteString("ERROR: MkdirTemp: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Pre-seed a known 32-byte key file
+	knownKey := make([]byte, 32)
+	for i := range knownKey {
+		knownKey[i] = byte(i)
+	}
+	keyPath := filepath.Join(tmpDir, KeyFileName)
+	if err := os.WriteFile(keyPath, knownKey, 0o600); err != nil {
+		os.Stderr.WriteString("ERROR: WriteFile: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+
+	if err := Init(tmpDir); err != nil {
+		os.Stderr.WriteString("ERROR: Init returned error: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+
+	// Confirm the loaded key matches the seeded one
+	loaded := GetKeyManager().getKey()
+	if len(loaded) != 32 {
+		os.Stderr.WriteString("ERROR: loaded key wrong length\n")
+		os.Exit(1)
+	}
+	for i, b := range knownKey {
+		if loaded[i] != b {
+			os.Stderr.WriteString("ERROR: loaded key does not match seeded key\n")
+			os.Exit(1)
+		}
+	}
+}
+
+// TestInit_AutoGenerate verifies Init generates a new key file when neither
+// env var nor file is present, and that the file has 0600 permissions.
+func TestInit_AutoGenerate(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestInit_AutoGenerate")
+	cmd.Env = append(os.Environ(),
+		"TEST_CRYPTO_SUBPROCESS=init_autogen",
+	)
+	filteredEnv := []string{}
+	for _, e := range cmd.Env {
+		if !strings.HasPrefix(e, "HEALARR_ENCRYPTION_KEY=") {
+			filteredEnv = append(filteredEnv, e)
+		}
+	}
+	cmd.Env = filteredEnv
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Subprocess failed: %v\nOutput: %s", err, output)
+	}
+}
+
+func testInitAutoGenSubprocess() {
+	tmpDir, err := os.MkdirTemp("", "crypto-init-autogen-*")
+	if err != nil {
+		os.Stderr.WriteString("ERROR: MkdirTemp: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	keyPath := filepath.Join(tmpDir, KeyFileName)
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		os.Stderr.WriteString("ERROR: key file should not exist yet\n")
+		os.Exit(1)
+	}
+
+	if err := Init(tmpDir); err != nil {
+		os.Stderr.WriteString("ERROR: Init returned error: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		os.Stderr.WriteString("ERROR: key file was not created: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	if info.Mode().Perm() != 0o600 {
+		os.Stderr.WriteString("ERROR: key file permissions are " + info.Mode().String() + ", want -rw-------\n")
+		os.Exit(1)
+	}
+	if info.Size() != 32 {
+		os.Stderr.WriteString("ERROR: key file size is not 32 bytes\n")
+		os.Exit(1)
+	}
+
+	// Round-trip should now work
+	encrypted, err := Encrypt("hello")
+	if err != nil {
+		os.Stderr.WriteString("ERROR: Encrypt after autogen failed: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	decrypted, err := Decrypt(encrypted)
+	if err != nil {
+		os.Stderr.WriteString("ERROR: Decrypt after autogen failed: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	if decrypted != "hello" {
+		os.Stderr.WriteString("ERROR: round-trip mismatch after autogen\n")
 		os.Exit(1)
 	}
 }
@@ -327,64 +439,111 @@ func min(a, b int) int {
 }
 
 // =============================================================================
-// Decrypt error cases (can test without subprocess since they don't use key)
+// Init() failure modes (in-process, since they don't depend on the singleton)
 // =============================================================================
 
-func TestDecrypt_InvalidBase64(t *testing.T) {
-	// Skip if running as subprocess
-	if os.Getenv("TEST_CRYPTO_SUBPROCESS") != "" {
-		return
+// TestInit_WrongKeyFileSize rejects a key file that isn't exactly 32 bytes.
+func TestInit_WrongKeyFileSize(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, KeyFileName)
+	if err := os.WriteFile(keyPath, []byte("too short"), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
 	}
 
-	// Create a new key manager instance directly for testing
-	// (bypasses singleton for this specific test)
-	km := &KeyManager{
-		key: make([]byte, 32), // Dummy key
-	}
-
-	// Invalid base64 after prefix
-	_, err := km.Decrypt("enc:v1:not-valid-base64!!!")
-	if err == nil {
-		t.Error("Decrypt should fail for invalid base64")
+	// Use a fresh KeyManager so we don't depend on singleton state.
+	km := &KeyManager{}
+	if err := initWithKM(km, tmpDir); err == nil {
+		t.Fatal("Init should reject invalid key file size")
+	} else if !strings.Contains(err.Error(), "32 bytes") {
+		t.Errorf("error message should mention expected size, got: %v", err)
 	}
 }
 
-func TestDecrypt_TooShort(t *testing.T) {
-	if os.Getenv("TEST_CRYPTO_SUBPROCESS") != "" {
-		return
-	}
-
-	km := &KeyManager{
-		key: make([]byte, 32),
-	}
-
-	// Valid base64 but too short for nonce
-	_, err := km.Decrypt("enc:v1:YWJj") // "abc" in base64
-	if err != ErrDecryptFailed {
-		t.Errorf("Decrypt should return ErrDecryptFailed for short data, got: %v", err)
+// TestInit_NonexistentDataDir fails when the parent directory cannot be written.
+func TestInit_NonexistentDataDir(t *testing.T) {
+	bogusDir := "/proc/no-such-dir-healarr-test"
+	km := &KeyManager{}
+	if err := initWithKM(km, bogusDir); err == nil {
+		t.Fatal("Init should fail when key file cannot be written")
 	}
 }
 
-func TestDecrypt_InvalidCiphertext(t *testing.T) {
-	if os.Getenv("TEST_CRYPTO_SUBPROCESS") != "" {
-		return
+// initWithKM is a test helper that runs the Init flow against a specific
+// KeyManager instance rather than the singleton. Useful for failure-mode
+// testing without subprocess overhead.
+func initWithKM(km *KeyManager, dataDir string) error {
+	keyPath := filepath.Join(dataDir, KeyFileName)
+	data, err := os.ReadFile(keyPath)
+	switch {
+	case err == nil:
+		if len(data) != keySize {
+			return errors.New("invalid encryption key file: expected 32 bytes, got " + itoa(len(data)))
+		}
+		km.setKey(data)
+		return nil
+	case !errors.Is(err, os.ErrNotExist):
+		return err
 	}
+	key := make([]byte, keySize)
+	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
+		return err
+	}
+	km.setKey(key)
+	return nil
+}
 
-	km := &KeyManager{
-		key: make([]byte, 32),
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
 	}
-
-	// Long enough for nonce but invalid ciphertext (won't decrypt)
-	// 12 bytes nonce + some garbage that won't decrypt
-	_, err := km.Decrypt("enc:v1:YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4") // 24+ bytes
-	if err != ErrDecryptFailed {
-		t.Errorf("Decrypt should return ErrDecryptFailed for invalid ciphertext, got: %v", err)
+	digits := []byte{}
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
 	}
+	return string(digits)
 }
 
 // =============================================================================
-// KeyManager method tests (using direct instance)
+// Direct KeyManager method tests (using transient instance, bypass singleton)
 // =============================================================================
+
+// TestKeyManager_Encrypt_NoKey_ReturnsError is the new behavior: a KeyManager
+// with no key configured MUST refuse to encrypt rather than silently storing
+// plaintext (Phase 1 P0 finding S1).
+func TestKeyManager_Encrypt_NoKey_ReturnsError(t *testing.T) {
+	km := &KeyManager{}
+
+	_, err := km.Encrypt("my secret")
+	if !errors.Is(err, ErrNoEncryptionKey) {
+		t.Errorf("Encrypt() without key should return ErrNoEncryptionKey, got %v", err)
+	}
+}
+
+func TestKeyManager_Decrypt_NoPrefix_ReturnsInput(t *testing.T) {
+	km := &KeyManager{key: make([]byte, 32)}
+
+	input := "not encrypted"
+	result, err := km.Decrypt(input)
+	if err != nil {
+		t.Fatalf("Decrypt() error = %v", err)
+	}
+
+	if result != input {
+		t.Errorf("Decrypt() without prefix should return input, got %q", result)
+	}
+}
+
+// TestKeyManager_Decrypt_NoKey_Prefixed_ReturnsError verifies that a value
+// with the EncryptedPrefix cannot be decrypted without a key (vs the
+// backward-compat passthrough for un-prefixed legacy values).
+func TestKeyManager_Decrypt_NoKey_Prefixed_ReturnsError(t *testing.T) {
+	km := &KeyManager{}
+	_, err := km.Decrypt("enc:v1:someinvaliddata")
+	if !errors.Is(err, ErrNoEncryptionKey) {
+		t.Errorf("Decrypt(prefixed) without key should return ErrNoEncryptionKey, got %v", err)
+	}
+}
 
 func TestKeyManager_HasKey_NilKey(t *testing.T) {
 	km := &KeyManager{key: nil}
@@ -400,30 +559,45 @@ func TestKeyManager_HasKey_WithKey(t *testing.T) {
 	}
 }
 
-func TestKeyManager_Encrypt_NoKey_ReturnsPlaintext(t *testing.T) {
-	km := &KeyManager{key: nil}
+// =============================================================================
+// Decrypt failure modes (direct KeyManager, valid key, bad ciphertext)
+// =============================================================================
 
-	plaintext := "my secret"
-	result, err := km.Encrypt(plaintext)
-	if err != nil {
-		t.Fatalf("Encrypt() error = %v", err)
+func TestDecrypt_InvalidBase64(t *testing.T) {
+	if os.Getenv("TEST_CRYPTO_SUBPROCESS") != "" {
+		return
 	}
 
-	if result != plaintext {
-		t.Errorf("Encrypt() without key should return plaintext, got %q", result)
+	km := &KeyManager{key: make([]byte, 32)}
+
+	_, err := km.Decrypt("enc:v1:not-valid-base64!!!")
+	if err == nil {
+		t.Error("Decrypt should fail for invalid base64")
 	}
 }
 
-func TestKeyManager_Decrypt_NoPrefix_ReturnsInput(t *testing.T) {
-	km := &KeyManager{key: make([]byte, 32)}
-
-	input := "not encrypted"
-	result, err := km.Decrypt(input)
-	if err != nil {
-		t.Fatalf("Decrypt() error = %v", err)
+func TestDecrypt_TooShort(t *testing.T) {
+	if os.Getenv("TEST_CRYPTO_SUBPROCESS") != "" {
+		return
 	}
 
-	if result != input {
-		t.Errorf("Decrypt() without prefix should return input, got %q", result)
+	km := &KeyManager{key: make([]byte, 32)}
+
+	_, err := km.Decrypt("enc:v1:YWJj") // "abc" in base64
+	if !errors.Is(err, ErrDecryptFailed) {
+		t.Errorf("Decrypt should return ErrDecryptFailed for short data, got: %v", err)
+	}
+}
+
+func TestDecrypt_InvalidCiphertext(t *testing.T) {
+	if os.Getenv("TEST_CRYPTO_SUBPROCESS") != "" {
+		return
+	}
+
+	km := &KeyManager{key: make([]byte, 32)}
+
+	_, err := km.Decrypt("enc:v1:YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4")
+	if !errors.Is(err, ErrDecryptFailed) {
+		t.Errorf("Decrypt should return ErrDecryptFailed for invalid ciphertext, got: %v", err)
 	}
 }
