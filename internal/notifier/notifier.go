@@ -535,24 +535,30 @@ func (n *Notifier) sendNotification(cfg *NotificationConfig, eventType string, d
 		err = shoutrrr.Send(shoutrrrURL, message)
 	}
 
-	// Update last sent time
-	n.mu.Lock()
-	n.lastSent[cfg.ID] = time.Now()
-	n.mu.Unlock()
-
 	// Log result and publish to EventBus for timeline
 	aggregateID := n.extractAggregateID(data)
 	providerLabel := n.getProviderLabel(cfg.ProviderType)
 
 	if err != nil {
+		// Do NOT update lastSent on failure. Otherwise, in a burst (e.g. many
+		// CorruptionDetected events firing at once) the first failed send would
+		// throttle every subsequent send in the window and the user would
+		// receive zero alerts despite events occurring. Failed sends leave the
+		// throttle window open so the next event can try again.
 		logger.Errorf("Failed to send notification %d: %v", cfg.ID, err)
 		n.logNotification(cfg.ID, eventType, message, "failed", err.Error())
 		n.publishNotificationEvent(aggregateID, domain.NotificationFailed, providerLabel, eventType, err.Error())
-	} else {
-		logger.Debugf("Sent notification %d for event %s", cfg.ID, eventType)
-		n.logNotification(cfg.ID, eventType, message, "sent", "")
-		n.publishNotificationEvent(aggregateID, domain.NotificationSent, providerLabel, eventType, "")
+		return
 	}
+
+	// Send succeeded — arm the throttle window.
+	n.mu.Lock()
+	n.lastSent[cfg.ID] = time.Now()
+	n.mu.Unlock()
+
+	logger.Debugf("Sent notification %d for event %s", cfg.ID, eventType)
+	n.logNotification(cfg.ID, eventType, message, "sent", "")
+	n.publishNotificationEvent(aggregateID, domain.NotificationSent, providerLabel, eventType, "")
 }
 
 // publishNotificationEvent publishes notification success/failure events to the event bus
