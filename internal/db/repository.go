@@ -305,10 +305,8 @@ func (r *Repository) StartPeriodicCheckpoint(interval time.Duration) func() {
 	}
 }
 
-// recreateViews drops and recreates database views to ensure they match the latest schema.
-// This is necessary because SQLite views are not automatically updated when the schema changes.
-// Note: corruption_status VIEW is now a thin wrapper over corruption_summary TABLE for backwards compatibility.
-// createViewsWithSummaryTable creates optimized views using corruption_summary table
+// createViewsWithSummaryTable creates optimized views backed by the corruption_summary table.
+// corruption_status remains as a thin VIEW wrapper for backwards compatibility with older queries.
 func (r *Repository) createViewsWithSummaryTable() error {
 	// corruption_status VIEW is a thin wrapper for backwards compatibility
 	_, err := r.DB.Exec(`
@@ -445,6 +443,8 @@ func (r *Repository) createViewsLegacy() error {
 	return nil
 }
 
+// recreateViews drops and recreates database views to ensure they match the latest schema.
+// SQLite views are not automatically updated when the underlying schema changes.
 func (r *Repository) recreateViews() error {
 	// Drop existing views
 	// Security: view names are hardcoded in this slice, not from user input

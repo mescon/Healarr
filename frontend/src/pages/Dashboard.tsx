@@ -164,7 +164,7 @@ const ActiveScansTable = () => {
             const msg = lastMessage as { type: string; data: unknown };
             if (msg.type === 'ScanProgress') {
                 const progress = msg.data as ScanProgress;
-                // eslint-disable-next-line react-hooks/set-state-in-effect
+                // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to WebSocket message state
                 setScans(prev => ({ ...prev, [progress.id]: progress }));
             } else if (msg.type === 'ScanCompleted') {
                 const { scan_id } = msg.data as { scan_id: string };

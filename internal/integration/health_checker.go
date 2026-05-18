@@ -140,8 +140,8 @@ func NewHealthCheckerWithPaths(ffprobePath, ffmpegPath, mediainfoPath, handbrake
 }
 
 // Check validates a media file using the default ffprobe detection method.
+// Retained for the HealthChecker interface; new code should call CheckWithConfig directly.
 func (hc *CmdHealthChecker) Check(path, mode string) (bool, *HealthCheckError) {
-	// Legacy method - use default ffprobe detection
 	return hc.CheckWithConfig(path, DetectionConfig{
 		Method: DetectionFFprobe,
 		Args:   []string{},

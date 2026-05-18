@@ -477,7 +477,7 @@ func (s *RESTServer) setupRoutes() {
 			protected.POST("/scans/resume-all", s.resumeAllScans)
 			protected.POST("/scans/cancel-all", s.cancelAllScans)
 			protected.POST("/scans", s.triggerScan) // RESTful: POST to collection
-			protected.POST("/scan", s.triggerScan)  // Legacy: keep for compatibility
+			protected.POST("/scan", s.triggerScan)  // Legacy alias kept for older clients
 			// Parameter routes come after specific routes
 			protected.GET("/scans/:scan_id", s.getScanDetails)
 			protected.GET("/scans/:scan_id/files", s.getScanFiles)

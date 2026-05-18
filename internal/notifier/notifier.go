@@ -591,8 +591,7 @@ func (n *Notifier) extractAggregateID(data map[string]interface{}) string {
 	if id, ok := data["corruption_id"].(string); ok && id != "" {
 		return id
 	}
-	// Note: We no longer fall back to file_path - it's not a valid aggregate ID
-	// Aggregate IDs must be UUIDs to properly correlate events
+	// Aggregate IDs must be UUIDs to correlate events; file_path is not valid here.
 	return ""
 }
 

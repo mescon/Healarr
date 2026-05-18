@@ -127,15 +127,7 @@ func (r *RemediatorService) checkDeletionCompleted(corruptionID string) (bool, i
 		mediaID = int64(mediaIDFloat.Float64)
 	}
 
-	// Parse metadata if available
-	var metadata map[string]interface{}
-	if metadataJSON.Valid && metadataJSON.String != "" {
-		// The metadata is stored as a JSON object, we need to extract it
-		// For simplicity, we'll just return nil and let the search use mediaID
-		metadata = nil
-	}
-
-	return true, mediaID, metadata
+	return true, mediaID, nil
 }
 
 // retrySearchOnly triggers a new search without attempting deletion

@@ -56,12 +56,8 @@ func isHiddenOrTempFile(path string) bool {
 	name := filepath.Base(path)
 	nameLower := strings.ToLower(name)
 
-	// Skip hidden files (starting with .)
+	// Skip hidden files (starting with .) — also covers FUSE .fuse_hidden* files
 	if strings.HasPrefix(name, ".") {
-		return true
-	}
-	// Skip FUSE temporary files
-	if strings.HasPrefix(name, ".fuse_hidden") {
 		return true
 	}
 	// Skip common temp file patterns
@@ -1507,14 +1503,15 @@ func (s *ScannerService) ResumeScan(scanID string) error {
 	return nil
 }
 
+const scanPathCacheTTL = 60 * time.Second
+
 // refreshScanPathCache loads all enabled scan paths into memory cache.
-// Cache expires after 60 seconds to pick up config changes.
+// Cache expires after scanPathCacheTTL to pick up config changes.
 func (s *ScannerService) refreshScanPathCache() error {
 	s.scanPathCacheMu.Lock()
 	defer s.scanPathCacheMu.Unlock()
 
-	// Check if cache is still valid (60 second TTL)
-	if time.Since(s.scanPathCacheTime) < 60*time.Second && len(s.scanPathCache) > 0 {
+	if time.Since(s.scanPathCacheTime) < scanPathCacheTTL && len(s.scanPathCache) > 0 {
 		return nil
 	}
 
@@ -1734,8 +1731,7 @@ func (s *ScannerService) LoadActiveCorruptionsForPath(rootPath string) map[strin
 // queueForRescan adds a file to the pending_rescans table for later retry
 // when infrastructure issues are resolved
 func (s *ScannerService) queueForRescan(filePath string, pathID int64, errorType, errorMessage string) {
-	// Calculate next retry time with exponential backoff
-	// First retry: 5 minutes, then 15, 30, 60, 120 minutes
+	// Exponential backoff: 5 minutes initially, doubling each retry, capped at 160 minutes (5 * 2^5)
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 

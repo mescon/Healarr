@@ -88,17 +88,11 @@ func main() {
 			log.Printf("Failed to insert event: %v", err)
 		}
 
-		// 2. Simulate some state changes
+		// Latest event_type defines current_state in the view; SearchCompleted seeds a resolved-looking entry.
 		if e.Data["file_path"] == "/mnt/media/Movies/Inception/Inception.mkv" {
-			// Mark as resolved
 			_, _ = db.Exec(sqlInsertEvent, "corruption", id, "RemediationStarted", "{}")
-			_, _ = db.Exec(sqlInsertEvent, "corruption", id, "FileDeleted", "{}")     // Or whatever resolves it
-			_, _ = db.Exec(sqlInsertEvent, "corruption", id, "SearchCompleted", "{}") // This might mark it resolved in our logic?
-			// Actually the view looks for latest event_type.
-			// If we want 'resolved', we need an event that maps to that state or logic.
-			// The view just takes the latest event_type as current_state.
-			// So let's emit a 'CorruptionResolved' event (if it exists) or just leave it as SearchCompleted.
-			// Let's assume SearchCompleted implies resolution for now or add a specific event.
+			_, _ = db.Exec(sqlInsertEvent, "corruption", id, "FileDeleted", "{}")
+			_, _ = db.Exec(sqlInsertEvent, "corruption", id, "SearchCompleted", "{}")
 		}
 	}
 

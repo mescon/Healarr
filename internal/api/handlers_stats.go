@@ -34,7 +34,7 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 
 	var warnings []string
 
-	// Query 1: All corruption stats in a single query (was 5 separate queries)
+	// All corruption stats in a single query
 	var resolved, orphaned, inProgress, manualIntervention, pending, failed, ignored int
 	if err := s.db.QueryRow(`
 		SELECT
@@ -64,7 +64,7 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	// Total excludes ignored - they're not part of active remediation
 	stats.TotalCorruptions = pending + resolved + orphaned + manualIntervention + inProgress + failed
 
-	// Query 2: All scan stats in a single query (was 4 separate queries)
+	// All scan stats in a single query
 	if err := s.db.QueryRow(`
 		SELECT
 			COUNT(CASE WHEN status = 'running' THEN 1 END),
