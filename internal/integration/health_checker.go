@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // FFmpeg/FFprobe command line argument constants
@@ -445,9 +446,9 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 	}
 
 	done := make(chan error, 1)
-	go func() {
+	safego.Run("ffprobe-cmd", func() {
 		done <- cmd.Run()
-	}()
+	})
 
 	select {
 	case <-time.After(timeout):
@@ -512,9 +513,9 @@ func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []strin
 	cmd.Stderr = &stderr
 
 	done := make(chan error, 1)
-	go func() {
+	safego.Run("handbrake-cmd", func() {
 		done <- cmd.Run()
-	}()
+	})
 
 	select {
 	case <-time.After(timeout):
@@ -574,9 +575,9 @@ func runCommandWithTimeout(cmd *exec.Cmd, timeout time.Duration, toolName string
 	}
 
 	done := make(chan error, 1)
-	go func() {
+	safego.Run("mediainfo-wait", func() {
 		done <- cmd.Wait()
-	}()
+	})
 
 	select {
 	case <-time.After(timeout):
@@ -884,9 +885,9 @@ func (hc *CmdHealthChecker) AnalyzeContent(path string) (bool, *HealthCheckError
 
 	timeout := 10 * time.Minute
 	done := make(chan error, 1)
-	go func() {
+	safego.Run("content-analysis-cmd", func() {
 		done <- cmd.Run()
-	}()
+	})
 
 	select {
 	case <-time.After(timeout):

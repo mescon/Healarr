@@ -11,6 +11,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // queryTimeout is the maximum time allowed for background service database queries.
@@ -59,13 +60,13 @@ func NewHealthMonitorService(db *sql.DB, eb *eventbus.EventBus, arrClient integr
 // Start begins health monitoring
 func (h *HealthMonitorService) Start() {
 	h.wg.Add(1)
-	go h.runHealthChecks()
+	safego.Run("health-monitor-checks", h.runHealthChecks)
 
 	h.wg.Add(1)
-	go h.runInstanceHealthChecks()
+	safego.Run("health-monitor-instances", h.runInstanceHealthChecks)
 
 	h.wg.Add(1)
-	go h.runArrStateSync()
+	safego.Run("health-monitor-arr-sync", h.runArrStateSync)
 
 	logger.Infof("Health monitor started (check interval: %s, stuck threshold: %s, arr sync: %s)", h.checkInterval, h.stuckThreshold, h.arrSyncInterval)
 }

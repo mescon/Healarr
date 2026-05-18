@@ -11,6 +11,7 @@ import (
 	"github.com/mescon/Healarr/internal/db"
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // Retry configuration for PublishWithRetry
@@ -146,7 +147,7 @@ func (eb *EventBus) Subscribe(eventType domain.EventType, handler func(domain.Ev
 	eb.mu.Unlock()
 
 	eb.wg.Add(1)
-	go func() {
+	safego.Run("eventbus-subscriber", func() {
 		defer eb.wg.Done()
 		for {
 			select {
@@ -159,7 +160,7 @@ func (eb *EventBus) Subscribe(eventType domain.EventType, handler func(domain.Ev
 				return // Shutdown signal received
 			}
 		}
-	}()
+	})
 }
 
 // RepublishToSubscribers sends an already-persisted event to in-memory subscribers

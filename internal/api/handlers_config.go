@@ -16,6 +16,7 @@ import (
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/notifier"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // Type alias for cleaner code
@@ -70,13 +71,13 @@ func (s *RESTServer) restartServer(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Server restarting..."})
 
 	// Give time for the response to be sent
-	go func() {
+	safego.Run("server-restart", func() {
 		time.Sleep(500 * time.Millisecond)
 		logger.Infof("Initiating server restart...")
 
 		// Platform-specific restart (see restart_unix.go and restart_windows.go)
 		restartProcess()
-	}()
+	})
 }
 
 // exportArrInstances exports arr instances from the database.
@@ -551,10 +552,10 @@ func (s *RESTServer) downloadDatabaseBackup(c *gin.Context) {
 	c.File(backupPath)
 
 	// Clean up the temporary backup file after sending (in background)
-	go func() {
+	safego.Run("backup-cleanup", func() {
 		time.Sleep(5 * time.Second) // Wait for download to complete
 		if err := os.Remove(backupPath); err != nil {
 			logger.Debugf("Failed to remove temporary backup file %s: %v", backupPath, err)
 		}
-	}()
+	})
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // notifierQueryTimeout is the maximum time for database queries in notifier.
@@ -355,10 +356,10 @@ func (n *Notifier) Start() error {
 
 	// Start background goroutine for config reloading and log cleanup
 	n.wg.Add(1)
-	go func() {
+	safego.Run("notifier-background-worker", func() {
 		defer n.wg.Done()
 		n.backgroundWorker()
-	}()
+	})
 
 	logger.Infof("Notifier started with %d configurations", len(n.configs))
 	return nil

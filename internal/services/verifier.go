@@ -17,6 +17,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // verifierQueryTimeout is the maximum time for database queries in verifier service.
@@ -549,7 +550,7 @@ func (v *VerifierService) handleSearchCompleted(event domain.Event) {
 // The context is used for cancellation when a new verification starts for the same corruptionID.
 func (v *VerifierService) startVerificationWithSemaphore(ctx context.Context, corruptionID string, verifyFunc func(context.Context)) {
 	v.wg.Add(1)
-	go func() {
+	safego.Run("verifier-verification", func() {
 		defer v.wg.Done()
 		defer v.unregisterVerification(corruptionID)
 
@@ -582,7 +583,7 @@ func (v *VerifierService) startVerificationWithSemaphore(ctx context.Context, co
 		}
 
 		verifyFunc(ctx)
-	}()
+	})
 }
 
 // monitorState tracks the state during download monitoring
