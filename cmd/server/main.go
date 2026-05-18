@@ -14,6 +14,7 @@ import (
 
 	"github.com/mescon/Healarr/internal/api"
 	"github.com/mescon/Healarr/internal/config"
+	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/db"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
@@ -461,6 +462,17 @@ func main() {
 	// Initialize database with background maintenance
 	repo, stopCheckpoint, stopBackups, stopMaintenance := initDatabase(cfg)
 	defer stopCheckpoint()
+
+	// Initialize encryption. Must precede any service that reads/writes secrets
+	// (notifier, integration, handlers). On a fresh install with no env var set,
+	// this auto-generates {DataDir}/.encryption_key (0600) so secrets are never
+	// stored in plaintext.
+	if err := crypto.Init(cfg.DataDir); err != nil {
+		logger.Errorf("Encryption initialization failed: %v", err)
+		logger.Errorf("Refusing to start without encryption; secrets would be stored in plaintext.")
+		os.Exit(1)
+	}
+	logger.Infof("✓ Encryption initialized")
 
 	// Load base path from database if not set via environment
 	config.LoadBasePathFromDB(repo.DB)
