@@ -627,13 +627,15 @@ func TestTestArrConnection_Failure_ConnectionError(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	// Connection failure returns 502 Bad Gateway with a generic error message;
+	// the underlying error is NOT echoed (SSRF leak prevention).
+	assert.Equal(t, http.StatusBadGateway, w.Code)
 
 	var response map[string]interface{}
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
 	assert.Equal(t, false, response["success"])
-	assert.Contains(t, response["error"], "Connection failed")
+	assert.Equal(t, "Connection failed", response["error"])
 }
 
 func TestTestArrConnection_Failure_BadStatus(t *testing.T) {
@@ -660,12 +662,14 @@ func TestTestArrConnection_Failure_BadStatus(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	// Non-2xx upstream response yields 502 with a generic error; we never
+	// echo the upstream status code to the caller (SSRF leak prevention).
+	assert.Equal(t, http.StatusBadGateway, w.Code)
 
 	var response map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &response)
 	assert.Equal(t, false, response["success"])
-	assert.Contains(t, response["error"], "Server returned status 401")
+	assert.Equal(t, "Server did not respond with a successful status", response["error"])
 }
 
 func TestTestArrConnection_InvalidJSON(t *testing.T) {

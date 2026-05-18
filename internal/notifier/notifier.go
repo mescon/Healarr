@@ -18,6 +18,7 @@ import (
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/network"
 	"github.com/mescon/Healarr/internal/safego"
 )
 
@@ -1005,6 +1006,9 @@ func (n *Notifier) sendGenericWebhook(cfg *NotificationConfig, eventType string,
 	}
 
 	targetURL := ensureHTTPScheme(c.WebhookURL)
+	if err := network.ValidateDestination(targetURL); err != nil {
+		return fmt.Errorf("webhook destination refused: %w", err)
+	}
 	structuredData := extractWebhookData(data)
 
 	// Add extra data from config
