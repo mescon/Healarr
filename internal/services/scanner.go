@@ -19,6 +19,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // scannerQueryTimeout is the maximum time for database queries in scanner service.
@@ -248,10 +249,10 @@ func (s *ScannerService) Shutdown() {
 
 	// Brief wait for goroutines to acknowledge cancellation (non-blocking)
 	done := make(chan struct{})
-	go func() {
+	safego.Run("scanner-shutdown-wait", func() {
 		s.wg.Wait()
 		close(done)
-	}()
+	})
 
 	select {
 	case <-done:
@@ -329,7 +330,7 @@ func (s *ScannerService) ResumeInterruptedScans() {
 	for _, scan := range scansToResume {
 		logger.Infof("Resuming interrupted scan for %s (starting at file %d/%d)", scan.path, scan.currentIndex, scan.totalFiles)
 		s.wg.Add(1)
-		go s.resumeScan(resumeScanConfig{
+		cfg := resumeScanConfig{
 			ScanDBID:            scan.scanDBID,
 			PathID:              scan.pathID,
 			LocalPath:           scan.path,
@@ -339,7 +340,8 @@ func (s *ScannerService) ResumeInterruptedScans() {
 			DetectionConfigJSON: scan.detectionConfig,
 			AutoRemediate:       scan.autoRemediate,
 			DryRun:              scan.dryRun,
-		})
+		}
+		safego.Run("scanner-resume", func() { s.resumeScan(cfg) })
 	}
 }
 
@@ -1756,7 +1758,7 @@ func (s *ScannerService) queueForRescan(filePath string, pathID int64, errorType
 // StartRescanWorker starts a background worker that periodically processes pending rescans
 func (s *ScannerService) StartRescanWorker() {
 	s.wg.Add(1)
-	go func() {
+	safego.Run("scanner-rescan-worker", func() {
 		defer s.wg.Done()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
@@ -1770,7 +1772,7 @@ func (s *ScannerService) StartRescanWorker() {
 				s.processPendingRescans()
 			}
 		}
-	}()
+	})
 	logger.Infof("Rescan worker started (checks every 5 minutes)")
 }
 

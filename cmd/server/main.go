@@ -20,6 +20,7 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/metrics"
 	"github.com/mescon/Healarr/internal/notifier"
+	"github.com/mescon/Healarr/internal/safego"
 	"github.com/mescon/Healarr/internal/services"
 	"github.com/mescon/Healarr/internal/web"
 )
@@ -160,7 +161,7 @@ func initDatabase(cfg *config.Config) (*db.Repository, func(), chan struct{}, ch
 
 	// Start scheduled backup goroutine (every 6 hours)
 	stopBackups := make(chan struct{})
-	go runScheduledBackups(repo, cfg.DatabasePath, stopBackups)
+	safego.Run("scheduled-backups", func() { runScheduledBackups(repo, cfg.DatabasePath, stopBackups) })
 
 	// Start periodic WAL checkpoint (every 5 minutes)
 	stopCheckpoint := repo.StartPeriodicCheckpoint(5 * time.Minute)
@@ -168,7 +169,7 @@ func initDatabase(cfg *config.Config) (*db.Repository, func(), chan struct{}, ch
 
 	// Start scheduled maintenance goroutine (daily at 3 AM local time)
 	stopMaintenance := make(chan struct{})
-	go runScheduledMaintenance(repo, cfg.RetentionDays, stopMaintenance)
+	safego.Run("scheduled-maintenance", func() { runScheduledMaintenance(repo, cfg.RetentionDays, stopMaintenance) })
 
 	return repo, stopCheckpoint, stopBackups, stopMaintenance
 }
@@ -344,13 +345,13 @@ func startAPIServer(deps *serviceDeps, cfg *config.Config) *api.RESTServer {
 		Metrics:    deps.metricsService,
 	})
 
-	go func() {
+	safego.Run("api-server", func() {
 		addr := ":" + cfg.Port
 		if err := apiServer.Start(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Errorf("Failed to start API server: %v", err)
 			os.Exit(1)
 		}
-	}()
+	})
 
 	return apiServer
 }

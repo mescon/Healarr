@@ -15,6 +15,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/metrics"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // getWebSocketUpgrader returns an upgrader with origin validation
@@ -136,7 +137,7 @@ func NewWebSocketHub(eventBus *eventbus.EventBus, metricsService ...*metrics.Met
 
 	// Subscribe to logs
 	h.logCh = logger.Subscribe()
-	go func() {
+	safego.Run("websocket-log-broadcast", func() {
 		for {
 			select {
 			case <-h.shutdown:
@@ -155,9 +156,9 @@ func NewWebSocketHub(eventBus *eventbus.EventBus, metricsService ...*metrics.Met
 				}
 			}
 		}
-	}()
+	})
 
-	go h.run()
+	safego.Run("websocket-hub-run", h.run)
 	return h
 }
 
@@ -287,7 +288,7 @@ func (h *WebSocketHub) HandleConnection(c *gin.Context) {
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
 
-	go func() {
+	safego.Run("websocket-ping", func() {
 		for range ticker.C {
 			h.mu.Lock()
 			_, exists := h.clients[ws]
@@ -304,7 +305,7 @@ func (h *WebSocketHub) HandleConnection(c *gin.Context) {
 				return
 			}
 		}
-	}()
+	})
 
 	// Keep connection alive by reading messages (pings/pongs/close)
 	// This loop blocks until the connection is closed or an error occurs.

@@ -15,6 +15,7 @@ import (
 
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // MaxRetries is the number of times to retry a database operation on SQLITE_BUSY
@@ -220,7 +221,7 @@ func (r *Repository) StartPeriodicPoolStats(interval time.Duration) func() {
 
 	stopCh := make(chan struct{})
 
-	go func() {
+	safego.Run("db-stats-collector", func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -233,7 +234,7 @@ func (r *Repository) StartPeriodicPoolStats(interval time.Duration) func() {
 				r.metrics.RecordDBPoolStats(stats.OpenConnections, stats.InUse, stats.Idle)
 			}
 		}
-	}()
+	})
 
 	return func() {
 		close(stopCh)
@@ -284,7 +285,7 @@ func (r *Repository) Checkpoint() error {
 func (r *Repository) StartPeriodicCheckpoint(interval time.Duration) func() {
 	stopCh := make(chan struct{})
 
-	go func() {
+	safego.Run("db-periodic-checkpoint", func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -298,7 +299,7 @@ func (r *Repository) StartPeriodicCheckpoint(interval time.Duration) func() {
 				}
 			}
 		}
-	}()
+	})
 
 	return func() {
 		close(stopCh)

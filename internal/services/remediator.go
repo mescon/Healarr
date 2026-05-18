@@ -10,6 +10,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // maxConcurrentRemediations limits how many remediations can run simultaneously
@@ -164,7 +165,7 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 	}
 
 	r.wg.Add(1)
-	go func() {
+	safego.Run("remediator-retry-search", func() {
 		defer r.wg.Done()
 
 		// Check if shutting down before starting work
@@ -225,7 +226,7 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 		}); err != nil {
 			logger.Errorf("Failed to publish SearchCompleted event after retries: %v", err)
 		}
-	}()
+	})
 }
 
 func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
@@ -278,17 +279,17 @@ func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
 	if dryRun {
 		logger.Infof("Auto-remediation enabled for %s, but DRY-RUN mode is set for this path", data.FilePath)
 		r.wg.Add(1)
-		go func() {
+		safego.Run("remediator-dry-run", func() {
 			defer r.wg.Done()
 			r.executeDryRun(corruptionID, data.FilePath, arrPath)
-		}()
+		})
 	} else {
 		logger.Infof("Auto-remediation enabled for %s, proceeding immediately", data.FilePath)
 		r.wg.Add(1)
-		go func() {
+		safego.Run("remediator-execute", func() {
 			defer r.wg.Done()
 			r.executeRemediation(corruptionID, data.FilePath, arrPath, data.PathID)
-		}()
+		})
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // RateLimiter implements a token bucket rate limiter per IP address
@@ -34,7 +36,7 @@ func NewRateLimiter(rate int, interval time.Duration, burst int) *RateLimiter {
 	}
 
 	// Cleanup old entries periodically
-	go rl.cleanup()
+	safego.Run("ratelimit-cleanup", rl.cleanup)
 
 	return rl
 }

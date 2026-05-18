@@ -9,6 +9,7 @@ import (
 
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 // WebhookRequest represents the payload from Sonarr/Radarr
@@ -119,11 +120,11 @@ func (s *RESTServer) handleWebhook(c *gin.Context) {
 	}
 
 	// Trigger single file scan
-	go func() {
+	safego.Run("webhook-scan", func() {
 		if err := s.scanner.ScanFile(localPath); err != nil {
 			logger.Warnf("Webhook-triggered scan failed for %s: %v", localPath, err)
 		}
-	}()
+	})
 
 	c.JSON(http.StatusOK, gin.H{"message": "Scan queued", "local_path": localPath})
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/safego"
 )
 
 func (s *RESTServer) triggerScan(c *gin.Context) {
@@ -33,11 +34,11 @@ func (s *RESTServer) triggerScan(c *gin.Context) {
 	}
 
 	// Trigger scan in background
-	go func() {
+	safego.Run("trigger-scan", func() {
 		if err := s.scanner.ScanPath(req.PathID, localPath); err != nil {
 			logger.Errorf("Scan failed for path %d (%s): %v", req.PathID, localPath, err)
 		}
-	}()
+	})
 
 	c.JSON(http.StatusAccepted, gin.H{"message": "Scan started"})
 }
@@ -219,11 +220,11 @@ func (s *RESTServer) rescanPath(c *gin.Context) {
 	err = s.db.QueryRow("SELECT id FROM scan_paths WHERE local_path = ? AND enabled = 1", path).Scan(&pathID)
 	if err == sql.ErrNoRows {
 		// Path might not be in scan_paths (e.g., webhook scan) - scan directly
-		go func() {
+		safego.Run("rescan-file", func() {
 			if scanErr := s.scanner.ScanFile(path); scanErr != nil {
 				logger.Errorf("Rescan failed for path %s: %v", path, scanErr)
 			}
-		}()
+		})
 		c.JSON(http.StatusOK, gin.H{"message": "Rescan started", "path": path, "type": "file"})
 		return
 	}
@@ -233,11 +234,11 @@ func (s *RESTServer) rescanPath(c *gin.Context) {
 	}
 
 	// Start a new directory scan
-	go func() {
+	safego.Run("rescan-path", func() {
 		if scanErr := s.scanner.ScanPath(pathID, path); scanErr != nil {
 			logger.Errorf("Rescan failed for path %s: %v", path, scanErr)
 		}
-	}()
+	})
 
 	c.JSON(http.StatusOK, gin.H{"message": "Rescan started", "path": path, "path_id": pathID, "type": "path"})
 }
