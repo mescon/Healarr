@@ -39,13 +39,12 @@ func respondAuthError(c *gin.Context, err error) {
 	respondWithError(c, http.StatusInternalServerError, ErrMsgAuthenticationError, err)
 }
 
-// respondBadRequest handles bad request errors, optionally exposing the error message
-// Use exposeError=true only for validation errors safe to show users
-func respondBadRequest(c *gin.Context, err error, exposeError bool) {
-	if exposeError && err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+// respondBadRequest replies with a 400 and a generic "Invalid request" body,
+// logging the underlying error at debug level. Never echoes the error text
+// to the caller — that prevents bind/validation errors from leaking type
+// information (e.g. "json: cannot unmarshal string into Go struct field X
+// of type int") that helps an attacker fingerprint internal types.
+func respondBadRequest(c *gin.Context, err error) {
 	respondWithError(c, http.StatusBadRequest, ErrMsgInvalidRequest, err)
 }
 

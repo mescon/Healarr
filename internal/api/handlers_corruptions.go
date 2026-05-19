@@ -433,7 +433,7 @@ func (s *RESTServer) retryCorruptions(c *gin.Context) {
 		IDs []string `json:"ids"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -488,7 +488,7 @@ func (s *RESTServer) ignoreCorruptions(c *gin.Context) {
 		IDs []string `json:"ids"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -527,7 +527,7 @@ func (s *RESTServer) deleteCorruptions(c *gin.Context) {
 		IDs []string `json:"ids"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 

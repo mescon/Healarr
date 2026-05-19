@@ -16,7 +16,7 @@ func (s *RESTServer) triggerScan(c *gin.Context) {
 		PathID int64 `json:"path_id"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 

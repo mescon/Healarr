@@ -48,7 +48,7 @@ func (s *RESTServer) addSchedule(c *gin.Context) {
 		CronExpression string `json:"cron_expression"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -89,7 +89,7 @@ func (s *RESTServer) updateSchedule(c *gin.Context) {
 		Enabled        *bool  `json:"enabled"` // Pointer to distinguish between false and missing
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 

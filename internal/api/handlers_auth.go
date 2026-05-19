@@ -30,7 +30,7 @@ func (s *RESTServer) handleAuthSetup(c *gin.Context) {
 		Password string `json:"password"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -81,7 +81,7 @@ func (s *RESTServer) handleLogin(c *gin.Context) {
 		Password string `json:"password"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -193,7 +193,7 @@ func (s *RESTServer) changePassword(c *gin.Context) {
 		NewPassword     string `json:"new_password"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 

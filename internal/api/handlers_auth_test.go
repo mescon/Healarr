@@ -511,44 +511,36 @@ func TestRespondAuthError(t *testing.T) {
 // respondBadRequest full coverage
 // =============================================================================
 
-func TestRespondBadRequest_ExposeError(t *testing.T) {
+func TestRespondBadRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	t.Run("exposes_error_when_requested", func(t *testing.T) {
+	t.Run("hides_underlying_error", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 
-		testErr := assert.AnError
-		respondBadRequest(c, testErr, true)
+		respondBadRequest(c, assert.AnError)
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 
 		var response map[string]interface{}
 		json.Unmarshal(w.Body.Bytes(), &response)
-		assert.Contains(t, response["error"], testErr.Error())
+		// Always the generic message — the underlying error must never leak.
+		assert.Equal(t, "Invalid request", response["error"])
+		// And specifically must not contain the underlying error text.
+		assert.NotContains(t, response["error"], assert.AnError.Error())
 	})
 
-	t.Run("hides_error_when_not_requested", func(t *testing.T) {
+	t.Run("handles_nil_error", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 
-		respondBadRequest(c, assert.AnError, false)
+		respondBadRequest(c, nil)
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 
 		var response map[string]interface{}
 		json.Unmarshal(w.Body.Bytes(), &response)
 		assert.Equal(t, "Invalid request", response["error"])
-	})
-
-	t.Run("handles_nil_error_with_expose", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-
-		respondBadRequest(c, nil, true)
-
-		// With nil error and expose=true, falls through to default message
-		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 }
 
