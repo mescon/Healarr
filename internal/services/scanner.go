@@ -25,6 +25,26 @@ import (
 // scannerQueryTimeout is the maximum time for database queries in scanner service.
 const scannerQueryTimeout = 10 * time.Second
 
+// defaultShutdownTimeout is how long Shutdown waits for in-flight scan
+// goroutines (mostly ffprobe/ffmpeg calls) to finish before declaring
+// shutdown complete. Scan progress is persisted incrementally so a hard
+// cutoff is safe, but a longer default reduces the chance that an
+// in-flight thorough-mode ffmpeg decode is interrupted mid-file.
+const defaultShutdownTimeout = 30 * time.Second
+
+// scannerShutdownTimeout returns the operator-configured shutdown timeout
+// from HEALARR_SCANNER_SHUTDOWN_TIMEOUT (parsed via time.ParseDuration),
+// or defaultShutdownTimeout if unset/invalid.
+func scannerShutdownTimeout() time.Duration {
+	if v := os.Getenv("HEALARR_SCANNER_SHUTDOWN_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		logger.Warnf("Invalid HEALARR_SCANNER_SHUTDOWN_TIMEOUT %q; using default %s", v, defaultShutdownTimeout)
+	}
+	return defaultShutdownTimeout
+}
+
 // Default media file extensions to scan
 var defaultMediaExtensions = map[string]bool{
 	".mkv":  true,
@@ -247,18 +267,21 @@ func (s *ScannerService) Shutdown() {
 	}
 	s.mu.Unlock()
 
-	// Brief wait for goroutines to acknowledge cancellation (non-blocking)
+	// Wait for in-flight scan goroutines to finish. Scan-record state is
+	// already persisted in the for-loop above, so an interrupted goroutine
+	// only loses progress within its current per-file ffprobe call.
 	done := make(chan struct{})
 	safego.Run("scanner-shutdown-wait", func() {
 		s.wg.Wait()
 		close(done)
 	})
 
+	timeout := scannerShutdownTimeout()
 	select {
 	case <-done:
 		logger.Infof("Scanner: all scans stopped")
-	case <-time.After(2 * time.Second):
-		logger.Infof("Scanner: timeout waiting for scans, state saved for resumption")
+	case <-time.After(timeout):
+		logger.Warnf("Scanner: %s shutdown timeout reached; in-flight per-file work may have been interrupted (scan records already marked interrupted at file boundaries; resumption will pick up there)", timeout)
 	}
 
 	logger.Infof("Scanner: shutdown complete")
