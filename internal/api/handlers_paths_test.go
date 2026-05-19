@@ -494,7 +494,7 @@ func TestCreateScanPath_WithDetectionArgs(t *testing.T) {
 		"local_path": "/media/custom",
 		"arr_instance_id": ` + string(rune(arrID+'0')) + `,
 		"enabled": true,
-		"detection_args": ["-v", "error", "-show_streams"]
+		"detection_args": ["-v", "error", "-hide_banner"]
 	}`)
 
 	req, _ := http.NewRequest("POST", "/api/config/paths", body)
@@ -510,6 +510,55 @@ func TestCreateScanPath_WithDetectionArgs(t *testing.T) {
 	db.QueryRow("SELECT detection_args FROM scan_paths WHERE local_path = ?", "/media/custom").Scan(&argsJSON)
 	assert.Contains(t, argsJSON, "-v")
 	assert.Contains(t, argsJSON, "error")
+}
+
+// TestCreateScanPath_DetectionArgsAllowlist verifies the validator rejects
+// the dangerous flag patterns that motivated the allowlist.
+func TestCreateScanPath_DetectionArgsAllowlist(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	result, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := result.LastInsertId()
+
+	router, apiKey, serverCleanup := setupPathsTestServer(t, db)
+	defer serverCleanup()
+
+	cases := []struct {
+		name string
+		args string
+	}{
+		{"additional_input", `["-i", "/etc/passwd"]`},
+		{"output_format", `["-f", "data"]`},
+		{"protocol_whitelist", `["-protocol_whitelist", "all"]`},
+		{"url_in_value", `["-threads", "http://evil/x"]`},
+		{"file_uri", `["-threads", "file:/etc/shadow"]`},
+		{"unknown_flag", `["-y"]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := bytes.NewBufferString(`{
+				"local_path": "/media/` + tc.name + `",
+				"arr_instance_id": ` + string(rune(arrID+'0')) + `,
+				"enabled": true,
+				"detection_args": ` + tc.args + `
+			}`)
+			req, _ := http.NewRequest("POST", "/api/config/paths", body)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-API-Key", apiKey)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code, "expected 400 for %s", tc.args)
+
+			// And the row must not have been persisted.
+			var count int
+			db.QueryRow("SELECT COUNT(*) FROM scan_paths WHERE local_path = ?", "/media/"+tc.name).Scan(&count)
+			assert.Equal(t, 0, count, "%s should not have been persisted", tc.args)
+		})
+	}
 }
 
 func TestCreateScanPath_InvalidJSON(t *testing.T) {
