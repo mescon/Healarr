@@ -93,6 +93,14 @@ func prepareScanPathRequest(req *scanPathRequest, c *gin.Context) ([]byte, bool)
 		}
 	}
 
+	// Allowlist detection_args so a malicious or compromised admin session
+	// cannot persist -i http://... / -f data / etc. and have them spliced
+	// into ffmpeg at scan time.
+	if err := validateDetectionArgs(req.DetectionArgs); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return nil, false
+	}
+
 	// Marshal detection args to JSON
 	var detectionArgsJSON []byte
 	if len(req.DetectionArgs) > 0 {
