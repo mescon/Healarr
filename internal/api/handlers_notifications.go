@@ -40,7 +40,7 @@ func (s *RESTServer) createNotification(c *gin.Context) {
 
 	var req notifier.NotificationConfig
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -72,7 +72,7 @@ func (s *RESTServer) updateNotification(c *gin.Context) {
 
 	var req notifier.NotificationConfig
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 	req.ID = id
@@ -112,7 +112,7 @@ func (s *RESTServer) testNotification(c *gin.Context) {
 
 	var req notifier.NotificationConfig
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 

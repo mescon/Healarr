@@ -30,7 +30,7 @@ func (s *RESTServer) updateSettings(c *gin.Context) {
 		BasePath string `json:"base_path"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -481,7 +481,7 @@ func (s *RESTServer) importNotifications(notifications []importNotification) int
 func (s *RESTServer) importConfig(c *gin.Context) {
 	var req importConfigRequest
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 

@@ -153,7 +153,7 @@ func (s *RESTServer) createArrInstance(c *gin.Context) {
 		Enabled bool   `json:"enabled"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -207,7 +207,7 @@ func (s *RESTServer) updateArrInstance(c *gin.Context) {
 		Enabled bool   `json:"enabled"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -240,7 +240,7 @@ func (s *RESTServer) testArrConnection(c *gin.Context) {
 		APIKey string `json:"api_key"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		respondBadRequest(c, err, false)
+		respondBadRequest(c, err)
 		return
 	}
 
