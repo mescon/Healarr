@@ -458,6 +458,40 @@ func TestNotifier_LoadConfigs_WithData(t *testing.T) {
 	}
 }
 
+// TestNotifier_LoadConfigs_CorruptEventsJSON_Skipped verifies that a row with
+// malformed events JSON is excluded from the loaded configs instead of being
+// loaded with cfg.Events = []string{} (which would silently disable that
+// notification for all events).
+func TestNotifier_LoadConfigs_CorruptEventsJSON_Skipped(t *testing.T) {
+	tdb := newTestDB(t)
+	defer tdb.Close()
+
+	// A good config (will be loaded) plus a bad-events-JSON one (must be skipped).
+	_, err := tdb.DB.Exec(`
+		INSERT INTO notifications (id, name, provider_type, config, events, enabled, throttle_seconds)
+		VALUES (1, 'Good', 'discord', '{"webhook_url":"https://test.com"}', '["ScanCompleted"]', 1, 60),
+		       (2, 'Corrupt', 'discord', '{"webhook_url":"https://test.com"}', 'not valid json', 1, 60)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	eb := eventbus.NewEventBus(tdb.DB)
+	defer eb.Shutdown()
+
+	n := NewNotifier(tdb.DB, eb)
+	if err := n.loadConfigs(); err != nil {
+		t.Fatalf("loadConfigs failed: %v", err)
+	}
+
+	if _, ok := n.configs[1]; !ok {
+		t.Error("good config (ID 1) should have been loaded")
+	}
+	if _, ok := n.configs[2]; ok {
+		t.Error("corrupt-events config (ID 2) must NOT be loaded as an empty-events config; it should be skipped so the operator sees the failure")
+	}
+}
+
 func TestNotifier_LoadConfigs_DisabledNotLoaded(t *testing.T) {
 	tdb := newTestDB(t)
 	defer tdb.Close()

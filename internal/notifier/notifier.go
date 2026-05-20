@@ -423,8 +423,13 @@ func (n *Notifier) scanNotificationRow(scanner interface {
 	if err := json.Unmarshal([]byte(decrypted), &cfg.Config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config for notification %d: %w", cfg.ID, err)
 	}
-	if json.Unmarshal([]byte(eventsJSON), &cfg.Events) != nil {
-		cfg.Events = []string{}
+	// Previously this silently set cfg.Events to []string{} on unmarshal
+	// failure, which loaded the notification config with zero subscribed
+	// events — it would silently never fire. Returning an error lets the
+	// caller skip the config and log loudly so the operator can fix the
+	// corrupt row rather than wonder why notifications stopped working.
+	if err := json.Unmarshal([]byte(eventsJSON), &cfg.Events); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal events for notification %d: %w", cfg.ID, err)
 	}
 	return &cfg, nil
 }
