@@ -80,12 +80,13 @@ func (s *RESTServer) restartServer(c *gin.Context) {
 	})
 }
 
-// exportArrInstances exports arr instances from the database.
-func (s *RESTServer) exportArrInstances() []gin.H {
+// exportArrInstances exports arr instances from the database. Returns the
+// rows and any query/iteration error so the caller can fail the export
+// instead of returning a partial result the user wouldn't know is broken.
+func (s *RESTServer) exportArrInstances() ([]gin.H, error) {
 	rows, err := s.db.Query("SELECT name, type, url, api_key, enabled FROM arr_instances")
 	if err != nil {
-		logger.Debugf("Failed to query arr instances for export: %v", err)
-		return nil
+		return nil, fmt.Errorf("query arr_instances: %w", err)
 	}
 	defer rows.Close()
 
@@ -94,11 +95,13 @@ func (s *RESTServer) exportArrInstances() []gin.H {
 		var name, arrType, url, encryptedKey string
 		var enabled bool
 		if err := rows.Scan(&name, &arrType, &url, &encryptedKey, &enabled); err != nil {
-			logger.Errorf("Failed to scan arr instance for export: %v", err)
-			continue
+			return nil, fmt.Errorf("scan arr_instance: %w", err)
 		}
 		decryptedKey, err := crypto.Decrypt(encryptedKey)
 		if err != nil {
+			// Per-row decrypt failure is recorded as a sentinel; we don't
+			// fail the whole export because the rest of the data is still
+			// valuable, but the sentinel makes the corrupt row obvious.
 			logger.Errorf("Failed to decrypt API key for export: %v", err)
 			decryptedKey = "[DECRYPTION_ERROR]"
 		}
@@ -107,19 +110,18 @@ func (s *RESTServer) exportArrInstances() []gin.H {
 		})
 	}
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error iterating arr instances for export: %v", err)
+		return nil, fmt.Errorf("iterate arr_instances: %w", err)
 	}
-	return instances
+	return instances, nil
 }
 
 // exportScanPaths exports scan paths from the database.
-func (s *RESTServer) exportScanPaths() []gin.H {
+func (s *RESTServer) exportScanPaths() ([]gin.H, error) {
 	rows, err := s.db.Query(`SELECT local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run,
 		detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours
 		FROM scan_paths`)
 	if err != nil {
-		logger.Debugf("Failed to query scan paths for export: %v", err)
-		return nil
+		return nil, fmt.Errorf("query scan_paths: %w", err)
 	}
 	defer rows.Close()
 
@@ -133,8 +135,7 @@ func (s *RESTServer) exportScanPaths() []gin.H {
 		var verificationTimeout sql.NullInt64
 		if err := rows.Scan(&localPath, &arrPath, &arrInstanceID, &enabled, &autoRemediate, &dryRun,
 			&detectionMethod, &detectionArgs, &detectionMode, &maxRetries, &verificationTimeout); err != nil {
-			logger.Errorf("Failed to scan path for export: %v", err)
-			continue
+			return nil, fmt.Errorf("scan scan_paths row: %w", err)
 		}
 		path := gin.H{
 			"local_path": localPath, "arr_path": arrPath, "enabled": enabled,
@@ -158,21 +159,20 @@ func (s *RESTServer) exportScanPaths() []gin.H {
 		paths = append(paths, path)
 	}
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error iterating scan paths for export: %v", err)
+		return nil, fmt.Errorf("iterate scan_paths: %w", err)
 	}
-	return paths
+	return paths, nil
 }
 
 // exportSchedules exports scan schedules from the database.
-func (s *RESTServer) exportSchedules() []gin.H {
+func (s *RESTServer) exportSchedules() ([]gin.H, error) {
 	rows, err := s.db.Query(`
 		SELECT ss.cron_expression, ss.enabled, sp.local_path
 		FROM scan_schedules ss
 		JOIN scan_paths sp ON ss.scan_path_id = sp.id
 	`)
 	if err != nil {
-		logger.Debugf("Failed to query schedules for export: %v", err)
-		return nil
+		return nil, fmt.Errorf("query scan_schedules: %w", err)
 	}
 	defer rows.Close()
 
@@ -181,27 +181,29 @@ func (s *RESTServer) exportSchedules() []gin.H {
 		var cronExpr, localPath string
 		var enabled bool
 		if err := rows.Scan(&cronExpr, &enabled, &localPath); err != nil {
-			logger.Errorf("Failed to scan schedule for export: %v", err)
-			continue
+			return nil, fmt.Errorf("scan scan_schedule row: %w", err)
 		}
 		schedules = append(schedules, gin.H{
 			"local_path": localPath, "cron_expression": cronExpr, "enabled": enabled,
 		})
 	}
 	if err := rows.Err(); err != nil {
-		logger.Errorf("Error iterating schedules for export: %v", err)
+		return nil, fmt.Errorf("iterate scan_schedules: %w", err)
 	}
-	return schedules
+	return schedules, nil
 }
 
-// exportNotifications exports notification configs.
-func (s *RESTServer) exportNotifications() []gin.H {
+// exportNotifications exports notification configs. A nil notifier is not
+// an error (legitimate "no notifications configured" state); a failure
+// loading existing configs is, since it would produce a backup the user
+// thinks is complete but secretly omits notifications.
+func (s *RESTServer) exportNotifications() ([]gin.H, error) {
 	if s.notifier == nil {
-		return nil
+		return nil, nil
 	}
 	configs, err := s.notifier.GetAllConfigs()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("get notification configs: %w", err)
 	}
 	var notifConfigs []gin.H
 	for _, cfg := range configs {
@@ -211,26 +213,56 @@ func (s *RESTServer) exportNotifications() []gin.H {
 			"enabled": cfg.Enabled, "throttle_seconds": cfg.ThrottleSeconds,
 		})
 	}
-	return notifConfigs
+	return notifConfigs, nil
 }
 
-// exportConfig exports all configuration as JSON
+// exportConfig exports all configuration as JSON. If any section fails to
+// load (DB error, decrypt failure, notifier failure), the entire export
+// is aborted with a 500 — returning a partial backup that the user thinks
+// is complete is far worse than failing cleanly.
 func (s *RESTServer) exportConfig(c *gin.Context) {
 	export := gin.H{
 		"exported_at": time.Now().Format(time.RFC3339),
 		"version":     config.Version,
 	}
 
-	if instances := s.exportArrInstances(); instances != nil {
+	instances, err := s.exportArrInstances()
+	if err != nil {
+		logger.Errorf("exportConfig: %v", err)
+		respondWithError(c, http.StatusInternalServerError, "Failed to export configuration", err)
+		return
+	}
+	if instances != nil {
 		export["arr_instances"] = instances
 	}
-	if paths := s.exportScanPaths(); paths != nil {
+
+	paths, err := s.exportScanPaths()
+	if err != nil {
+		logger.Errorf("exportConfig: %v", err)
+		respondWithError(c, http.StatusInternalServerError, "Failed to export configuration", err)
+		return
+	}
+	if paths != nil {
 		export["scan_paths"] = paths
 	}
-	if schedules := s.exportSchedules(); schedules != nil {
+
+	schedules, err := s.exportSchedules()
+	if err != nil {
+		logger.Errorf("exportConfig: %v", err)
+		respondWithError(c, http.StatusInternalServerError, "Failed to export configuration", err)
+		return
+	}
+	if schedules != nil {
 		export["schedules"] = schedules
 	}
-	if notifications := s.exportNotifications(); notifications != nil {
+
+	notifications, err := s.exportNotifications()
+	if err != nil {
+		logger.Errorf("exportConfig: %v", err)
+		respondWithError(c, http.StatusInternalServerError, "Failed to export configuration", err)
+		return
+	}
+	if notifications != nil {
 		export["notifications"] = notifications
 	}
 

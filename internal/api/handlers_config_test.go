@@ -667,11 +667,16 @@ func TestDownloadDatabaseBackup_Success(t *testing.T) {
 // restartServer Tests
 // =============================================================================
 
+// Both ExportConfig DBError tests now assert the fixed fail-closed behavior:
+// when any export sub-query fails, the whole export returns 500. The previous
+// behavior was to return a silent partial backup that the user thought was
+// complete (audit finding E1).
+
 func TestExportConfig_DBError_ArrInstances(t *testing.T) {
 	db, cleanup := setupConfigTestDB(t)
 	defer cleanup()
 
-	// Drop arr_instances table to trigger error
+	// Drop arr_instances table to trigger query error
 	_, err := db.Exec("DROP TABLE arr_instances")
 	require.NoError(t, err)
 
@@ -684,25 +689,27 @@ func TestExportConfig_DBError_ArrInstances(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	// Export should still succeed (with empty arr_instances) even if query fails
-	assert.Equal(t, http.StatusOK, w.Code)
+	// Export must fail loudly rather than returning a silently-incomplete backup.
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 
 	var response map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &response)
-	assert.Contains(t, response, "exported_at")
+	assert.Contains(t, response, "error")
+	// Body must not leak the table-missing detail; just a generic message.
+	assert.Equal(t, "Failed to export configuration", response["error"])
 }
 
 func TestExportConfig_DBError_ScanPaths(t *testing.T) {
 	db, cleanup := setupConfigTestDB(t)
 	defer cleanup()
 
-	// Create an arr instance first
+	// Create an arr instance first so arr_instances export would succeed
 	encryptedKey, _ := crypto.Encrypt("test-key")
 	_, err := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
 		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
 	require.NoError(t, err)
 
-	// Drop scan_paths table to trigger error
+	// Drop scan_paths table to trigger error on the second sub-export
 	_, err = db.Exec("DROP TABLE scan_paths")
 	require.NoError(t, err)
 
@@ -715,13 +722,13 @@ func TestExportConfig_DBError_ScanPaths(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	// Export should still succeed (with empty scan_paths) even if query fails
-	assert.Equal(t, http.StatusOK, w.Code)
+	// Same: any sub-query failure aborts the whole export.
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 
 	var response map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &response)
-	// arr_instances should still be exported
-	assert.Contains(t, response, "arr_instances")
+	assert.Contains(t, response, "error")
+	assert.Equal(t, "Failed to export configuration", response["error"])
 }
 
 func TestExportConfig_WithSchedules(t *testing.T) {
