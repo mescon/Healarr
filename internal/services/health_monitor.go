@@ -155,7 +155,11 @@ func (h *HealthMonitorService) checkStuckRemediations() {
 		var corruptionID, filePath sql.NullString
 		var lastEventTime sql.NullString
 
-		if rows.Scan(&corruptionID, &filePath, &lastEventTime) != nil {
+		// Health monitor exists to surface stuck items; silently dropping rows
+		// here defeats the entire purpose. Log at error level so the failure
+		// shows up in operator logs.
+		if err := rows.Scan(&corruptionID, &filePath, &lastEventTime); err != nil {
+			logger.Errorf("Health monitor: failed to scan stuck remediation row: %v", err)
 			continue
 		}
 
@@ -221,7 +225,8 @@ func (h *HealthMonitorService) checkRepeatedFailures() {
 		var filePath sql.NullString
 		var failureCount int
 
-		if rows.Scan(&filePath, &failureCount) != nil {
+		if err := rows.Scan(&filePath, &failureCount); err != nil {
+			logger.Errorf("Health monitor: failed to scan repeated-failure row: %v", err)
 			continue
 		}
 

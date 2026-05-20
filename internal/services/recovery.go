@@ -188,7 +188,9 @@ func (r *RecoveryService) findStaleItems() ([]staleItem, error) {
 
 		if err := rows.Scan(&item.CorruptionID, &item.CurrentState, &item.FilePath, &item.PathID,
 			&lastUpdated, &item.RetryCount, &item.MaxRetries, &mediaIDRaw, &deletionMetadataRaw); err != nil {
-			logger.Debugf("Recovery: Failed to scan row: %v", err)
+			// Recovery is the safety net for stuck items; silently dropping
+			// rows here means a stuck item never gets recovered. Log loud.
+			logger.Errorf("Recovery: failed to scan row: %v", err)
 			continue
 		}
 
@@ -232,7 +234,10 @@ func (r *RecoveryService) checkArrStatus(item staleItem) string {
 
 	// Check if item is still in arr queue
 	if inQueue, err := r.isInArrQueue(item); err != nil {
-		logger.Debugf("Recovery: Failed to check queue for %s: %v", item.FilePath, err)
+		// arr-API failures during recovery mean we cannot accurately decide
+		// whether to recover the item; log at error level so operators see
+		// that recovery is degraded.
+		logger.Errorf("Recovery: failed to check queue for %s: %v", item.FilePath, err)
 	} else if inQueue {
 		logger.Debugf("Recovery: %s is still in arr queue, skipping", item.FilePath)
 		return "skipped"
@@ -240,7 +245,7 @@ func (r *RecoveryService) checkArrStatus(item staleItem) string {
 
 	// Check if arr has the file
 	if hasFile, filePath, err := r.checkArrHasFile(item); err != nil {
-		logger.Debugf("Recovery: Failed to check arr file status for %s: %v", item.FilePath, err)
+		logger.Errorf("Recovery: failed to check arr file status for %s: %v", item.FilePath, err)
 	} else if hasFile && filePath != "" {
 		logger.Infof("Recovery: %s has file in arr at %s, verifying health", item.FilePath, filePath)
 		return r.verifyAndComplete(item, filePath)
