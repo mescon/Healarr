@@ -4260,3 +4260,35 @@ func TestScannerService_ContentAnalysis_QuickMode_Skipped(t *testing.T) {
 		t.Error("AnalyzeContent should not be called in quick mode")
 	}
 }
+
+func TestScannerShutdownTimeout_Default(t *testing.T) {
+	t.Setenv("HEALARR_SCANNER_SHUTDOWN_TIMEOUT", "")
+	got := scannerShutdownTimeout()
+	if got != defaultShutdownTimeout {
+		t.Errorf("scannerShutdownTimeout() = %v, want %v", got, defaultShutdownTimeout)
+	}
+}
+
+func TestScannerShutdownTimeout_FromEnvVar(t *testing.T) {
+	t.Setenv("HEALARR_SCANNER_SHUTDOWN_TIMEOUT", "2m")
+	got := scannerShutdownTimeout()
+	if got != 2*time.Minute {
+		t.Errorf("scannerShutdownTimeout() = %v, want 2m", got)
+	}
+}
+
+func TestScannerShutdownTimeout_InvalidFallsBackToDefault(t *testing.T) {
+	t.Setenv("HEALARR_SCANNER_SHUTDOWN_TIMEOUT", "not a duration")
+	got := scannerShutdownTimeout()
+	if got != defaultShutdownTimeout {
+		t.Errorf("scannerShutdownTimeout() with invalid env = %v, want default %v", got, defaultShutdownTimeout)
+	}
+}
+
+func TestScannerShutdownTimeout_NegativeFallsBackToDefault(t *testing.T) {
+	t.Setenv("HEALARR_SCANNER_SHUTDOWN_TIMEOUT", "-1s")
+	got := scannerShutdownTimeout()
+	if got != defaultShutdownTimeout {
+		t.Errorf("scannerShutdownTimeout() with negative env = %v, want default %v", got, defaultShutdownTimeout)
+	}
+}
