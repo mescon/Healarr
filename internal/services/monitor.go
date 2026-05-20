@@ -338,11 +338,17 @@ func (m *MonitorService) getRetryCount(corruptionID string) (int, int, error) {
 func (m *MonitorService) handleNeedsAttention(event domain.Event) {
 	corruptionID := event.AggregateID
 
-	// Extract relevant info for logging
+	// Extract relevant info for logging. If we can't find a filePath the
+	// downstream Warnf logs "(file: )" which is exactly the case where the
+	// operator most needs the identifier — so capture the corruption-context
+	// error rather than discarding it.
 	filePath, _ := event.GetString("file_path")
 	if filePath == "" {
-		// Try to get from corruption context
-		filePath, _, _ = m.getCorruptionContext(corruptionID)
+		var ctxErr error
+		filePath, _, ctxErr = m.getCorruptionContext(corruptionID)
+		if ctxErr != nil {
+			logger.Errorf("handleNeedsAttention: cannot resolve file_path for %s: %v", corruptionID, ctxErr)
+		}
 	}
 
 	switch event.EventType {
