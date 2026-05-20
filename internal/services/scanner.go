@@ -1016,7 +1016,9 @@ func (s *ScannerService) shouldSkipChangingSize(sfc *scanFileContext) bool {
 					INSERT INTO scan_files (scan_id, file_path, status, corruption_type, error_details, file_size)
 					VALUES (?, ?, 'skipped', 'SizeChanging', 'File size changed during scan - active download/copy', ?)
 				`, sfc.scanDBID, sfc.filePath, sfc.fileSize); err != nil {
-					logger.Debugf("Failed to record skipped file (size changing): %v", err)
+					// scan_files rows drive the UI scan-detail screen; losing
+					// writes silently produces empty scan reports. Log loud.
+					logger.Errorf("Failed to record skipped file (size changing): %v", err)
 				}
 			}
 			return true
@@ -1033,7 +1035,9 @@ func (s *ScannerService) recordHealthyFile(sfc *scanFileContext) {
 			VALUES (?, ?, 'healthy', ?)
 		`, sfc.scanDBID, sfc.filePath, sfc.fileSize)
 		if err != nil {
-			logger.Debugf("Failed to record healthy file: %v", err)
+			// scan_files rows drive the UI scan-detail screen; losing writes
+			// silently produces "0 healthy, 0 corrupt" reports.
+			logger.Errorf("Failed to record healthy file: %v", err)
 		}
 	}
 }
@@ -1051,7 +1055,7 @@ func (s *ScannerService) handleRecoverableError(progress *ScanProgress, sfc *sca
 			VALUES (?, ?, 'inaccessible', ?, ?, ?)
 		`, sfc.scanDBID, sfc.filePath, healthErr.Type, healthErr.Message, sfc.fileSize)
 		if err != nil {
-			logger.Debugf("Failed to record inaccessible file: %v", err)
+			logger.Errorf("Failed to record inaccessible file: %v", err)
 		}
 	}
 

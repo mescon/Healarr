@@ -551,11 +551,13 @@ func (s *RESTServer) downloadDatabaseBackup(c *gin.Context) {
 	c.Header("Content-Type", "application/octet-stream")
 	c.File(backupPath)
 
-	// Clean up the temporary backup file after sending (in background)
+	// Clean up the temporary backup file after sending (in background).
+	// Failures accumulate disk usage in the backup directory over time, so
+	// log loud enough that operators notice during diagnostics.
 	safego.Run("backup-cleanup", func() {
 		time.Sleep(5 * time.Second) // Wait for download to complete
 		if err := os.Remove(backupPath); err != nil {
-			logger.Debugf("Failed to remove temporary backup file %s: %v", backupPath, err)
+			logger.Warnf("Failed to remove temporary backup file %s: %v", backupPath, err)
 		}
 	})
 }

@@ -674,8 +674,15 @@ func (r *Repository) applyMigration(file string, version int) error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
-		if tx != nil {
-			_ = tx.Rollback()
+		if tx == nil {
+			return
+		}
+		// A rollback error during migration means the schema may be in an
+		// inconsistent state. The actual failure (the original migration
+		// error) is returned to the caller; log the rollback outcome at
+		// debug so it shows up when diagnosing a half-applied migration.
+		if err := tx.Rollback(); err != nil {
+			logger.Debugf("Migration rollback returned: %v", err)
 		}
 	}()
 
