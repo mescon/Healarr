@@ -932,11 +932,35 @@ func (v *VerifierService) hasImportEventInHistory(arrPath string, mediaID int64)
 	return findImportEvent(historyItems) != nil, nil
 }
 
-// checkHistoryForImport checks *arr history for import completion
+// checkHistoryForImport checks *arr history for import completion.
+//
+// Important: an API error here previously logged at Debugf and returned false,
+// which downstream is indistinguishable from a real "no import found" signal.
+// A persistently failing *arr API would silently drive the verifier toward
+// false ManuallyRemoved / DownloadTimeout states with no visible cause. Now
+// the API failure is logged at Warnf with explicit "cannot confirm import
+// status" wording, mirroring the symmetric fix already in place at the
+// GetAllFilePaths retry call below.
 func (v *VerifierService) checkHistoryForImport(corruptionID, arrPath string, mediaID int64, referencePath string, metadata map[string]interface{}) bool {
 	historyItems, err := v.getHistoryWithRetry(arrPath, mediaID, 20, 3)
 	if err != nil {
-		logger.Debugf("History check error for %s after retries: %v", corruptionID, err)
+		logger.Warnf("History check failed for %s after retries: %v - cannot confirm import status", corruptionID, err)
+		// Publish InstanceUnhealthy so the UI / notification stack can surface
+		// the degraded *arr API state — the verifier loop will continue, but
+		// at least the operator now has a signal.
+		if pubErr := v.eventBus.Publish(domain.Event{
+			AggregateType: "instance",
+			AggregateID:   fmt.Sprintf("history-check:%s", corruptionID),
+			EventType:     domain.InstanceUnhealthy,
+			EventData: map[string]interface{}{
+				"corruption_id": corruptionID,
+				"operation":     "checkHistoryForImport",
+				"error":         err.Error(),
+				"reason":        "history API failed after retries; cannot confirm import status",
+			},
+		}); pubErr != nil {
+			logger.Debugf("Failed to publish InstanceUnhealthy event for verifier: %v", pubErr)
+		}
 		return false
 	}
 

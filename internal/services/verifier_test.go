@@ -778,7 +778,7 @@ func TestVerifierService_CheckHistoryForImport(t *testing.T) {
 		}
 	})
 
-	t.Run("history API error returns false", func(t *testing.T) {
+	t.Run("history API error returns false and publishes InstanceUnhealthy", func(t *testing.T) {
 		eb := eventbus.NewEventBus(db)
 		defer eb.Shutdown()
 
@@ -790,9 +790,21 @@ func TestVerifierService_CheckHistoryForImport(t *testing.T) {
 
 		verifier := NewVerifierService(eb, nil, nil, mockArr, db)
 
-		result := verifier.checkHistoryForImport("test-2", "/movies", 123, "/test.mkv", nil)
+		result := verifier.checkHistoryForImport("test-instance-unhealthy", "/movies", 123, "/test.mkv", nil)
 		if result {
 			t.Error("Expected false for history API error")
+		}
+
+		// Verify InstanceUnhealthy event was published — previously the API
+		// failure was silently swallowed (audit P0 E4).
+		var count int
+		err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE event_type = ? AND aggregate_id = ?`,
+			string(domain.InstanceUnhealthy), "history-check:test-instance-unhealthy").Scan(&count)
+		if err != nil {
+			t.Fatalf("query events: %v", err)
+		}
+		if count == 0 {
+			t.Error("expected an InstanceUnhealthy event to be published when history API fails after retries")
 		}
 	})
 
