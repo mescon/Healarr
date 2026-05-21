@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/mescon/Healarr/internal/crypto"
+	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/safego"
 )
@@ -119,10 +120,29 @@ func (s *RESTServer) handleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Trigger single file scan
+	// Trigger single file scan. On failure, publish a ScanFailed event so
+	// the UI can surface the issue — previously the HTTP 202 "Scan queued"
+	// response promised work that silently died, with the failure only
+	// visible in backend logs.
 	safego.Run("webhook-scan", func() {
 		if err := s.scanner.ScanFile(localPath); err != nil {
 			logger.Warnf("Webhook-triggered scan failed for %s: %v", localPath, err)
+			pubErr := s.eventBus.Publish(domain.Event{
+				AggregateType: "scan",
+				// No scan_id yet — ScanFile failed before one was assigned.
+				// Use the file path as the aggregate ID so duplicate failures
+				// collate in the timeline and clients can index by path.
+				AggregateID: "webhook:" + localPath,
+				EventType:   domain.ScanFailed,
+				EventData: map[string]interface{}{
+					"file_path": localPath,
+					"trigger":   "webhook",
+					"error":     err.Error(),
+				},
+			})
+			if pubErr != nil {
+				logger.Errorf("Failed to publish ScanFailed event for webhook scan: %v", pubErr)
+			}
 		}
 	})
 
