@@ -165,11 +165,20 @@ func TestHandleLogin_DBError(t *testing.T) {
 	assert.Equal(t, "Database error", response["error"])
 }
 
-func TestHandleLogin_MissingAPIKey(t *testing.T) {
+// TestHandleLogin_SessionCreateFails replaces the previous TestHandleLogin_
+// MissingAPIKey and _DecryptionError tests, which exercised codepaths that
+// no longer exist (login no longer touches the master API key — Phase 1.3
+// decoupled login session tokens from the integration key).
+//
+// The new failure mode: session row insert fails (e.g., sessions table
+// missing, DB locked, disk full). Login should 500 with a generic message
+// and the underlying error stays in logs.
+func TestHandleLogin_SessionCreateFails(t *testing.T) {
 	db, cleanup := setupAuthErrorTestDB(t)
 	defer cleanup()
 
-	// Setup password but no API key
+	// setupAuthErrorTestDB intentionally has no sessions table; INSERT will
+	// fail with "no such table: sessions".
 	hash, _ := auth.HashPassword("testpassword")
 	db.Exec("INSERT INTO settings (key, value) VALUES ('password_hash', ?)", hash)
 
@@ -189,36 +198,8 @@ func TestHandleLogin_MissingAPIKey(t *testing.T) {
 
 	var response map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &response)
-	assert.Equal(t, "Failed to retrieve API key", response["error"])
-}
-
-func TestHandleLogin_DecryptionError(t *testing.T) {
-	db, cleanup := setupAuthErrorTestDB(t)
-	defer cleanup()
-
-	// Setup password and invalid encrypted API key with proper prefix
-	// Use "enc:v1:" prefix with invalid base64 to trigger decryption error
-	hash, _ := auth.HashPassword("testpassword")
-	db.Exec("INSERT INTO settings (key, value) VALUES ('password_hash', ?)", hash)
-	db.Exec("INSERT INTO settings (key, value) VALUES ('api_key', 'enc:v1:!!!invalid-base64!!!')")
-
-	server := createAuthErrorTestServer(t, db)
-
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.POST("/auth/login", server.handleLogin)
-
-	body := strings.NewReader(`{"password": "testpassword"}`)
-	req, _ := http.NewRequest("POST", "/auth/login", body)
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-
-	var response map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &response)
-	assert.Equal(t, "Failed to decrypt API key", response["error"])
+	// Generic message — underlying DB error stays in logs.
+	assert.Equal(t, "Failed to create session", response["error"])
 }
 
 // =============================================================================

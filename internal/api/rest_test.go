@@ -535,6 +535,17 @@ func TestRESTServer_VerifyAPIToken(t *testing.T) {
 
 		_, err = db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`)
 		require.NoError(t, err)
+		// sessions table is required for the session-lookup fallback path
+		// added in Phase 1.3.
+		_, err = db.Exec(`CREATE TABLE sessions (
+			token TEXT PRIMARY KEY,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			expires_at TIMESTAMP NOT NULL,
+			last_used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			user_agent TEXT,
+			ip_address TEXT
+		)`)
+		require.NoError(t, err)
 
 		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'correct-key')`)
 		require.NoError(t, err)
@@ -604,6 +615,15 @@ func TestRESTServer_AuthMiddleware(t *testing.T) {
 		defer db.Close()
 
 		_, err = db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`)
+		require.NoError(t, err)
+		_, err = db.Exec(`CREATE TABLE sessions (
+			token TEXT PRIMARY KEY,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			expires_at TIMESTAMP NOT NULL,
+			last_used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			user_agent TEXT,
+			ip_address TEXT
+		)`)
 		require.NoError(t, err)
 
 		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'correct-key')`)

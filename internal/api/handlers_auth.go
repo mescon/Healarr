@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -104,24 +105,21 @@ func (s *RESTServer) handleLogin(c *gin.Context) {
 		return
 	}
 
-	// Get API key to return as session token
-	var encryptedKey string
-	err = s.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'api_key'").Scan(&encryptedKey)
+	// Issue a per-login session token rather than returning the master API
+	// key. Sessions live in their own table with a 24h expiry and can be
+	// invalidated via logout, decoupled from the long-lived integration key
+	// used by Sonarr/Radarr webhooks (Phase 1.3 P1 finding).
+	token, expiresAt, err := s.createSession(ctx, c.Request.UserAgent(), c.ClientIP())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve API key"})
-		return
-	}
-
-	// Decrypt API key
-	apiKey, err := crypto.Decrypt(encryptedKey)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decrypt API key"})
+		logger.Errorf("Login: failed to create session: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"token":   apiKey, // Use API key as session token for simplicity
-		"message": "Login successful",
+		"token":      token,
+		"expires_at": expiresAt.Format(time.RFC3339),
+		"message":    "Login successful",
 	})
 	logger.Infof("User logged in successfully from %s", c.ClientIP())
 }

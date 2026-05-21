@@ -82,6 +82,15 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 
+		CREATE TABLE sessions (
+			token TEXT PRIMARY KEY,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			expires_at TIMESTAMP NOT NULL,
+			last_used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			user_agent TEXT,
+			ip_address TEXT
+		);
+
 		CREATE VIEW corruption_status AS
 		SELECT 'CorruptionDetected' as current_state, 0 as count;
 	`
@@ -307,8 +316,27 @@ func TestHandleLogin_Success(t *testing.T) {
 
 	var response map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &response)
-	if response["token"] != apiKey {
-		t.Errorf("Expected token to match API key")
+
+	// Login now issues a fresh session token, NOT the master API key.
+	// Asserting NotEqual is the regression test for Phase 1.3 P0.
+	gotToken, ok := response["token"].(string)
+	if !ok || gotToken == "" {
+		t.Fatalf("expected non-empty token in response, got %v", response["token"])
+	}
+	if gotToken == apiKey {
+		t.Error("login token must NOT equal the master API key — sessions are now decoupled (Phase 1.3)")
+	}
+	if response["expires_at"] == nil {
+		t.Error("expected expires_at in response")
+	}
+
+	// Verify the session row was persisted.
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sessions WHERE token = ?", gotToken).Scan(&count); err != nil {
+		t.Fatalf("query sessions: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 session row for the returned token, got %d", count)
 	}
 }
 

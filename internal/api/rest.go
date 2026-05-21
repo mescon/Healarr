@@ -407,6 +407,7 @@ func (s *RESTServer) setupRoutes() {
 			protected.GET("/auth/key", s.getAPIKey)
 			protected.POST("/auth/regenerate", s.regenerateAPIKey)
 			protected.POST("/auth/password", s.changePassword)
+			protected.POST("/auth/logout", s.handleLogout)
 
 			// System info (authenticated)
 			protected.GET("/system/info", s.handleSystemInfo)
@@ -584,10 +585,21 @@ func (s *RESTServer) extractAPIToken(c *gin.Context) string {
 // errInvalidToken indicates the provided token doesn't match the stored API key
 var errInvalidToken = errors.New("invalid token")
 
-// verifyAPIToken verifies the provided token against the stored API key
+// verifyAPIToken verifies the provided token. Accepts either:
+//
+//	(1) the master API key — used by Sonarr/Radarr webhook integrations
+//	    and any non-browser caller; matched with constant-time comparison
+//	(2) a valid, unexpired session token — issued by POST /auth/login
+//	    and used by the browser UI
+//
+// Both paths are checked because integrations must keep working while
+// browsers stop receiving the master key (Phase 1.3).
 func (s *RESTServer) verifyAPIToken(token string) error {
+	ctx := context.Background()
+
 	var encryptedKey string
-	if err := s.db.QueryRow("SELECT value FROM settings WHERE key = 'api_key'").Scan(&encryptedKey); err != nil {
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT value FROM settings WHERE key = 'api_key'").Scan(&encryptedKey); err != nil {
 		return fmt.Errorf("failed to retrieve API key: %w", err)
 	}
 
@@ -596,9 +608,21 @@ func (s *RESTServer) verifyAPIToken(token string) error {
 		return fmt.Errorf("failed to decrypt API key: %w", err)
 	}
 
-	// Use constant-time comparison to prevent timing attacks
-	if subtle.ConstantTimeCompare([]byte(token), []byte(storedKey)) != 1 {
-		return errInvalidToken
+	// Master API key path (integrations).
+	if subtle.ConstantTimeCompare([]byte(token), []byte(storedKey)) == 1 {
+		return nil
 	}
-	return nil
+
+	// Session token path (browsers).
+	if sessErr := s.validateSession(ctx, token); sessErr == nil {
+		return nil
+	} else if !errors.Is(sessErr, sql.ErrNoRows) && !errors.Is(sessErr, errSessionExpired) {
+		// Unknown token (no row) and expired sessions both surface as
+		// errInvalidToken to the middleware; any OTHER error (e.g. DB
+		// failure) needs to be returned so the middleware logs it
+		// distinctly rather than treating it as a bad token.
+		return fmt.Errorf("session lookup failed: %w", sessErr)
+	}
+
+	return errInvalidToken
 }
