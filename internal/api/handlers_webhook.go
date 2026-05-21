@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/subtle"
+	"database/sql"
 	"net/http"
 	"strconv"
 
@@ -43,30 +44,8 @@ func (s *RESTServer) handleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify API key - need to decrypt stored key for comparison
-	var storedKey string
-	err := s.db.QueryRow("SELECT value FROM settings WHERE key = 'api_key'").Scan(&storedKey)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Authentication error"})
-		return
-	}
-
-	// Decrypt stored key if encrypted
-	decryptedKey, err := crypto.Decrypt(storedKey)
-	if err != nil {
-		logger.Errorf("Failed to decrypt API key: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Authentication error"})
-		return
-	}
-
-	// Use constant-time comparison to prevent timing attacks
-	if subtle.ConstantTimeCompare([]byte(apiKey), []byte(decryptedKey)) != 1 {
-		logger.Debugf("Webhook rejected: Invalid API key")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
-		return
-	}
-
-	// Get instance ID from URL parameter
+	// Get instance ID from URL parameter (needed up-front because the
+	// per-instance webhook secret is the authoritative credential).
 	instanceIDStr := c.Param("instance_id")
 	instanceID, err := strconv.ParseInt(instanceIDStr, 10, 64)
 	if err != nil {
@@ -74,9 +53,14 @@ func (s *RESTServer) handleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify instance exists and is enabled
+	// Load the instance: enabled flag + (encrypted) per-instance webhook secret
+	// if one has been generated. Missing webhook_secret column on legacy
+	// rows scans into a NULL sql.NullString.
 	var enabled bool
-	err = s.db.QueryRow("SELECT enabled FROM arr_instances WHERE id = ?", instanceID).Scan(&enabled)
+	var webhookSecret sql.NullString
+	err = s.db.QueryRow(
+		"SELECT enabled, webhook_secret FROM arr_instances WHERE id = ?",
+		instanceID).Scan(&enabled, &webhookSecret)
 	if err != nil {
 		logger.Errorf("Webhook rejected: Instance %d not found", instanceID)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Instance not found"})
@@ -90,6 +74,49 @@ func (s *RESTServer) handleWebhook(c *gin.Context) {
 			"message": "Enable this instance in the Config page to process webhooks",
 		})
 		return
+	}
+
+	// Authentication path (Phase 1.1c):
+	//
+	// If the instance has a per-instance webhook_secret, that's the ONLY
+	// credential accepted. The master API key no longer works for instances
+	// that have moved to per-instance secrets — that's the whole point of
+	// the separation.
+	//
+	// If webhook_secret is NULL (legacy instance created before this
+	// migration), fall back to master API key. The UI nudges users to
+	// generate a secret to close the gap.
+	if webhookSecret.Valid && webhookSecret.String != "" {
+		decryptedSecret, decErr := crypto.Decrypt(webhookSecret.String)
+		if decErr != nil {
+			logger.Errorf("Failed to decrypt webhook secret for instance %d: %v", instanceID, decErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Authentication error"})
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(apiKey), []byte(decryptedSecret)) != 1 {
+			logger.Debugf("Webhook rejected: Invalid webhook secret for instance %d", instanceID)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid webhook secret"})
+			return
+		}
+	} else {
+		// Legacy fallback: validate against the master API key.
+		var storedKey string
+		if err := s.db.QueryRow("SELECT value FROM settings WHERE key = 'api_key'").Scan(&storedKey); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Authentication error"})
+			return
+		}
+		decryptedKey, decErr := crypto.Decrypt(storedKey)
+		if decErr != nil {
+			logger.Errorf("Failed to decrypt API key: %v", decErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Authentication error"})
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(apiKey), []byte(decryptedKey)) != 1 {
+			logger.Debugf("Webhook rejected: Invalid API key (legacy instance %d without webhook_secret)", instanceID)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
+			return
+		}
+		logger.Warnf("Webhook for instance %d authenticated via master API key — generate a per-instance webhook secret to close this gap", instanceID)
 	}
 
 	var req WebhookRequest

@@ -69,6 +69,7 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 			url TEXT NOT NULL,
 			api_key TEXT NOT NULL,
 			enabled INTEGER DEFAULT 1,
+			webhook_secret TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 
