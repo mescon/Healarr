@@ -72,6 +72,41 @@ func TestHealthCheckError_IsTrueCorruption(t *testing.T) {
 	}
 }
 
+// TestHealthCheckError_UnregisteredTypePanics verifies the regression guarantee
+// from the audit T1 finding: a new ErrorType constant added without a
+// corresponding entry in errorCategories now panics at test time so the gap
+// is caught at CI rather than silently classifying the new type as neither
+// recoverable nor corrupt at 3am.
+func TestHealthCheckError_UnregisteredTypePanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for unregistered error type; got none")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "unregistered error type") {
+			t.Errorf("panic message = %v, want to contain 'unregistered error type'", r)
+		}
+	}()
+	err := &HealthCheckError{Type: "ThisErrorTypeIsNotRegistered"}
+	_ = err.IsRecoverable()
+}
+
+// TestHealthCheckError_CategoryConsistency asserts every error type registered
+// in errorCategories has a NON-Unknown category. Registering with
+// CategoryUnknown defeats the purpose — that value is only returned when an
+// unregistered type is looked up.
+func TestHealthCheckError_CategoryConsistency(t *testing.T) {
+	for errType, cat := range errorCategories {
+		if cat == CategoryUnknown {
+			t.Errorf("error type %q registered as CategoryUnknown; use Recoverable or TrueCorruption", errType)
+		}
+		if cat != CategoryRecoverable && cat != CategoryTrueCorruption {
+			t.Errorf("error type %q has unknown category value %d", errType, cat)
+		}
+	}
+}
+
 // =============================================================================
 // CmdHealthChecker constructor tests
 // =============================================================================
