@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/mattn/go-sqlite3" // Register CGo SQLite driver for database/sql
@@ -18,6 +19,7 @@ import (
 
 	"github.com/mescon/Healarr/internal/auth"
 	"github.com/mescon/Healarr/internal/crypto"
+	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/services"
 	"github.com/mescon/Healarr/internal/testutil"
@@ -70,10 +72,13 @@ func setupWebhookTestDB(t *testing.T) (*sql.DB, func()) {
 
 		CREATE TABLE events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			aggregate_type TEXT NOT NULL,
+			aggregate_id TEXT NOT NULL,
 			event_type TEXT NOT NULL,
-			aggregate_id TEXT,
-			event_data TEXT NOT NULL,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			event_data JSON NOT NULL,
+			event_version INTEGER NOT NULL DEFAULT 1,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			user_id TEXT
 		);
 
 		CREATE TABLE arr_instances (
@@ -553,4 +558,76 @@ func TestWebhook_DecryptError(t *testing.T) {
 
 	hub.Shutdown()
 	eb.Shutdown()
+}
+
+// TestWebhook_ScanFailure_PublishesScanFailedEvent verifies that when the
+// async scan triggered by a webhook fails, a ScanFailed event reaches the
+// event bus so the UI can surface the failure. Previously the HTTP 200
+// "Scan queued" response promised work that silently died (audit P0 E6).
+func TestWebhook_ScanFailure_PublishesScanFailedEvent(t *testing.T) {
+	db, cleanup := setupWebhookTestDB(t)
+	defer cleanup()
+
+	arrID := createTestArrInstance(t, db, true)
+
+	mockPM := &testutil.MockPathMapper{
+		ToLocalPathFunc: func(arrPath string) (string, error) {
+			return "/local" + arrPath, nil
+		},
+	}
+
+	// Scan signals when it has run (and failed) so the test can wait
+	// without sleeping.
+	scanDone := make(chan struct{}, 1)
+	mockScanner := &webhookMockScanner{
+		ScanFileFunc: func(_ string) error {
+			defer func() { scanDone <- struct{}{} }()
+			return assert.AnError
+		},
+	}
+
+	router, apiKey, serverCleanup := setupWebhookTestServer(t, db, mockPM, mockScanner)
+	defer serverCleanup()
+
+	body := bytes.NewBufferString(`{
+		"eventType": "Download",
+		"movieFile": {"path": "/movies/broken.mkv"}
+	}`)
+	req, _ := http.NewRequest("POST", "/api/webhook/"+string(rune('0'+arrID)), body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// The webhook handler still returns 200 (the scan was queued; the
+	// failure is async). The fix is that we now ALSO publish an event.
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Wait for the async scan to fire and the event to be persisted.
+	select {
+	case <-scanDone:
+	case <-time.After(time.Second):
+		t.Fatal("scan goroutine did not run within 1s")
+	}
+
+	// Give the eventbus's Publish (DB INSERT) a brief moment to complete.
+	// Events.Publish is synchronous to the DB, but the goroutine call is
+	// fire-and-forget from the webhook handler's perspective.
+	deadline := time.Now().Add(2 * time.Second)
+	var count int
+	var eventData string
+	for time.Now().Before(deadline) {
+		row := db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(event_data), '') FROM events
+			WHERE event_type = ? AND aggregate_id = ?`,
+			string(domain.ScanFailed), "webhook:/local/movies/broken.mkv")
+		_ = row.Scan(&count, &eventData)
+		if count >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	require.GreaterOrEqual(t, count, 1, "ScanFailed event should have been published for the failing webhook scan")
+	assert.Contains(t, eventData, "/local/movies/broken.mkv")
+	assert.Contains(t, eventData, "webhook")
 }

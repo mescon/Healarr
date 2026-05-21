@@ -2196,19 +2196,19 @@ func TestNotifier_LoadConfigs_InvalidEventsJSON(t *testing.T) {
 
 	n := NewNotifier(tdb.DB, eb)
 
-	// loadConfigs should succeed even with invalid events JSON
-	err = n.loadConfigs()
-	if err != nil {
+	// loadConfigs should succeed (it skips bad rows rather than aborting the
+	// whole load); but the corrupt config must NOT be in the active set.
+	// Previously it loaded with cfg.Events = []string{} which silently
+	// disabled the notification — fixed in Phase 1.4 (E3).
+	if err := n.loadConfigs(); err != nil {
 		t.Fatalf("loadConfigs failed unexpectedly: %v", err)
 	}
 
-	// The config should be loaded with empty events (invalid events JSON falls back to [])
-	if len(n.configs) != 1 {
-		t.Fatalf("Expected 1 config (with empty events fallback), got %d", len(n.configs))
+	if _, ok := n.configs[1]; ok {
+		t.Error("config with corrupt events JSON must be excluded from active set, not loaded with empty events")
 	}
-	cfg := n.configs[1]
-	if len(cfg.Events) != 0 {
-		t.Errorf("Expected empty events for invalid JSON, got %v", cfg.Events)
+	if len(n.configs) != 0 {
+		t.Errorf("Expected 0 active configs, got %d", len(n.configs))
 	}
 }
 
@@ -2230,19 +2230,17 @@ func TestNotifier_GetAllConfigs_InvalidEventsJSON(t *testing.T) {
 
 	n := NewNotifier(tdb.DB, eb)
 
-	// GetAllConfigs should handle invalid JSON gracefully by using empty events
+	// GetAllConfigs skips corrupt rows (Errorf + continue) rather than
+	// returning them with cfg.Events = []string{}. Previously the API would
+	// have returned the bad row to the UI as "configured but no events" —
+	// fixed in Phase 1.4 (E3).
 	configs, err := n.GetAllConfigs()
 	if err != nil {
-		t.Fatalf("GetAllConfigs() error = %v", err)
+		t.Fatalf("GetAllConfigs() unexpected error = %v", err)
 	}
 
-	if len(configs) != 1 {
-		t.Fatalf("Expected 1 config, got %d", len(configs))
-	}
-
-	// Events should be empty array for invalid JSON
-	if len(configs[0].Events) != 0 {
-		t.Errorf("Expected 0 events for invalid JSON, got %d", len(configs[0].Events))
+	if len(configs) != 0 {
+		t.Errorf("Expected corrupt config to be excluded; got %d configs", len(configs))
 	}
 }
 
@@ -2264,15 +2262,15 @@ func TestNotifier_GetConfig_InvalidEventsJSON(t *testing.T) {
 
 	n := NewNotifier(tdb.DB, eb)
 
-	// GetConfig should handle invalid JSON gracefully
+	// GetConfig propagates scan errors directly to the caller (single-row
+	// lookup; nothing to skip). Previously it would have returned a config
+	// with Events=[] — fixed in Phase 1.4 (E3).
 	cfg, err := n.GetConfig(1)
-	if err != nil {
-		t.Fatalf("GetConfig() error = %v", err)
+	if err == nil {
+		t.Fatalf("GetConfig() should return error for corrupt events JSON; got cfg=%+v", cfg)
 	}
-
-	// Events should be empty array for invalid JSON
-	if len(cfg.Events) != 0 {
-		t.Errorf("Expected 0 events for invalid JSON, got %d", len(cfg.Events))
+	if cfg != nil {
+		t.Errorf("GetConfig() should return nil cfg on error; got %+v", cfg)
 	}
 }
 
