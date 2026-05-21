@@ -424,6 +424,7 @@ func (s *RESTServer) setupRoutes() {
 			protected.GET("/config/arr", s.getArrInstances)
 			protected.POST("/config/arr", s.createArrInstance)
 			protected.POST("/config/arr/test", s.testArrConnection)
+			protected.POST("/config/arr/:id/webhook-secret", s.regenerateWebhookSecret)
 			protected.PUT("/config/arr/:id", s.updateArrInstance)
 			protected.DELETE("/config/arr/:id", s.deleteArrInstance)
 			protected.GET("/config/arr/:id/rootfolders", s.getArrRootFolders)

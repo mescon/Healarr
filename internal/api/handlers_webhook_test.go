@@ -88,6 +88,7 @@ func setupWebhookTestDB(t *testing.T) (*sql.DB, func()) {
 			url TEXT NOT NULL,
 			api_key TEXT NOT NULL,
 			enabled INTEGER DEFAULT 1,
+			webhook_secret TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 
@@ -188,13 +189,17 @@ func TestWebhook_InvalidAPIKey(t *testing.T) {
 	db, cleanup := setupWebhookTestDB(t)
 	defer cleanup()
 
+	// Create a legacy-style instance (no webhook_secret) so the master-key
+	// fallback path runs; the wrong-key check then produces 401 with
+	// "Invalid API key" — the legacy-path message from Phase 1.1c.
+	arrID := createTestArrInstance(t, db, true)
 	mockPM := &testutil.MockPathMapper{}
 	mockScanner := &webhookMockScanner{}
 	router, _, serverCleanup := setupWebhookTestServer(t, db, mockPM, mockScanner)
 	defer serverCleanup()
 
 	body := bytes.NewBufferString(`{"eventType": "Download"}`)
-	req, _ := http.NewRequest("POST", "/api/webhook/1", body)
+	req, _ := http.NewRequest("POST", "/api/webhook/"+string(rune('0'+arrID)), body)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", "wrong-api-key")
 	w := httptest.NewRecorder()
@@ -491,18 +496,20 @@ func TestWebhook_DBError(t *testing.T) {
 	db, cleanup := setupWebhookTestDB(t)
 	defer cleanup()
 
-	// Setup everything normally first
 	mockPM := &testutil.MockPathMapper{}
 	mockScanner := &webhookMockScanner{}
 	router, apiKey, serverCleanup := setupWebhookTestServer(t, db, mockPM, mockScanner)
 	defer serverCleanup()
 
-	// Drop settings table to cause DB query error
+	// Create a legacy-style instance so the request reaches the master-key
+	// fallback path, then drop the settings table so that query errors —
+	// produces 500 "Authentication error".
+	arrID := createTestArrInstance(t, db, true)
 	_, err := db.Exec("DROP TABLE settings")
 	require.NoError(t, err)
 
 	body := bytes.NewBufferString(`{"eventType": "Download"}`)
-	req, _ := http.NewRequest("POST", "/api/webhook/1", body)
+	req, _ := http.NewRequest("POST", "/api/webhook/"+string(rune('0'+arrID)), body)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", apiKey)
 	w := httptest.NewRecorder()
@@ -519,7 +526,6 @@ func TestWebhook_DecryptError(t *testing.T) {
 	db, cleanup := setupWebhookTestDB(t)
 	defer cleanup()
 
-	// Setup without adding an API key through normal flow
 	mockPM := &testutil.MockPathMapper{}
 	mockScanner := &webhookMockScanner{}
 
@@ -539,12 +545,15 @@ func TestWebhook_DecryptError(t *testing.T) {
 
 	r.POST("/api/webhook/:instance_id", s.handleWebhook)
 
-	// Insert an invalid encrypted key that will fail decryption
+	// Insert a legacy instance (no webhook_secret) so the master-key
+	// fallback path runs, plus an invalid encrypted master key so the
+	// decrypt step inside that fallback fails → 500 "Authentication error".
+	arrID := createTestArrInstance(t, db, true)
 	_, err := db.Exec("INSERT INTO settings (key, value) VALUES ('api_key', 'enc:v1:invalid-encrypted-data')")
 	require.NoError(t, err)
 
 	body := bytes.NewBufferString(`{"eventType": "Download"}`)
-	req, _ := http.NewRequest("POST", "/api/webhook/1", body)
+	req, _ := http.NewRequest("POST", "/api/webhook/"+string(rune('0'+arrID)), body)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", "any-key-value")
 	w := httptest.NewRecorder()
@@ -558,6 +567,54 @@ func TestWebhook_DecryptError(t *testing.T) {
 
 	hub.Shutdown()
 	eb.Shutdown()
+}
+
+// TestWebhook_PerInstanceSecret_Accepted verifies that an instance with a
+// generated webhook_secret accepts that secret as authentication AND that
+// the master API key is no longer accepted for that instance — the whole
+// point of Phase 1.1c separation.
+func TestWebhook_PerInstanceSecret_Accepted(t *testing.T) {
+	db, cleanup := setupWebhookTestDB(t)
+	defer cleanup()
+
+	// Create an instance and generate a webhook secret for it.
+	arrID := createTestArrInstance(t, db, true)
+	perInstanceSecret := "per-instance-secret-value"
+	encryptedSecret, err := crypto.Encrypt(perInstanceSecret)
+	require.NoError(t, err)
+	_, err = db.Exec("UPDATE arr_instances SET webhook_secret = ? WHERE id = ?", encryptedSecret, arrID)
+	require.NoError(t, err)
+
+	mockPM := &testutil.MockPathMapper{
+		ToLocalPathFunc: func(arrPath string) (string, error) { return "/local" + arrPath, nil },
+	}
+	mockScanner := &webhookMockScanner{}
+	router, masterKey, serverCleanup := setupWebhookTestServer(t, db, mockPM, mockScanner)
+	defer serverCleanup()
+
+	t.Run("accepts per-instance secret", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"eventType": "Download", "movieFile": {"path": "/x.mkv"}}`)
+		req, _ := http.NewRequest("POST", "/api/webhook/"+string(rune('0'+arrID)), body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", perInstanceSecret)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code, "per-instance secret should authenticate")
+	})
+
+	t.Run("master API key NO LONGER accepted once secret is set", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"eventType": "Download", "movieFile": {"path": "/x.mkv"}}`)
+		req, _ := http.NewRequest("POST", "/api/webhook/"+string(rune('0'+arrID)), body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", masterKey)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusUnauthorized, w.Code, "once per-instance secret exists, master key is no longer valid for that instance (the whole point of separation)")
+
+		var response map[string]interface{}
+		json.Unmarshal(w.Body.Bytes(), &response)
+		assert.Equal(t, "Invalid webhook secret", response["error"])
+	})
 }
 
 // TestWebhook_ScanFailure_PublishesScanFailedEvent verifies that when the

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/mescon/Healarr/internal/auth"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/network"
@@ -61,7 +63,7 @@ func validateArrURL(rawURL string) error {
 }
 
 func (s *RESTServer) getArrInstances(c *gin.Context) {
-	rows, err := s.db.Query("SELECT id, name, type, url, api_key, enabled FROM arr_instances")
+	rows, err := s.db.Query("SELECT id, name, type, url, api_key, enabled, webhook_secret FROM arr_instances")
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
@@ -73,7 +75,8 @@ func (s *RESTServer) getArrInstances(c *gin.Context) {
 		var id int
 		var name, arrType, url, apiKey string
 		var enabled bool
-		if err := rows.Scan(&id, &name, &arrType, &url, &apiKey, &enabled); err != nil {
+		var webhookSecret sql.NullString
+		if err := rows.Scan(&id, &name, &arrType, &url, &apiKey, &enabled, &webhookSecret); err != nil {
 			logger.Warnf("Failed to scan arr_instances row: %v", err)
 			continue
 		}
@@ -83,14 +86,28 @@ func (s *RESTServer) getArrInstances(c *gin.Context) {
 			logger.Errorf("Failed to decrypt API key for instance %d: %v", id, err)
 			decryptedKey = "[DECRYPTION_ERROR]"
 		}
-		instances = append(instances, map[string]interface{}{
+		entry := map[string]interface{}{
 			"id":      id,
 			"name":    name,
 			"type":    arrType,
 			"url":     url,
 			"api_key": decryptedKey,
 			"enabled": enabled,
-		})
+		}
+		// Webhook secret may be NULL for legacy instances; surface a sentinel
+		// so the UI can show a "no webhook secret configured — generate one"
+		// affordance without confusing it for a normal value.
+		if webhookSecret.Valid && webhookSecret.String != "" {
+			decryptedSecret, derr := crypto.Decrypt(webhookSecret.String)
+			if derr != nil {
+				logger.Errorf("Failed to decrypt webhook secret for instance %d: %v", id, derr)
+				decryptedSecret = "[DECRYPTION_ERROR]"
+			}
+			entry["webhook_secret"] = decryptedSecret
+		} else {
+			entry["webhook_secret"] = nil
+		}
+		instances = append(instances, entry)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -178,13 +195,75 @@ func (s *RESTServer) createArrInstance(c *gin.Context) {
 		return
 	}
 
-	_, err = s.db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
-		instanceName, req.Type, req.URL, encryptedKey, req.Enabled)
+	// Generate a per-instance webhook secret so this instance's webhook
+	// credential is decoupled from the master admin API key (Phase 1.1c).
+	// We return the plaintext secret in the response so the user can paste
+	// it into Sonarr/Radarr; the DB stores it encrypted.
+	webhookSecret, err := auth.GenerateAPIKey()
+	if err != nil {
+		logger.Errorf("Failed to generate webhook secret: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate webhook secret"})
+		return
+	}
+	encryptedSecret, err := crypto.Encrypt(webhookSecret)
+	if err != nil {
+		logger.Errorf("Failed to encrypt webhook secret: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encrypt webhook secret"})
+		return
+	}
+
+	result, err := s.db.Exec(
+		"INSERT INTO arr_instances (name, type, url, api_key, enabled, webhook_secret) VALUES (?, ?, ?, ?, ?, ?)",
+		instanceName, req.Type, req.URL, encryptedKey, req.Enabled, encryptedSecret)
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	c.Status(http.StatusCreated)
+	id, _ := result.LastInsertId()
+
+	c.JSON(http.StatusCreated, gin.H{
+		"id":             id,
+		"webhook_secret": webhookSecret,
+	})
+}
+
+// regenerateWebhookSecret generates a fresh per-instance webhook secret,
+// invalidating the old one. The new secret is returned plaintext so the user
+// can update their *arr webhook configuration; stored encrypted at rest.
+func (s *RESTServer) regenerateWebhookSecret(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing instance ID"})
+		return
+	}
+
+	secret, err := auth.GenerateAPIKey()
+	if err != nil {
+		logger.Errorf("Failed to generate webhook secret: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate webhook secret"})
+		return
+	}
+	encryptedSecret, err := crypto.Encrypt(secret)
+	if err != nil {
+		logger.Errorf("Failed to encrypt webhook secret: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encrypt webhook secret"})
+		return
+	}
+
+	result, err := s.db.Exec(
+		"UPDATE arr_instances SET webhook_secret = ? WHERE id = ?",
+		encryptedSecret, id)
+	if err != nil {
+		respondDatabaseError(c, err)
+		return
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Instance not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"webhook_secret": secret})
 }
 
 func (s *RESTServer) deleteArrInstance(c *gin.Context) {
