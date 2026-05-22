@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,36 +38,96 @@ const (
 // notificationColumns is the SQL column list for notification queries.
 const notificationColumns = `id, name, provider_type, config, events, enabled, throttle_seconds, created_at, updated_at`
 
-// Provider types
+// ProviderType is the typed enum of supported notification provider kinds.
+// Same template as integration.ArrType (Phase 2.1.a): typed string + Scan
+// + Value + ParseProviderType for boundary validation. Closes T2 (Provider
+// drift) on the notifier side.
+type ProviderType string
+
+// Provider types — all known notification providers.
 const (
-	ProviderDiscord    = "discord"
-	ProviderPushover   = "pushover"
-	ProviderTelegram   = "telegram"
-	ProviderSlack      = "slack"
-	ProviderEmail      = "email"
-	ProviderGotify     = "gotify"
-	ProviderNtfy       = "ntfy"
-	ProviderWhatsApp   = "whatsapp"
-	ProviderSignal     = "signal"
-	ProviderBark       = "bark"
-	ProviderGoogleChat = "googlechat"
-	ProviderIFTTT      = "ifttt"
-	ProviderJoin       = "join"
-	ProviderMattermost = "mattermost"
-	ProviderMatrix     = "matrix"
-	ProviderPushbullet = "pushbullet"
-	ProviderRocketchat = "rocketchat"
-	ProviderTeams      = "teams"
-	ProviderZulip      = "zulip"
-	ProviderGeneric    = "generic"
-	ProviderCustom     = "custom"
+	ProviderDiscord    ProviderType = "discord"
+	ProviderPushover   ProviderType = "pushover"
+	ProviderTelegram   ProviderType = "telegram"
+	ProviderSlack      ProviderType = "slack"
+	ProviderEmail      ProviderType = "email"
+	ProviderGotify     ProviderType = "gotify"
+	ProviderNtfy       ProviderType = "ntfy"
+	ProviderWhatsApp   ProviderType = "whatsapp"
+	ProviderSignal     ProviderType = "signal"
+	ProviderBark       ProviderType = "bark"
+	ProviderGoogleChat ProviderType = "googlechat"
+	ProviderIFTTT      ProviderType = "ifttt"
+	ProviderJoin       ProviderType = "join"
+	ProviderMattermost ProviderType = "mattermost"
+	ProviderMatrix     ProviderType = "matrix"
+	ProviderPushbullet ProviderType = "pushbullet"
+	ProviderRocketchat ProviderType = "rocketchat"
+	ProviderTeams      ProviderType = "teams"
+	ProviderZulip      ProviderType = "zulip"
+	ProviderGeneric    ProviderType = "generic"
+	ProviderCustom     ProviderType = "custom"
 )
 
-// NotificationConfig represents a notification provider configuration
+// validProviderTypes is the authoritative set for boundary validation.
+var validProviderTypes = map[ProviderType]bool{
+	ProviderDiscord: true, ProviderPushover: true, ProviderTelegram: true,
+	ProviderSlack: true, ProviderEmail: true, ProviderGotify: true,
+	ProviderNtfy: true, ProviderWhatsApp: true, ProviderSignal: true,
+	ProviderBark: true, ProviderGoogleChat: true, ProviderIFTTT: true,
+	ProviderJoin: true, ProviderMattermost: true, ProviderMatrix: true,
+	ProviderPushbullet: true, ProviderRocketchat: true, ProviderTeams: true,
+	ProviderZulip: true, ProviderGeneric: true, ProviderCustom: true,
+}
+
+// ParseProviderType validates and converts a raw string to ProviderType.
+// Use at API write boundaries (create/update notification handlers).
+func ParseProviderType(s string) (ProviderType, error) {
+	p := ProviderType(s)
+	if !validProviderTypes[p] {
+		return "", fmt.Errorf("unknown provider_type %q", s)
+	}
+	return p, nil
+}
+
+// Scan implements sql.Scanner so NotificationConfig.ProviderType can be
+// passed directly to rows.Scan. Unknown DB values produce errors at scan
+// time rather than silently propagating to downstream switches.
+func (p *ProviderType) Scan(value any) error {
+	if value == nil {
+		return fmt.Errorf("ProviderType: cannot scan NULL")
+	}
+	var s string
+	switch v := value.(type) {
+	case string:
+		s = v
+	case []byte:
+		s = string(v)
+	default:
+		return fmt.Errorf("ProviderType: expected string DB value, got %T", value)
+	}
+	parsed, err := ParseProviderType(s)
+	if err != nil {
+		return fmt.Errorf("ProviderType.Scan: %w", err)
+	}
+	*p = parsed
+	return nil
+}
+
+// Value implements driver.Valuer for symmetric DB writes.
+func (p ProviderType) Value() (driver.Value, error) {
+	return string(p), nil
+}
+
+// NotificationConfig represents a notification provider configuration.
+//
+// ProviderType is the typed ProviderType enum — the compiler rejects
+// misspelled or unknown values at every comparison site, and the DB
+// row scan validates at read time via ProviderType.Scan.
 type NotificationConfig struct {
 	ID              int64           `json:"id"`
 	Name            string          `json:"name"`
-	ProviderType    string          `json:"provider_type"`
+	ProviderType    ProviderType    `json:"provider_type"`
 	Config          json.RawMessage `json:"config"`
 	Events          []string        `json:"events"`
 	Enabled         bool            `json:"enabled"`
@@ -609,7 +670,7 @@ func (n *Notifier) extractAggregateID(data map[string]interface{}) string {
 }
 
 // providerLabels maps provider types to human-readable labels
-var providerLabels = map[string]string{
+var providerLabels = map[ProviderType]string{
 	ProviderDiscord:    "Discord",
 	ProviderPushover:   "Pushover",
 	ProviderTelegram:   "Telegram",
@@ -633,12 +694,15 @@ var providerLabels = map[string]string{
 	ProviderCustom:     "Custom (Shoutrrr URL)",
 }
 
-// getProviderLabel returns a human-readable label for the provider type
-func (n *Notifier) getProviderLabel(providerType string) string {
+// getProviderLabel returns a human-readable label for the provider type.
+// Falls back to the raw provider string if not found in the labels map
+// (defensive — should not happen since ParseProviderType validates input,
+// but Scan-rejected types or future additions could conceivably land here).
+func (n *Notifier) getProviderLabel(providerType ProviderType) string {
 	if label, ok := providerLabels[providerType]; ok {
 		return label
 	}
-	return providerType
+	return string(providerType)
 }
 
 func (n *Notifier) buildShoutrrrURL(cfg *NotificationConfig) (string, error) {

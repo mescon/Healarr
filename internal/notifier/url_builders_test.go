@@ -212,7 +212,7 @@ func TestNtfyBuilder_BuildURL(t *testing.T) {
 
 func TestUrlBuilders_MapCompleteness(t *testing.T) {
 	// Verify all providers have builders
-	expectedProviders := []string{
+	expectedProviders := []ProviderType{
 		ProviderDiscord,
 		ProviderPushover,
 		ProviderSlack,
@@ -237,7 +237,7 @@ func TestUrlBuilders_MapCompleteness(t *testing.T) {
 	}
 
 	for _, provider := range expectedProviders {
-		t.Run(provider, func(t *testing.T) {
+		t.Run(string(provider), func(t *testing.T) {
 			if _, ok := urlBuilders[provider]; !ok {
 				t.Errorf("Missing URL builder for provider: %s", provider)
 			}
@@ -310,7 +310,7 @@ func BenchmarkNtfyBuilder_BuildURL(b *testing.B) {
 }
 
 func BenchmarkUrlBuilderLookup(b *testing.B) {
-	providers := []string{
+	providers := []ProviderType{
 		ProviderDiscord,
 		ProviderSlack,
 		ProviderTelegram,
