@@ -8,10 +8,14 @@ import (
 )
 
 // ArrInstanceInfo represents a configured *arr instance.
+//
+// Type is the typed ArrType enum (defined in arr_client.go) rather than a
+// bare string — the compiler now rejects misspelled or unknown values at
+// every comparison and DB scan site.
 type ArrInstanceInfo struct {
 	ID     int64
 	Name   string
-	Type   string // sonarr, radarr, whisparr
+	Type   ArrType // sonarr, radarr, whisparr-v2, whisparr-v3
 	URL    string
 	APIKey string
 }

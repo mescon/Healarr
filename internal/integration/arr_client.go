@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,13 +22,71 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
-// Arr instance type constants
+// ArrType is the typed enum of supported *arr application kinds. Using a
+// distinct string type (rather than bare string) lets the compiler catch
+// at-boundary mistakes — `ParseArrType(s)` is the only way to convert a
+// raw string to ArrType, so unknown values can't silently reach the DB.
+// Also implements sql.Scanner so DB reads validate at row-scan time.
+type ArrType string
+
+// Arr instance type constants.
 const (
-	ArrTypeSonarr     = "sonarr"
-	ArrTypeRadarr     = "radarr"
-	ArrTypeWhisparrV2 = "whisparr-v2"
-	ArrTypeWhisparrV3 = "whisparr-v3"
+	ArrTypeSonarr     ArrType = "sonarr"
+	ArrTypeRadarr     ArrType = "radarr"
+	ArrTypeWhisparrV2 ArrType = "whisparr-v2"
+	ArrTypeWhisparrV3 ArrType = "whisparr-v3"
 )
+
+// validArrTypes is the authoritative set used for boundary validation
+// (ParseArrType) and DB scan validation (ArrType.Scan).
+var validArrTypes = map[ArrType]bool{
+	ArrTypeSonarr:     true,
+	ArrTypeRadarr:     true,
+	ArrTypeWhisparrV2: true,
+	ArrTypeWhisparrV3: true,
+}
+
+// ParseArrType validates and converts a raw string to ArrType. Use at API
+// write boundaries (handlers that accept user input) and any other place
+// that crosses from untyped strings into the type system.
+func ParseArrType(s string) (ArrType, error) {
+	a := ArrType(s)
+	if !validArrTypes[a] {
+		return "", fmt.Errorf("unknown ArrType %q (must be sonarr, radarr, whisparr-v2, or whisparr-v3)", s)
+	}
+	return a, nil
+}
+
+// Scan implements sql.Scanner so ArrInstanceInfo.Type can be passed
+// directly to rows.Scan. An unknown DB value produces an error at scan
+// time rather than silently producing an invalid ArrType that later
+// switch statements fall through.
+func (a *ArrType) Scan(value any) error {
+	if value == nil {
+		return fmt.Errorf("ArrType: cannot scan NULL")
+	}
+	var s string
+	switch v := value.(type) {
+	case string:
+		s = v
+	case []byte:
+		s = string(v)
+	default:
+		return fmt.Errorf("ArrType: expected string DB value, got %T", value)
+	}
+	parsed, err := ParseArrType(s)
+	if err != nil {
+		return fmt.Errorf("ArrType.Scan: %w", err)
+	}
+	*a = parsed
+	return nil
+}
+
+// Value implements driver.Valuer so ArrType can be passed directly as
+// a query parameter.
+func (a ArrType) Value() (driver.Value, error) {
+	return string(a), nil
+}
 
 // RateLimiter implements a token bucket rate limiter for API calls
 type RateLimiter struct {
@@ -121,7 +180,7 @@ func (c *HTTPArrClient) ResetAllCircuitBreakers() {
 type ArrInstance struct {
 	ID     int64
 	Name   string
-	Type   string
+	Type   ArrType
 	URL    string
 	APIKey string
 }
@@ -250,7 +309,12 @@ func (c *HTTPArrClient) getInstanceForPath(arrPath string) (*ArrInstance, error)
 		var i ArrInstance
 		var rootPath string
 		var encryptedKey string
-		if rows.Scan(&i.ID, &i.Name, &i.Type, &i.URL, &encryptedKey, &rootPath) != nil {
+		if err := rows.Scan(&i.ID, &i.Name, &i.Type, &i.URL, &encryptedKey, &rootPath); err != nil {
+			// ArrType.Scan rejects unknown DB values here. Logging at Errorf
+			// surfaces the bad row (typically a manual SQL insert with a
+			// typo'd type) rather than silently producing "no instance
+			// found" downstream.
+			logger.Errorf("getInstanceForPath: skipping unscannable row: %v", err)
 			continue
 		}
 
@@ -1588,7 +1652,7 @@ func (c *HTTPArrClient) getMovieDetails(instance *ArrInstance, movieID int64) (*
 		Title:        movie.Title,
 		Year:         movie.Year,
 		MediaType:    "movie",
-		ArrType:      instance.Type,
+		ArrType:      string(instance.Type),
 		InstanceName: instance.Name,
 	}, nil
 }
@@ -1622,7 +1686,7 @@ func (c *HTTPArrClient) getSeriesDetails(instance *ArrInstance, seriesID int64) 
 		Title:        series.Title,
 		Year:         series.Year,
 		MediaType:    "series",
-		ArrType:      instance.Type,
+		ArrType:      string(instance.Type),
 		InstanceName: instance.Name,
 	}, nil
 }
@@ -1673,7 +1737,7 @@ func (c *HTTPArrClient) GetEpisodeDetails(episodeID int64, arrPath string) (*Med
 		SeasonNumber:  episode.SeasonNumber,
 		EpisodeNumber: episode.EpisodeNumber,
 		EpisodeTitle:  episode.Title,
-		ArrType:       instance.Type,
+		ArrType:       string(instance.Type),
 		InstanceName:  instance.Name,
 	}, nil
 }
