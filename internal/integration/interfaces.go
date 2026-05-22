@@ -1,5 +1,12 @@
 package integration
 
+import (
+	"fmt"
+	"testing"
+
+	"github.com/mescon/Healarr/internal/logger"
+)
+
 // ArrInstanceInfo represents a configured *arr instance.
 type ArrInstanceInfo struct {
 	ID     int64
@@ -191,27 +198,80 @@ type HealthCheckError struct {
 	Message string
 }
 
+// ErrorCategory classifies a HealthCheckError for remediation routing.
+// Every ErrorType constant defined above must be registered in
+// errorCategories below — the package init verifies this. A missing
+// registration is treated as a test-time panic; in production it falls
+// back to CategoryRecoverable so unknown errors retry rather than delete
+// the user's files.
+type ErrorCategory int
+
+const (
+	// CategoryUnknown means the error type isn't registered. Only returned
+	// when an unregistered type is looked up at runtime; ErrorCategory
+	// itself should never be persisted with this value.
+	CategoryUnknown ErrorCategory = iota
+	// CategoryRecoverable: transient infrastructure issue; the file remains
+	// untouched and the scan retries later (NAS offline, mount lost,
+	// permission glitch, network timeout, config error).
+	CategoryRecoverable
+	// CategoryTrueCorruption: actual file damage; the remediation pipeline
+	// deletes and re-downloads.
+	CategoryTrueCorruption
+)
+
+// errorCategories is the authoritative map from ErrorType string → category.
+//
+// Adding a new ErrorType constant MUST add a corresponding entry here, or
+// the package init test will panic at CI time. This is the property that
+// closes T1 from the audit: previously a new error type silently fell
+// through both IsRecoverable and IsTrueCorruption (returning false from
+// each), making it invisible to remediation routing.
+var errorCategories = map[string]ErrorCategory{
+	// Corruption types — file exists but is damaged.
+	ErrorTypeZeroByte:      CategoryTrueCorruption,
+	ErrorTypeCorruptHeader: CategoryTrueCorruption,
+	ErrorTypeCorruptStream: CategoryTrueCorruption,
+	ErrorTypeInvalidFormat: CategoryTrueCorruption,
+
+	// Content analysis types — structurally valid but content is corrupt.
+	ErrorTypeBlackVideo:  CategoryTrueCorruption,
+	ErrorTypeFrozenVideo: CategoryTrueCorruption,
+	ErrorTypeSilentAudio: CategoryTrueCorruption,
+
+	// Accessibility types — transient / infrastructure issues.
+	ErrorTypeAccessDenied:  CategoryRecoverable,
+	ErrorTypePathNotFound:  CategoryRecoverable,
+	ErrorTypeMountLost:     CategoryRecoverable,
+	ErrorTypeIOError:       CategoryRecoverable,
+	ErrorTypeTimeout:       CategoryRecoverable,
+	ErrorTypeInvalidConfig: CategoryRecoverable,
+}
+
+// category returns the registered category for this error type. Missing
+// entries panic in test binaries (so new ErrorType constants force a
+// matching registration) and fall back to CategoryRecoverable in production
+// (so unknown errors retry rather than triggering destructive remediation).
+func (e *HealthCheckError) category() ErrorCategory {
+	if cat, ok := errorCategories[e.Type]; ok {
+		return cat
+	}
+	if testing.Testing() {
+		panic(fmt.Sprintf("HealthCheckError: unregistered error type %q — add it to errorCategories in internal/integration/interfaces.go", e.Type))
+	}
+	logger.Errorf("HealthCheckError: unregistered error type %q; treating as Recoverable (conservative fallback to avoid destructive remediation). Add to errorCategories in internal/integration/interfaces.go.", e.Type)
+	return CategoryRecoverable
+}
+
 // IsRecoverable returns true if this error type represents a potentially
 // transient condition that should NOT trigger file remediation.
 // Examples: NAS offline, mount lost, permission issues, network glitches.
 func (e *HealthCheckError) IsRecoverable() bool {
-	switch e.Type {
-	case ErrorTypeAccessDenied, ErrorTypePathNotFound, ErrorTypeMountLost,
-		ErrorTypeIOError, ErrorTypeTimeout, ErrorTypeInvalidConfig:
-		return true
-	default:
-		return false
-	}
+	return e.category() == CategoryRecoverable
 }
 
 // IsTrueCorruption returns true if this error represents actual file corruption
 // that warrants remediation (re-download).
 func (e *HealthCheckError) IsTrueCorruption() bool {
-	switch e.Type {
-	case ErrorTypeZeroByte, ErrorTypeCorruptHeader, ErrorTypeCorruptStream, ErrorTypeInvalidFormat,
-		ErrorTypeBlackVideo, ErrorTypeFrozenVideo, ErrorTypeSilentAudio:
-		return true
-	default:
-		return false
-	}
+	return e.category() == CategoryTrueCorruption
 }
