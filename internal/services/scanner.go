@@ -121,24 +121,71 @@ const (
 )
 
 // ScanProgress represents the current state and progress of an active scan.
+//
+// Direct field access is permitted ONLY for code that holds mu — writers
+// must Lock/Unlock around mutations, and any reader that crosses the
+// service boundary (handlers, JSON marshaling, events) MUST go through
+// Snapshot() to get a value-copy ScanProgressView rather than reading
+// exported fields directly. That separation closes the data race the
+// audit flagged on Status (T4).
 type ScanProgress struct {
 	mu              sync.Mutex         `json:"-"` // Protects mutable fields during concurrent access
-	ID              string             `json:"id"`
-	Type            string             `json:"type"` // "path" or "file"
-	Path            string             `json:"path"`
-	PathID          int64              `json:"path_id,omitempty"` // Database path ID for resumable scans
-	TotalFiles      int                `json:"total_files"`
-	FilesDone       int                `json:"files_done"`
-	CurrentFile     string             `json:"current_file"`
-	Status          string             `json:"status"` // "enumerating", "scanning", "paused", "interrupted", "cancelled"
-	StartTime       string             `json:"start_time"`
-	ScanDBID        int64              `json:"scan_db_id,omitempty"` // Database scan record ID for navigation
-	cancel          context.CancelFunc `json:"-"`                    // Don't export in JSON
-	pauseChan       chan struct{}      `json:"-"`                    // Channel to signal pause
-	resumeChan      chan struct{}      `json:"-"`                    // Channel to signal resume
-	isPaused        bool               `json:"-"`                    // Track pause state
-	corruptionCount int                `json:"-"`                    // Track corruptions found in this scan for throttling
-	isThrottled     bool               `json:"-"`                    // Whether this scan is being throttled
+	ID              string             `json:"-"`
+	Type            string             `json:"-"` // "path" or "file"
+	Path            string             `json:"-"`
+	PathID          int64              `json:"-"` // Database path ID for resumable scans
+	TotalFiles      int                `json:"-"`
+	FilesDone       int                `json:"-"`
+	CurrentFile     string             `json:"-"`
+	Status          string             `json:"-"` // "enumerating", "scanning", "paused", "interrupted", "cancelled"
+	StartTime       string             `json:"-"`
+	ScanDBID        int64              `json:"-"` // Database scan record ID for navigation
+	cancel          context.CancelFunc `json:"-"` // Don't export in JSON
+	pauseChan       chan struct{}      `json:"-"` // Channel to signal pause
+	resumeChan      chan struct{}      `json:"-"` // Channel to signal resume
+	isPaused        bool               `json:"-"` // Track pause state
+	corruptionCount int                `json:"-"` // Track corruptions found in this scan for throttling
+	isThrottled     bool               `json:"-"` // Whether this scan is being throttled
+}
+
+// ScanProgressView is a race-free value-type snapshot of a ScanProgress.
+// It carries no mutex and contains only the fields appropriate for JSON
+// serialization — handlers and event publishers consume this type so
+// readers never touch the live (and concurrently mutated) struct.
+type ScanProgressView struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"` // "path" or "file"
+	Path        string `json:"path"`
+	PathID      int64  `json:"path_id,omitempty"`
+	TotalFiles  int    `json:"total_files"`
+	FilesDone   int    `json:"files_done"`
+	CurrentFile string `json:"current_file"`
+	Status      string `json:"status"`
+	StartTime   string `json:"start_time"`
+	ScanDBID    int64  `json:"scan_db_id,omitempty"`
+}
+
+// Snapshot returns a ScanProgressView atomically: the lock is held for the
+// duration of the field reads so the view captures a consistent state, but
+// the returned value carries no mutex so callers can serialize it freely.
+//
+// This is the only sanctioned way to read ScanProgress fields from code
+// that doesn't already hold the mutex.
+func (p *ScanProgress) Snapshot() ScanProgressView {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return ScanProgressView{
+		ID:          p.ID,
+		Type:        p.Type,
+		Path:        p.Path,
+		PathID:      p.PathID,
+		TotalFiles:  p.TotalFiles,
+		FilesDone:   p.FilesDone,
+		CurrentFile: p.CurrentFile,
+		Status:      p.Status,
+		StartTime:   p.StartTime,
+		ScanDBID:    p.ScanDBID,
+	}
 }
 
 // scanPathConfig holds cached scan path configuration
@@ -178,7 +225,7 @@ type Scanner interface {
 	ScanFile(localPath string) error
 	ScanPath(pathID int64, localPath string) error
 	IsPathBeingScanned(path string) bool
-	GetActiveScans() []ScanProgress
+	GetActiveScans() []ScanProgressView
 	CancelScan(scanID string) error
 	PauseScan(scanID string) error
 	ResumeScan(scanID string) error
@@ -1397,62 +1444,42 @@ func (s *ScannerService) markFileProcessed(progress *ScanProgress, fileIndex int
 }
 
 func (s *ScannerService) emitProgress(p *ScanProgress) {
-	// Build event data under lock to avoid race with markFileProcessed
-	p.mu.Lock()
-	eventData := map[string]interface{}{
-		"id":           p.ID,
-		"type":         p.Type,
-		"path":         p.Path,
-		"total_files":  p.TotalFiles,
-		"files_done":   p.FilesDone,
-		"current_file": p.CurrentFile,
-		"status":       p.Status,
-		"start_time":   p.StartTime,
-		"scan_db_id":   p.ScanDBID, // Database ID for frontend navigation
-	}
-	scanID := p.ID
-	p.mu.Unlock()
-
-	// Publish event outside the lock to avoid holding lock during I/O
+	// Snapshot captures fields atomically under the per-scan mutex so the
+	// event sees a consistent state; the publish happens outside the lock
+	// because Publish does I/O.
+	view := p.Snapshot()
 	if err := s.eventBus.Publish(domain.Event{
 		AggregateType: "scan",
-		AggregateID:   scanID,
+		AggregateID:   view.ID,
 		EventType:     domain.ScanProgress,
-		EventData:     eventData,
+		EventData: map[string]interface{}{
+			"id":           view.ID,
+			"type":         view.Type,
+			"path":         view.Path,
+			"total_files":  view.TotalFiles,
+			"files_done":   view.FilesDone,
+			"current_file": view.CurrentFile,
+			"status":       view.Status,
+			"start_time":   view.StartTime,
+			"scan_db_id":   view.ScanDBID, // Database ID for frontend navigation
+		},
 	}); err != nil {
 		logger.Debugf("Failed to emit scan progress: %v", err)
 	}
 }
 
-// GetActiveScans returns a copy of all currently active scan progress states.
-func (s *ScannerService) GetActiveScans() []ScanProgress {
+// GetActiveScans returns race-free snapshots of all currently active scans.
+// Each view is captured under the per-scan mutex so the snapshot is
+// internally consistent; the returned slice itself is safe to mutate by
+// the caller.
+func (s *ScannerService) GetActiveScans() []ScanProgressView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	scans := make([]ScanProgress, 0, len(s.activeScans))
+	views := make([]ScanProgressView, 0, len(s.activeScans))
 	for _, scan := range s.activeScans {
-		// Lock individual scan to safely copy mutable fields (fixes data race)
-		scan.mu.Lock()
-		// Manually copy fields to avoid copylocks warning (mutex is not copied)
-		scanCopy := ScanProgress{
-			ID:              scan.ID,
-			Type:            scan.Type,
-			Path:            scan.Path,
-			PathID:          scan.PathID,
-			TotalFiles:      scan.TotalFiles,
-			FilesDone:       scan.FilesDone,
-			CurrentFile:     scan.CurrentFile,
-			Status:          scan.Status,
-			StartTime:       scan.StartTime,
-			ScanDBID:        scan.ScanDBID,
-			isPaused:        scan.isPaused,
-			corruptionCount: scan.corruptionCount,
-			isThrottled:     scan.isThrottled,
-			// Note: cancel, pauseChan, resumeChan are not copied (internal use only)
-		}
-		scan.mu.Unlock()
-		scans = append(scans, scanCopy) //nolint:govet // scanCopy has fresh zero-valued mutex, not copied from original
+		views = append(views, scan.Snapshot())
 	}
-	return scans
+	return views
 }
 
 // IsPathBeingScanned checks if a scan is already in progress for the given path

@@ -16,9 +16,9 @@ import (
 // ErrMockAPIFailure is a standard error used in tests to simulate API failures.
 var ErrMockAPIFailure = errors.New("mock API failure")
 
-// ScanProgress mirrors services.ScanProgress for testing without creating an import cycle.
+// ScanProgressView mirrors services.ScanProgressView for testing without creating an import cycle.
 // Only includes the JSON-exported fields needed for test assertions.
-type ScanProgress struct {
+type ScanProgressView struct {
 	ID          string `json:"id"`
 	Type        string `json:"type"`
 	Path        string `json:"path"`
@@ -610,11 +610,11 @@ func (m *MockEventBus) LastEvent() *domain.Event {
 // =============================================================================
 
 // MockScannerService implements the Scanner interface for testing.
-// Uses local ScanProgress type to avoid import cycle with services package.
+// Uses local ScanProgressView type to avoid import cycle with services package.
 type MockScannerService struct {
 	ScanPathFunc            func(pathID int64, localPath string) error
 	ScanFileFunc            func(localPath string) error
-	GetActiveScansFunc      func() []ScanProgress
+	GetActiveScansFunc      func() []ScanProgressView
 	IsPathBeingScanningFunc func(path string) bool
 	IsFileBeingScannedFunc  func(localPath string) bool
 	PauseScanFunc           func(scanID string) error
@@ -668,7 +668,7 @@ func (m *MockScannerService) ScanFile(localPath string) error {
 	return nil
 }
 
-func (m *MockScannerService) GetActiveScans() []ScanProgress {
+func (m *MockScannerService) GetActiveScans() []ScanProgressView {
 	m.recordCall("GetActiveScans")
 	if m.GetActiveScansFunc != nil {
 		return m.GetActiveScansFunc()

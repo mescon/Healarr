@@ -1054,7 +1054,7 @@ func TestTriggerScan_BadRequest(t *testing.T) {
 // scansMockScanner implements services.Scanner with controllable behavior for testing
 // pause/resume/cancel handlers with active scans.
 type scansMockScanner struct {
-	activeScans    []services.ScanProgress
+	activeScans    []services.ScanProgressView
 	pauseCalled    map[string]bool
 	resumeCalled   map[string]bool
 	cancelCalled   map[string]bool
@@ -1087,7 +1087,7 @@ func (m *scansMockScanner) IsPathBeingScanned(_ string) bool {
 	return m.isPathScanning
 }
 
-func (m *scansMockScanner) GetActiveScans() []services.ScanProgress {
+func (m *scansMockScanner) GetActiveScans() []services.ScanProgressView {
 	return m.activeScans
 }
 
@@ -1134,7 +1134,7 @@ func TestPauseAllScans_WithActiveScans(t *testing.T) {
 	defer eb.Shutdown()
 
 	mockScanner := newScansMockScanner()
-	mockScanner.activeScans = []services.ScanProgress{
+	mockScanner.activeScans = []services.ScanProgressView{
 		{ID: "scan-1", Status: "running", Path: "/test/path1"},
 		{ID: "scan-2", Status: "running", Path: "/test/path2"},
 		{ID: "scan-3", Status: "paused", Path: "/test/path3"}, // Should not be paused (already paused)
@@ -1182,7 +1182,7 @@ func TestResumeAllScans_WithActiveScans(t *testing.T) {
 	defer eb.Shutdown()
 
 	mockScanner := newScansMockScanner()
-	mockScanner.activeScans = []services.ScanProgress{
+	mockScanner.activeScans = []services.ScanProgressView{
 		{ID: "scan-1", Status: "paused", Path: "/test/path1"},
 		{ID: "scan-2", Status: "paused", Path: "/test/path2"},
 		{ID: "scan-3", Status: "running", Path: "/test/path3"}, // Should not be resumed (already running)
@@ -1230,7 +1230,7 @@ func TestCancelAllScans_WithActiveScans(t *testing.T) {
 	defer eb.Shutdown()
 
 	mockScanner := newScansMockScanner()
-	mockScanner.activeScans = []services.ScanProgress{
+	mockScanner.activeScans = []services.ScanProgressView{
 		{ID: "scan-1", Status: "running", Path: "/test/path1"},
 		{ID: "scan-2", Status: "paused", Path: "/test/path2"},
 		{ID: "scan-3", Status: "completed", Path: "/test/path3"}, // Should not be cancelled
