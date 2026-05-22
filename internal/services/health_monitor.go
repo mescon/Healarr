@@ -346,7 +346,7 @@ func (h *HealthMonitorService) handleInstanceUnhealthy(instance *integration.Arr
 		EventType:     domain.InstanceUnhealthy,
 		EventData: map[string]interface{}{
 			"instance_name": instance.Name,
-			"instance_type": instance.Type,
+			"instance_type": string(instance.Type),
 			"instance_url":  instance.URL,
 			"error":         err.Error(),
 		},
@@ -375,7 +375,7 @@ func (h *HealthMonitorService) handleInstanceRecovered(instance *integration.Arr
 			EventType:     domain.InstanceHealthy,
 			EventData: map[string]interface{}{
 				"instance_name": instance.Name,
-				"instance_type": instance.Type,
+				"instance_type": string(instance.Type),
 				"instance_url":  instance.URL,
 			},
 		}); pubErr != nil {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/mescon/Healarr/internal/auth"
 	"github.com/mescon/Healarr/internal/crypto"
+	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/network"
 )
@@ -177,6 +178,13 @@ func (s *RESTServer) createArrInstance(c *gin.Context) {
 	// Security: Validate URL to prevent SSRF attacks
 	if err := validateArrURL(req.URL); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": formatInvalidURLError(err)})
+		return
+	}
+
+	// Boundary validation: reject unknown ArrType strings here so the
+	// typed enum is the only thing ever persisted (closes T2 from audit).
+	if _, err := integration.ParseArrType(req.Type); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 

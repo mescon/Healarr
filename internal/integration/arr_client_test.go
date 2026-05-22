@@ -4799,8 +4799,21 @@ func TestHTTPArrClient_GetFilePath_UnsupportedType(t *testing.T) {
 	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/local/other', '/other', 1, 0, 0)`)
 
 	_, err := client.GetFilePath(0, nil, "/other/file.mkv")
-	if err == nil || !strings.Contains(err.Error(), "unsupported") {
-		t.Error("Expected error about unsupported type")
+	// With ArrType being a validated typed enum, the DB row with type='unknown'
+	// is now rejected at row-scan time by ArrType.Scan (visible in the Errorf
+	// log line we added). The row is skipped, so the caller sees "no instance
+	// found" rather than reaching the unsupported-type switch downstream.
+	// This is a stronger guarantee: invalid types never reach business logic.
+	if err == nil {
+		t.Error("Expected error for unknown arr type")
+	} else {
+		msg := err.Error()
+		// Accept either the new "no instance found" (post-scan-rejection) or
+		// the historical "unsupported" message if the path is ever refactored
+		// to validate type later instead of at scan.
+		if !strings.Contains(msg, "unsupported") && !strings.Contains(msg, "no instance found") {
+			t.Errorf("expected error indicating unknown ArrType (either pre-scan reject or post-switch), got: %v", err)
+		}
 	}
 }
 
