@@ -90,7 +90,7 @@ func TestProviderConstants(t *testing.T) {
 	// Verify provider constants exist and have expected values
 	tests := []struct {
 		name     string
-		constant string
+		constant ProviderType
 		expected string
 	}{
 		{"Discord", ProviderDiscord, "discord"},
@@ -118,7 +118,7 @@ func TestProviderConstants(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.constant != tt.expected {
+			if string(tt.constant) != tt.expected {
 				t.Errorf("Provider%s = %q, want %q", tt.name, tt.constant, tt.expected)
 			}
 		})
@@ -1263,7 +1263,7 @@ func TestNotifier_GetProviderLabel(t *testing.T) {
 	n := NewNotifier(tdb.DB, eb)
 
 	tests := []struct {
-		provider string
+		provider ProviderType
 		expected string
 	}{
 		{ProviderDiscord, "Discord"},
@@ -1291,7 +1291,7 @@ func TestNotifier_GetProviderLabel(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.provider, func(t *testing.T) {
+		t.Run(string(tt.provider), func(t *testing.T) {
 			label := n.getProviderLabel(tt.provider)
 			if label != tt.expected {
 				t.Errorf("getProviderLabel(%q) = %q, want %q", tt.provider, label, tt.expected)

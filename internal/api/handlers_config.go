@@ -491,9 +491,17 @@ func (s *RESTServer) importNotifications(notifications []importNotification) int
 			continue
 		}
 
+		// Boundary validation: reject unknown provider_type at the import
+		// edge so the typed enum is the only thing reaching the DB.
+		providerType, perr := notifier.ParseProviderType(notif.ProviderType)
+		if perr != nil {
+			logger.Errorf("Skipping notification %q on import: %v", notif.Name, perr)
+			continue
+		}
+
 		cfg := &notifierConfig{
 			Name:            notif.Name,
-			ProviderType:    notif.ProviderType,
+			ProviderType:    providerType,
 			Config:          configBytes,
 			Events:          notif.Events,
 			Enabled:         notif.Enabled,

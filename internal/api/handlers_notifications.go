@@ -44,6 +44,14 @@ func (s *RESTServer) createNotification(c *gin.Context) {
 		return
 	}
 
+	// Boundary validation: JSON unmarshaling accepts any string into the
+	// typed ProviderType field; this is where we reject unknown values
+	// before they reach the DB (Phase 2.1.b).
+	if _, err := notifier.ParseProviderType(string(req.ProviderType)); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	// Validate and set defaults for ThrottleSeconds (1-3600 seconds)
 	if req.ThrottleSeconds <= 0 || req.ThrottleSeconds > 3600 {
 		req.ThrottleSeconds = 5
@@ -76,6 +84,11 @@ func (s *RESTServer) updateNotification(c *gin.Context) {
 		return
 	}
 	req.ID = id
+
+	if _, err := notifier.ParseProviderType(string(req.ProviderType)); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := s.notifier.UpdateConfig(&req); err != nil {
 		respondDatabaseError(c, err)

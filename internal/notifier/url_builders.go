@@ -27,7 +27,7 @@ func normalizeAPIURL(rawURL string) string {
 }
 
 // urlBuilders maps provider types to their URL builders
-var urlBuilders = map[string]URLBuilder{
+var urlBuilders = map[ProviderType]URLBuilder{
 	ProviderDiscord:    &discordBuilder{},
 	ProviderPushover:   &pushoverBuilder{},
 	ProviderTelegram:   &telegramBuilder{},
