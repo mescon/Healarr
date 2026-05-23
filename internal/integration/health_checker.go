@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -75,12 +76,108 @@ const (
 	DetectionHandBrake DetectionMethod = "handbrake"
 )
 
+// DetectionMode is the typed enum of scan depth modes. Promoted to a typed
+// string in Phase 2.1.d so the DB scan / API boundary can reject unknown
+// values rather than silently storing them (closes T5).
+//
+// ModeQuick/ModeThorough are deliberately UNTYPED string constants so the
+// many existing comparison sites (`mode == ModeThorough`) keep compiling
+// against both bare `string` and `DetectionMode` variables. The typed
+// enum is the boundary primitive; internal uses can stay as bare strings
+// until a future PR threads the type through more sites.
+type DetectionMode string
+
 const (
 	// ModeQuick performs header-only analysis (fast).
 	ModeQuick = "quick"
 	// ModeThorough performs full stream decoding (slow but comprehensive).
 	ModeThorough = "thorough"
 )
+
+var validDetectionMethods = map[DetectionMethod]bool{
+	DetectionZeroByte:  true,
+	DetectionFFprobe:   true,
+	DetectionMediaInfo: true,
+	DetectionHandBrake: true,
+}
+
+var validDetectionModes = map[DetectionMode]bool{
+	ModeQuick:    true,
+	ModeThorough: true,
+}
+
+// ParseDetectionMethod validates and converts a raw string to DetectionMethod.
+// Use at API write boundaries and config-import edges.
+func ParseDetectionMethod(s string) (DetectionMethod, error) {
+	m := DetectionMethod(s)
+	if !validDetectionMethods[m] {
+		return "", fmt.Errorf("unknown detection_method %q (must be zero_byte, ffprobe, mediainfo, or handbrake)", s)
+	}
+	return m, nil
+}
+
+// ParseDetectionMode validates and converts a raw string to DetectionMode.
+func ParseDetectionMode(s string) (DetectionMode, error) {
+	m := DetectionMode(s)
+	if !validDetectionModes[m] {
+		return "", fmt.Errorf("unknown detection_mode %q (must be quick or thorough)", s)
+	}
+	return m, nil
+}
+
+// Scan implements sql.Scanner so DetectionMethod can be passed to rows.Scan.
+func (m *DetectionMethod) Scan(value any) error {
+	if value == nil {
+		return fmt.Errorf("DetectionMethod: cannot scan NULL")
+	}
+	var s string
+	switch v := value.(type) {
+	case string:
+		s = v
+	case []byte:
+		s = string(v)
+	default:
+		return fmt.Errorf("DetectionMethod: expected string DB value, got %T", value)
+	}
+	parsed, err := ParseDetectionMethod(s)
+	if err != nil {
+		return fmt.Errorf("DetectionMethod.Scan: %w", err)
+	}
+	*m = parsed
+	return nil
+}
+
+// Value implements driver.Valuer for DetectionMethod.
+func (m DetectionMethod) Value() (driver.Value, error) {
+	return string(m), nil
+}
+
+// Scan implements sql.Scanner so DetectionMode can be passed to rows.Scan.
+func (m *DetectionMode) Scan(value any) error {
+	if value == nil {
+		return fmt.Errorf("DetectionMode: cannot scan NULL")
+	}
+	var s string
+	switch v := value.(type) {
+	case string:
+		s = v
+	case []byte:
+		s = string(v)
+	default:
+		return fmt.Errorf("DetectionMode: expected string DB value, got %T", value)
+	}
+	parsed, err := ParseDetectionMode(s)
+	if err != nil {
+		return fmt.Errorf("DetectionMode.Scan: %w", err)
+	}
+	*m = parsed
+	return nil
+}
+
+// Value implements driver.Valuer for DetectionMode.
+func (m DetectionMode) Value() (driver.Value, error) {
+	return string(m), nil
+}
 
 // Content analysis constants
 const contentAnalysisThreshold = 0.90 // Flag if >90% of duration is affected
@@ -102,6 +199,11 @@ func parseDurations(re *regexp.Regexp, stderr string) float64 {
 	}
 	return total
 }
+
+// (DetectionConfig.Mode below uses the bare string type for now to avoid
+// rippling through all CheckWithConfig call sites in this PR; a follow-up
+// can swap Mode to DetectionMode. The Parse/Scan/Value helpers above are
+// what matter for the boundary-validation guarantee.)
 
 // DetectionConfig specifies how to check media file health.
 type DetectionConfig struct {

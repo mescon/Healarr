@@ -77,6 +77,17 @@ func prepareScanPathRequest(req *scanPathRequest, c *gin.Context) ([]byte, bool)
 	if req.DetectionMode == "" {
 		req.DetectionMode = "quick"
 	}
+	// Boundary validation: closes T5 from audit. The bare-string fields
+	// from JSON could previously persist arbitrary values; reject unknown
+	// methods/modes here so the DB only ever holds valid enum members.
+	if _, err := integration.ParseDetectionMethod(req.DetectionMethod); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return nil, false
+	}
+	if _, err := integration.ParseDetectionMode(req.DetectionMode); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return nil, false
+	}
 	if req.MaxRetries <= 0 || req.MaxRetries > 100 {
 		req.MaxRetries = config.Get().DefaultMaxRetries
 	}
