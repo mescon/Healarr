@@ -47,11 +47,10 @@ type arrHealthResult struct {
 func (s *RESTServer) checkArrInstancesHealth(ctx context.Context) arrHealthResult {
 	result := arrHealthResult{}
 
-	rows, err := s.db.QueryContext(ctx, "SELECT url, api_key FROM arr_instances WHERE enabled = 1")
+	rows, err := s.arrInstances.ListEnabled(ctx)
 	if err != nil {
 		return result
 	}
-	defer rows.Close()
 
 	// Collect all instances first
 	type arrInstance struct {
@@ -60,21 +59,13 @@ func (s *RESTServer) checkArrInstancesHealth(ctx context.Context) arrHealthResul
 	}
 	var instances []arrInstance
 
-	for rows.Next() {
-		var url, encryptedKey string
-		if rows.Scan(&url, &encryptedKey) != nil {
-			continue
-		}
-		decryptedKey, err := crypto.Decrypt(encryptedKey)
+	for _, row := range rows {
+		decryptedKey, err := crypto.Decrypt(row.EncryptedAPIKey)
 		if err != nil {
 			logger.Errorf("Failed to decrypt API key in health check: %v", err)
 			continue
 		}
-		instances = append(instances, arrInstance{url, decryptedKey})
-	}
-	if err := rows.Err(); err != nil {
-		logger.Errorf("Error iterating arr instances for health check: %v", err)
-		return result
+		instances = append(instances, arrInstance{row.URL, decryptedKey})
 	}
 
 	result.total = len(instances)

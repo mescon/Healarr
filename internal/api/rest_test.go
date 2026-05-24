@@ -18,7 +18,6 @@ import (
 
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/eventbus"
-	"github.com/mescon/Healarr/internal/repository"
 
 	_ "modernc.org/sqlite" // SQLite driver
 )
@@ -523,7 +522,8 @@ func TestRESTServer_VerifyAPIToken(t *testing.T) {
 		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'test-secret-key')`)
 		require.NoError(t, err)
 
-		s := &RESTServer{db: db, sessions: repository.NewSessionRepository(db)}
+		s := &RESTServer{db: db}
+		s.initRepositories()
 
 		err = s.verifyAPIToken("test-secret-key")
 		assert.NoError(t, err)
@@ -551,7 +551,8 @@ func TestRESTServer_VerifyAPIToken(t *testing.T) {
 		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'correct-key')`)
 		require.NoError(t, err)
 
-		s := &RESTServer{db: db, sessions: repository.NewSessionRepository(db)}
+		s := &RESTServer{db: db}
+		s.initRepositories()
 
 		err = s.verifyAPIToken("wrong-key")
 		assert.Equal(t, errInvalidToken, err)
@@ -565,7 +566,8 @@ func TestRESTServer_VerifyAPIToken(t *testing.T) {
 		_, err = db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`)
 		require.NoError(t, err)
 
-		s := &RESTServer{db: db, sessions: repository.NewSessionRepository(db)}
+		s := &RESTServer{db: db}
+		s.initRepositories()
 
 		err = s.verifyAPIToken("any-token")
 		assert.Error(t, err)
@@ -577,7 +579,8 @@ func TestRESTServer_VerifyAPIToken(t *testing.T) {
 		require.NoError(t, err)
 		defer db.Close()
 
-		s := &RESTServer{db: db, sessions: repository.NewSessionRepository(db)}
+		s := &RESTServer{db: db}
+		s.initRepositories()
 
 		err = s.verifyAPIToken("any-token")
 		assert.Error(t, err)
@@ -596,7 +599,8 @@ func TestRESTServer_AuthMiddleware(t *testing.T) {
 		require.NoError(t, err)
 		defer db.Close()
 
-		s := &RESTServer{db: db, router: gin.New(), sessions: repository.NewSessionRepository(db)}
+		s := &RESTServer{db: db, router: gin.New()}
+		s.initRepositories()
 
 		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
 			c.String(http.StatusOK, "success")
@@ -630,7 +634,8 @@ func TestRESTServer_AuthMiddleware(t *testing.T) {
 		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'correct-key')`)
 		require.NoError(t, err)
 
-		s := &RESTServer{db: db, router: gin.New(), sessions: repository.NewSessionRepository(db)}
+		s := &RESTServer{db: db, router: gin.New()}
+		s.initRepositories()
 
 		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
 			c.String(http.StatusOK, "success")
@@ -656,7 +661,8 @@ func TestRESTServer_AuthMiddleware(t *testing.T) {
 		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'valid-api-key')`)
 		require.NoError(t, err)
 
-		s := &RESTServer{db: db, router: gin.New(), sessions: repository.NewSessionRepository(db)}
+		s := &RESTServer{db: db, router: gin.New()}
+		s.initRepositories()
 
 		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
 			c.String(http.StatusOK, "success")
@@ -677,7 +683,8 @@ func TestRESTServer_AuthMiddleware(t *testing.T) {
 		defer db.Close()
 
 		// No settings table - will cause DB error
-		s := &RESTServer{db: db, router: gin.New(), sessions: repository.NewSessionRepository(db)}
+		s := &RESTServer{db: db, router: gin.New()}
+		s.initRepositories()
 
 		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
 			c.String(http.StatusOK, "success")
@@ -703,7 +710,8 @@ func TestRESTServer_AuthMiddleware(t *testing.T) {
 		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'bearer-token')`)
 		require.NoError(t, err)
 
-		s := &RESTServer{db: db, router: gin.New(), sessions: repository.NewSessionRepository(db)}
+		s := &RESTServer{db: db, router: gin.New()}
+		s.initRepositories()
 
 		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
 			c.String(http.StatusOK, "success")
@@ -729,7 +737,8 @@ func TestRESTServer_AuthMiddleware(t *testing.T) {
 		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'query-token')`)
 		require.NoError(t, err)
 
-		s := &RESTServer{db: db, router: gin.New(), sessions: repository.NewSessionRepository(db)}
+		s := &RESTServer{db: db, router: gin.New()}
+		s.initRepositories()
 
 		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
 			c.String(http.StatusOK, "success")
@@ -755,7 +764,8 @@ func TestRESTServer_AuthMiddleware(t *testing.T) {
 		_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('api_key', 'apikey-token')`)
 		require.NoError(t, err)
 
-		s := &RESTServer{db: db, router: gin.New(), sessions: repository.NewSessionRepository(db)}
+		s := &RESTServer{db: db, router: gin.New()}
+		s.initRepositories()
 
 		s.router.GET("/protected", s.authMiddleware(), func(c *gin.Context) {
 			c.String(http.StatusOK, "success")

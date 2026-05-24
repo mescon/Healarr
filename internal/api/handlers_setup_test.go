@@ -56,7 +56,8 @@ func setupSetupTestDB(t *testing.T) (*sql.DB, string, func()) {
 			type TEXT NOT NULL,
 			url TEXT NOT NULL,
 			api_key TEXT NOT NULL,
-			enabled INTEGER DEFAULT 1
+			enabled INTEGER DEFAULT 1,
+			webhook_secret TEXT
 		);
 
 		CREATE TABLE scan_paths (
@@ -96,11 +97,13 @@ func createSetupTestServer(t *testing.T, db *sql.DB) *RESTServer {
 
 	eb := eventbus.NewEventBus(db)
 
-	return &RESTServer{
+	s := &RESTServer{
 		router:   r,
 		db:       db,
 		eventBus: eb,
 	}
+	s.initRepositories()
+	return s
 }
 
 // =============================================================================

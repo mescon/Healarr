@@ -80,6 +80,7 @@ func setupTestDBForHealth(t *testing.T) (*sql.DB, string, func()) {
 			url TEXT NOT NULL,
 			api_key TEXT NOT NULL,
 			enabled INTEGER DEFAULT 1,
+			webhook_secret TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 
@@ -225,6 +226,7 @@ func setupHealthTestServer(t *testing.T, db *sql.DB, dbPath string) (*gin.Engine
 		hub:        hub,
 		startTime:  time.Now().Add(-1 * time.Hour), // Started 1 hour ago
 	}
+	s.initRepositories()
 
 	// Set up a test config with the database path
 	config.SetForTesting(&config.Config{
@@ -518,6 +520,7 @@ func TestHandleHealth_UptimeFormatting(t *testing.T) {
 				hub:        hub,
 				startTime:  tt.startTime,
 			}
+			s.initRepositories()
 
 			config.SetForTesting(&config.Config{
 				DatabasePath: dbPath,

@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/notifier"
+	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/safego"
 )
 
@@ -83,21 +86,15 @@ func (s *RESTServer) restartServer(c *gin.Context) {
 // exportArrInstances exports arr instances from the database. Returns the
 // rows and any query/iteration error so the caller can fail the export
 // instead of returning a partial result the user wouldn't know is broken.
-func (s *RESTServer) exportArrInstances() ([]gin.H, error) {
-	rows, err := s.db.Query("SELECT name, type, url, api_key, enabled FROM arr_instances")
+func (s *RESTServer) exportArrInstances(ctx context.Context) ([]gin.H, error) {
+	rows, err := s.arrInstances.ListAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("query arr_instances: %w", err)
 	}
-	defer rows.Close()
 
 	var instances []gin.H
-	for rows.Next() {
-		var name, arrType, url, encryptedKey string
-		var enabled bool
-		if err := rows.Scan(&name, &arrType, &url, &encryptedKey, &enabled); err != nil {
-			return nil, fmt.Errorf("scan arr_instance: %w", err)
-		}
-		decryptedKey, err := crypto.Decrypt(encryptedKey)
+	for _, row := range rows {
+		decryptedKey, err := crypto.Decrypt(row.EncryptedAPIKey)
 		if err != nil {
 			// Per-row decrypt failure is recorded as a sentinel; we don't
 			// fail the whole export because the rest of the data is still
@@ -106,11 +103,8 @@ func (s *RESTServer) exportArrInstances() ([]gin.H, error) {
 			decryptedKey = "[DECRYPTION_ERROR]"
 		}
 		instances = append(instances, gin.H{
-			"name": name, "type": arrType, "url": url, "api_key": decryptedKey, "enabled": enabled,
+			"name": row.Name, "type": row.Type, "url": row.URL, "api_key": decryptedKey, "enabled": row.Enabled,
 		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate arr_instances: %w", err)
 	}
 	return instances, nil
 }
@@ -226,7 +220,7 @@ func (s *RESTServer) exportConfig(c *gin.Context) {
 		"version":     config.Version,
 	}
 
-	instances, err := s.exportArrInstances()
+	instances, err := s.exportArrInstances(c.Request.Context())
 	if err != nil {
 		logger.Errorf("exportConfig: %v", err)
 		respondWithError(c, http.StatusInternalServerError, "Failed to export configuration", err)
@@ -316,15 +310,18 @@ type importNotification struct {
 
 // importArrInstances imports arr instances and returns the count.
 // Skips duplicates based on URL to prevent creating multiple entries for the same instance.
-func (s *RESTServer) importArrInstances(instances []importArrInstance) int {
+func (s *RESTServer) importArrInstances(ctx context.Context, instances []importArrInstance) int {
 	count := 0
 	for _, inst := range instances {
 		// Check if an instance with the same URL already exists
-		var existingID int
-		err := s.db.QueryRow("SELECT id FROM arr_instances WHERE url = ?", inst.URL).Scan(&existingID)
+		existingID, err := s.arrInstances.FindIDByURL(ctx, inst.URL)
 		if err == nil {
 			// Instance already exists, skip
 			logger.Debugf("Skipping duplicate arr instance with URL %s (existing ID: %d)", inst.URL, existingID)
+			continue
+		}
+		if !errors.Is(err, repository.ErrNotFound) {
+			logger.Errorf("Failed to check for duplicate arr instance %s: %v", inst.Name, err)
 			continue
 		}
 
@@ -333,13 +330,17 @@ func (s *RESTServer) importArrInstances(instances []importArrInstance) int {
 			logger.Errorf("Failed to encrypt API key for import: %v", err)
 			continue
 		}
-		_, err = s.db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
-			inst.Name, inst.Type, inst.URL, encryptedKey, inst.Enabled)
-		if err == nil {
-			count++
-		} else {
+		if _, err := s.arrInstances.Create(ctx, repository.CreateArrInstanceParams{
+			Name:            inst.Name,
+			Type:            inst.Type,
+			URL:             inst.URL,
+			EncryptedAPIKey: encryptedKey,
+			Enabled:         inst.Enabled,
+		}); err != nil {
 			logger.Errorf("Failed to import arr instance %s: %v", inst.Name, err)
+			continue
 		}
+		count++
 	}
 	return count
 }
@@ -525,7 +526,7 @@ func (s *RESTServer) importConfig(c *gin.Context) {
 		return
 	}
 
-	arrCount := s.importArrInstances(req.ArrInstances)
+	arrCount := s.importArrInstances(c.Request.Context(), req.ArrInstances)
 	pathCount, pathIDs := s.importScanPaths(req.ScanPaths)
 	schedCount := s.importSchedules(req.Schedules, pathIDs)
 	notifCount := s.importNotifications(req.Notifications)

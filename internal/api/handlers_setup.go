@@ -72,9 +72,8 @@ func (s *RESTServer) handleSetupStatus(c *gin.Context) {
 	status.HasAPIKey = apiKeyExists > 0
 
 	// Check for configured instances
-	var instanceCount int
-	err = s.db.QueryRow("SELECT COUNT(*) FROM arr_instances").Scan(&instanceCount)
-	if err != nil && err != sql.ErrNoRows {
+	instanceCount, err := s.arrInstances.Count(c.Request.Context())
+	if err != nil {
 		logger.Errorf("Failed to check instances: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
