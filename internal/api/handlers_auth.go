@@ -12,6 +12,11 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 )
 
+// defaultSessionTTL is how long a newly issued session token remains valid.
+// Long enough for normal browser use without daily re-logins; short enough
+// that a leaked token expires automatically if logout was missed.
+const defaultSessionTTL = 24 * time.Hour
+
 func (s *RESTServer) handleAuthSetup(c *gin.Context) {
 	ctx := c.Request.Context()
 
@@ -109,16 +114,22 @@ func (s *RESTServer) handleLogin(c *gin.Context) {
 	// key. Sessions live in their own table with a 24h expiry and can be
 	// invalidated via logout, decoupled from the long-lived integration key
 	// used by Sonarr/Radarr webhooks (Phase 1.3 P1 finding).
-	token, expiresAt, err := s.createSession(ctx, c.Request.UserAgent(), c.ClientIP())
+	token, err := auth.GenerateAPIKey()
 	if err != nil {
-		logger.Errorf("Login: failed to create session: %v", err)
+		logger.Errorf("Login: failed to generate session token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+		return
+	}
+	session, err := s.sessions.Create(ctx, token, defaultSessionTTL, c.Request.UserAgent(), c.ClientIP())
+	if err != nil {
+		logger.Errorf("Login: failed to persist session: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"token":      token,
-		"expires_at": expiresAt.Format(time.RFC3339),
+		"token":      session.Token,
+		"expires_at": session.ExpiresAt.Format(time.RFC3339),
 		"message":    "Login successful",
 	})
 	logger.Infof("User logged in successfully from %s", c.ClientIP())
