@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -24,6 +25,76 @@ import (
 
 // scannerQueryTimeout is the maximum time for database queries in scanner service.
 const scannerQueryTimeout = 10 * time.Second
+
+// ScanStatus is the typed enum of scan lifecycle states. Same pattern as
+// ArrType (#192) and DetectionMode (#194): typed string + Parse + Scan +
+// Value for boundary validation. Constants are UNTYPED string consts so
+// the existing comparison sites (~29 of them) keep compiling against bare
+// string variables without explicit casts; the type matters at API and
+// DB boundaries.
+type ScanStatus string
+
+const (
+	ScanStatusEnumerating = "enumerating"
+	ScanStatusScanning    = "scanning"
+	ScanStatusPaused      = "paused"
+	ScanStatusInterrupted = "interrupted"
+	ScanStatusCancelled   = "cancelled"
+	ScanStatusCompleted   = "completed"
+	ScanStatusAborted     = "aborted"
+	ScanStatusFailed      = "failed"
+	ScanStatusRunning     = "running"
+	ScanStatusPending     = "pending"
+)
+
+var validScanStatuses = map[ScanStatus]bool{
+	ScanStatus(ScanStatusEnumerating): true,
+	ScanStatus(ScanStatusScanning):    true,
+	ScanStatus(ScanStatusPaused):      true,
+	ScanStatus(ScanStatusInterrupted): true,
+	ScanStatus(ScanStatusCancelled):   true,
+	ScanStatus(ScanStatusCompleted):   true,
+	ScanStatus(ScanStatusAborted):     true,
+	ScanStatus(ScanStatusFailed):      true,
+	ScanStatus(ScanStatusRunning):     true,
+	ScanStatus(ScanStatusPending):     true,
+}
+
+// ParseScanStatus validates and converts a raw string to ScanStatus.
+func ParseScanStatus(s string) (ScanStatus, error) {
+	st := ScanStatus(s)
+	if !validScanStatuses[st] {
+		return "", fmt.Errorf("unknown scan status %q", s)
+	}
+	return st, nil
+}
+
+// Scan implements sql.Scanner so ScanStatus can be passed to rows.Scan.
+func (s *ScanStatus) Scan(value any) error {
+	if value == nil {
+		return fmt.Errorf("ScanStatus: cannot scan NULL")
+	}
+	var str string
+	switch v := value.(type) {
+	case string:
+		str = v
+	case []byte:
+		str = string(v)
+	default:
+		return fmt.Errorf("ScanStatus: expected string DB value, got %T", value)
+	}
+	parsed, err := ParseScanStatus(str)
+	if err != nil {
+		return fmt.Errorf("ScanStatus.Scan: %w", err)
+	}
+	*s = parsed
+	return nil
+}
+
+// Value implements driver.Valuer for symmetric DB writes.
+func (s ScanStatus) Value() (driver.Value, error) {
+	return string(s), nil
+}
 
 // defaultShutdownTimeout is how long Shutdown waits for in-flight scan
 // goroutines (mostly ffprobe/ffmpeg calls) to finish before declaring
@@ -455,7 +526,7 @@ func (s *ScannerService) resumeScan(cfg resumeScanConfig) {
 		TotalFiles:  cfg.TotalFiles,
 		FilesDone:   cfg.StartIndex,
 		CurrentFile: "",
-		Status:      "scanning",
+		Status:      ScanStatusScanning,
 		StartTime:   time.Now().Format(time.RFC3339),
 		ScanDBID:    cfg.ScanDBID,
 		pauseChan:   make(chan struct{}),
@@ -477,8 +548,8 @@ func (s *ScannerService) resumeScan(cfg resumeScanConfig) {
 	}
 
 	defer func() {
-		finalStatus := "completed"
-		if progress.Status == "cancelled" || progress.Status == "interrupted" {
+		finalStatus := ScanStatusCompleted
+		if progress.Status == ScanStatusCancelled || progress.Status == ScanStatusInterrupted {
 			finalStatus = progress.Status
 		}
 		deferCtx, deferCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
@@ -551,7 +622,7 @@ func (s *ScannerService) ScanFile(localPath string) error {
 		TotalFiles:  1,
 		FilesDone:   0,
 		CurrentFile: localPath,
-		Status:      "scanning",
+		Status:      ScanStatusScanning,
 		StartTime:   time.Now().Format(time.RFC3339),
 	}
 
@@ -570,7 +641,7 @@ func (s *ScannerService) ScanFile(localPath string) error {
 			EventType:     "ScanCompleted", // Custom event type for now
 			EventData: map[string]interface{}{
 				"scan_id": scanID,
-				"status":  "completed",
+				"status":  ScanStatusCompleted,
 			},
 		}); err != nil {
 			logger.Errorf("Failed to publish ScanCompleted event for file scan %s: %v", scanID, err)
@@ -819,10 +890,10 @@ func (s *ScannerService) handlePathInaccessible(scanID, localPath string, access
 
 // finalizeScan handles the cleanup when a scan completes
 func (s *ScannerService) finalizeScan(scanID string, progress *ScanProgress, scanDBID int64) {
-	if progress.Status != "interrupted" {
-		finalStatus := "completed"
-		if progress.Status == "cancelled" {
-			finalStatus = "cancelled"
+	if progress.Status != ScanStatusInterrupted {
+		finalStatus := ScanStatusCompleted
+		if progress.Status == ScanStatusCancelled {
+			finalStatus = ScanStatusCancelled
 		}
 		if scanDBID > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
@@ -879,7 +950,7 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 		TotalFiles:  0,
 		FilesDone:   0,
 		CurrentFile: "",
-		Status:      "enumerating",
+		Status:      ScanStatusEnumerating,
 		StartTime:   time.Now().Format(time.RFC3339),
 		pauseChan:   make(chan struct{}),
 		resumeChan:  make(chan struct{}),
@@ -913,7 +984,7 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 	}
 
 	progress.TotalFiles = len(files)
-	progress.Status = "scanning"
+	progress.Status = ScanStatusScanning
 
 	// Record scan start
 	scanDBID := s.recordScanStart(localPath, pathID, files, cfg)
@@ -967,12 +1038,12 @@ func (s *ScannerService) checkScanCancellation(ctx context.Context, progress *Sc
 	select {
 	case <-ctx.Done():
 		logger.Infof("Scan cancelled: %s", localPath)
-		progress.Status = "cancelled"
+		progress.Status = ScanStatusCancelled
 		s.emitProgress(progress)
 		return scanReturn
 	case <-s.shutdownCh:
 		logger.Infof("Scan interrupted for graceful shutdown: %s (at file %d/%d)", localPath, fileIndex, totalFiles)
-		progress.Status = "interrupted"
+		progress.Status = ScanStatusInterrupted
 		s.emitProgress(progress)
 		return scanReturn
 	default:
@@ -1007,7 +1078,7 @@ func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProg
 	case <-progress.resumeChan:
 		logger.Infof("Scan resumed: %s", localPath)
 		s.mu.Lock()
-		progress.Status = "scanning"
+		progress.Status = ScanStatusScanning
 		progress.isPaused = false
 		s.mu.Unlock()
 		if scanDBID > 0 {
@@ -1021,12 +1092,12 @@ func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProg
 		return scanContinue
 	case <-ctx.Done():
 		logger.Infof("Scan cancelled while paused: %s", localPath)
-		progress.Status = "cancelled"
+		progress.Status = ScanStatusCancelled
 		s.emitProgress(progress)
 		return scanReturn
 	case <-s.shutdownCh:
 		logger.Infof("Scan interrupted during pause: %s", localPath)
-		progress.Status = "interrupted"
+		progress.Status = ScanStatusInterrupted
 		s.emitProgress(progress)
 		return scanReturn
 	}
@@ -1112,7 +1183,7 @@ func (s *ScannerService) handleRecoverableError(progress *ScanProgress, sfc *sca
 	// Check if mount is lost - abort scan to prevent false positives
 	if healthErr.Type == integration.ErrorTypeMountLost {
 		logger.Errorf("Mount appears to be offline for path: %s - aborting scan to prevent false positives", progress.Path)
-		progress.Status = "aborted"
+		progress.Status = ScanStatusAborted
 
 		if sfc.scanDBID > 0 {
 			if _, err := s.db.Exec(`UPDATE scans SET status = 'aborted', error_message = ? WHERE id = ?`,
@@ -1244,10 +1315,10 @@ func (s *ScannerService) applyBatchThrottling(ctx context.Context, progress *Sca
 
 		select {
 		case <-ctx.Done():
-			progress.Status = "cancelled"
+			progress.Status = ScanStatusCancelled
 			return scanReturn
 		case <-s.shutdownCh:
-			progress.Status = "interrupted"
+			progress.Status = ScanStatusInterrupted
 			return scanReturn
 		case <-time.After(batchThrottleDelay):
 			// Continue after delay
