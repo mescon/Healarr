@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -189,10 +190,15 @@ type CorruptionEventData struct {
 }
 
 // ParseCorruptionEventData extracts typed corruption data from an event.
-func (e *Event) ParseCorruptionEventData() (CorruptionEventData, bool) {
+//
+// Returns an error rather than a bool (was: (data, ok)) so callers that
+// ignore the second return value get a compile warning from errcheck /
+// staticcheck rather than silently accepting a zero-value event with an
+// empty file_path. Closes audit T3.
+func (e *Event) ParseCorruptionEventData() (CorruptionEventData, error) {
 	filePath, ok := e.GetString("file_path")
 	if !ok {
-		return CorruptionEventData{}, false
+		return CorruptionEventData{}, fmt.Errorf("corruption event %s missing required field file_path", e.AggregateID)
 	}
 	return CorruptionEventData{
 		FilePath:       filePath,
@@ -204,7 +210,7 @@ func (e *Event) ParseCorruptionEventData() (CorruptionEventData, bool) {
 		AutoRemediate:  e.GetBoolOr("auto_remediate", false),
 		DryRun:         e.GetBoolOr("dry_run", false),
 		BatchThrottled: e.GetBoolOr("batch_throttled", false),
-	}, true
+	}, nil
 }
 
 // SearchCompletedEventData contains data for SearchCompleted events.
@@ -217,10 +223,11 @@ type SearchCompletedEventData struct {
 }
 
 // ParseSearchCompletedEventData extracts typed search completed data from an event.
-func (e *Event) ParseSearchCompletedEventData() (SearchCompletedEventData, bool) {
+// Returns error (was bool) so silent zero-value events can't slip past callers.
+func (e *Event) ParseSearchCompletedEventData() (SearchCompletedEventData, error) {
 	filePath, ok := e.GetString("file_path")
 	if !ok {
-		return SearchCompletedEventData{}, false
+		return SearchCompletedEventData{}, fmt.Errorf("search-completed event %s missing required field file_path", e.AggregateID)
 	}
 	metadata, _ := e.GetMap("metadata")
 	return SearchCompletedEventData{
@@ -229,7 +236,7 @@ func (e *Event) ParseSearchCompletedEventData() (SearchCompletedEventData, bool)
 		PathID:   e.GetInt64Or("path_id", 0),
 		Metadata: metadata,
 		IsRetry:  e.GetBoolOr("is_retry", false),
-	}, true
+	}, nil
 }
 
 // RetryEventData contains data for RetryScheduled events.
@@ -239,13 +246,14 @@ type RetryEventData struct {
 }
 
 // ParseRetryEventData extracts typed retry data from an event.
-func (e *Event) ParseRetryEventData() (RetryEventData, bool) {
+// Returns error (was bool) so silent zero-value events can't slip past callers.
+func (e *Event) ParseRetryEventData() (RetryEventData, error) {
 	filePath, ok := e.GetString("file_path")
 	if !ok {
-		return RetryEventData{}, false
+		return RetryEventData{}, fmt.Errorf("retry event %s missing required field file_path", e.AggregateID)
 	}
 	return RetryEventData{
 		FilePath: filePath,
 		PathID:   e.GetInt64Or("path_id", 0),
-	}, true
+	}, nil
 }

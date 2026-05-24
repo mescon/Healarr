@@ -355,9 +355,9 @@ func TestEvent_ParseCorruptionEventData(t *testing.T) {
 			},
 		}
 
-		data, ok := e.ParseCorruptionEventData()
-		if !ok {
-			t.Fatal("ParseCorruptionEventData() returned false for valid event")
+		data, err := e.ParseCorruptionEventData()
+		if err != nil {
+			t.Fatalf("ParseCorruptionEventData() returned error for valid event: %v", err)
 		}
 		if data.FilePath != "/media/movies/test.mkv" {
 			t.Errorf("FilePath = %q, want %q", data.FilePath, "/media/movies/test.mkv")
@@ -381,9 +381,9 @@ func TestEvent_ParseCorruptionEventData(t *testing.T) {
 			},
 		}
 
-		_, ok := e.ParseCorruptionEventData()
-		if ok {
-			t.Error("ParseCorruptionEventData() should return false when file_path is missing")
+		_, err := e.ParseCorruptionEventData()
+		if err == nil {
+			t.Error("ParseCorruptionEventData() should return an error when file_path is missing")
 		}
 	})
 }
@@ -402,9 +402,9 @@ func TestEvent_ParseSearchCompletedEventData(t *testing.T) {
 			},
 		}
 
-		data, ok := e.ParseSearchCompletedEventData()
-		if !ok {
-			t.Fatal("ParseSearchCompletedEventData() returned false for valid event")
+		data, err := e.ParseSearchCompletedEventData()
+		if err != nil {
+			t.Fatalf("ParseSearchCompletedEventData() returned error for valid event: %v", err)
 		}
 		if data.FilePath != "/media/movies/test.mkv" {
 			t.Errorf("FilePath = %q, want %q", data.FilePath, "/media/movies/test.mkv")
@@ -428,9 +428,9 @@ func TestEvent_ParseSearchCompletedEventData(t *testing.T) {
 			},
 		}
 
-		_, ok := e.ParseSearchCompletedEventData()
-		if ok {
-			t.Error("ParseSearchCompletedEventData() should return false when file_path is missing")
+		_, err := e.ParseSearchCompletedEventData()
+		if err == nil {
+			t.Error("ParseSearchCompletedEventData() should return an error when file_path is missing")
 		}
 	})
 }
@@ -446,9 +446,9 @@ func TestEvent_ParseRetryEventData(t *testing.T) {
 			},
 		}
 
-		data, ok := e.ParseRetryEventData()
-		if !ok {
-			t.Fatal("ParseRetryEventData() returned false for valid event")
+		data, err := e.ParseRetryEventData()
+		if err != nil {
+			t.Fatalf("ParseRetryEventData() returned error for valid event: %v", err)
 		}
 		if data.FilePath != "/media/movies/test.mkv" {
 			t.Errorf("FilePath = %q, want %q", data.FilePath, "/media/movies/test.mkv")
@@ -666,8 +666,8 @@ func TestEvent_ParseRetryEventData_MissingFilePath(t *testing.T) {
 		},
 	}
 
-	_, ok := e.ParseRetryEventData()
-	if ok {
-		t.Error("ParseRetryEventData() should return false when file_path is missing")
+	_, err := e.ParseRetryEventData()
+	if err == nil {
+		t.Error("ParseRetryEventData() should return an error when file_path is missing")
 	}
 }
