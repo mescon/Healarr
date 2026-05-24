@@ -142,7 +142,15 @@ func TestSchedulerService_LoadSchedules_WithValidSchedule(t *testing.T) {
 			id INTEGER PRIMARY KEY,
 			local_path TEXT NOT NULL,
 			arr_path TEXT NOT NULL,
-			enabled BOOLEAN DEFAULT 1
+			arr_instance_id INTEGER,
+			enabled BOOLEAN DEFAULT 1,
+			auto_remediate BOOLEAN DEFAULT 0,
+			dry_run BOOLEAN DEFAULT 0,
+			detection_method TEXT NOT NULL DEFAULT 'ffprobe',
+			detection_args TEXT,
+			detection_mode TEXT NOT NULL DEFAULT 'quick',
+			max_retries INTEGER DEFAULT 3,
+			verification_timeout_hours INTEGER
 		);
 		CREATE TABLE scan_schedules (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

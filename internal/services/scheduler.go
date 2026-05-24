@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 )
 
 // dbQueryTimeout is the maximum time to wait for a database query during scheduler operations.
@@ -31,20 +33,24 @@ type Scheduler interface {
 
 // SchedulerService manages scheduled scan jobs using cron expressions.
 type SchedulerService struct {
-	db      *sql.DB
-	scanner *ScannerService
-	cron    *cron.Cron
-	jobs    map[int]cron.EntryID
-	mu      sync.Mutex
+	db        *sql.DB
+	schedules *repository.ScheduleRepository
+	scanPaths *repository.ScanPathRepository
+	scanner   *ScannerService
+	cron      *cron.Cron
+	jobs      map[int]cron.EntryID
+	mu        sync.Mutex
 }
 
 // NewSchedulerService creates a new SchedulerService with the given database and scanner.
 func NewSchedulerService(db *sql.DB, scanner *ScannerService) *SchedulerService {
 	return &SchedulerService{
-		db:      db,
-		scanner: scanner,
-		cron:    cron.New(),
-		jobs:    make(map[int]cron.EntryID),
+		db:        db,
+		schedules: repository.NewScheduleRepository(db),
+		scanPaths: repository.NewScanPathRepository(db),
+		scanner:   scanner,
+		cron:      cron.New(),
+		jobs:      make(map[int]cron.EntryID),
 	}
 }
 
@@ -81,49 +87,30 @@ func (s *SchedulerService) LoadSchedules() error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbQueryTimeout)
 	defer cancel()
 
-	rows, err := s.db.QueryContext(ctx, "SELECT id, scan_path_id, cron_expression, enabled FROM scan_schedules WHERE enabled = 1")
+	enabled, err := s.schedules.ListEnabled(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to query schedules: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			logger.Debugf("Scheduler: error closing rows: %v", err)
-		}
-	}()
 
 	logger.Debugf("Scheduler: iterating over schedules...")
 	count := 0
 	skipped := 0
-	for rows.Next() {
-		var id, scanPathID int
-		var cronExpr string
-		var enabled bool
-		if err := rows.Scan(&id, &scanPathID, &cronExpr, &enabled); err != nil {
-			logger.Errorf("Failed to scan schedule row: %v", err)
-			skipped++
-			continue
-		}
-
-		logger.Debugf("Scheduler: processing schedule %d (path_id=%d, cron=%s)", id, scanPathID, cronExpr)
+	for _, sched := range enabled {
+		logger.Debugf("Scheduler: processing schedule %d (path_id=%d, cron=%s)", sched.ID, sched.ScanPathID, sched.CronExpression)
 
 		// Pre-validate cron expression before attempting to add job
-		if _, parseErr := cron.ParseStandard(cronExpr); parseErr != nil {
-			logger.Errorf("Schedule %d has invalid cron expression '%s': %v - skipping", id, cronExpr, parseErr)
+		if _, parseErr := cron.ParseStandard(sched.CronExpression); parseErr != nil {
+			logger.Errorf("Schedule %d has invalid cron expression '%s': %v - skipping", sched.ID, sched.CronExpression, parseErr)
 			skipped++
 			continue
 		}
 
-		if err := s.addJob(id, scanPathID, cronExpr); err != nil {
-			logger.Errorf("Failed to add job for schedule %d: %v", id, err)
+		if err := s.addJob(int(sched.ID), int(sched.ScanPathID), sched.CronExpression); err != nil {
+			logger.Errorf("Failed to add job for schedule %d: %v", sched.ID, err)
 			skipped++
 		} else {
 			count++
 		}
-	}
-
-	// Check for iteration errors
-	if err := rows.Err(); err != nil {
-		logger.Errorf("Error iterating schedule rows: %v", err)
 	}
 
 	if skipped > 0 {
@@ -140,14 +127,14 @@ func (s *SchedulerService) addJob(scheduleID, scanPathID int, cronExpr string) e
 	defer cancel()
 
 	// Verify scan path exists
-	var localPath string
-	err := s.db.QueryRowContext(ctx, "SELECT local_path FROM scan_paths WHERE id = ?", scanPathID).Scan(&localPath)
+	scanPath, err := s.scanPaths.GetByID(ctx, int64(scanPathID))
+	if errors.Is(err, repository.ErrNotFound) {
+		return fmt.Errorf("scan path %d not found (may have been deleted)", scanPathID)
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("scan path %d not found (may have been deleted)", scanPathID)
-		}
 		return fmt.Errorf("failed to query scan path %d: %w", scanPathID, err)
 	}
+	localPath := scanPath.LocalPath
 
 	logger.Debugf("Scheduler: adding cron job for schedule %d (path: %s)", scheduleID, localPath)
 
@@ -174,12 +161,7 @@ func (s *SchedulerService) AddSchedule(scanPathID int, cronExpr string) (int64, 
 		return 0, fmt.Errorf("invalid cron expression: %v", err)
 	}
 
-	res, err := s.db.Exec("INSERT INTO scan_schedules (scan_path_id, cron_expression, enabled) VALUES (?, ?, 1)", scanPathID, cronExpr)
-	if err != nil {
-		return 0, err
-	}
-
-	id, err := res.LastInsertId()
+	id, err := s.schedules.Create(context.Background(), int64(scanPathID), cronExpr, true)
 	if err != nil {
 		return 0, err
 	}
@@ -195,8 +177,7 @@ func (s *SchedulerService) AddSchedule(scanPathID int, cronExpr string) (int64, 
 
 // DeleteSchedule removes a schedule by ID from the database and cron engine.
 func (s *SchedulerService) DeleteSchedule(id int) error {
-	_, err := s.db.Exec("DELETE FROM scan_schedules WHERE id = ?", id)
-	if err != nil {
+	if err := s.schedules.Delete(context.Background(), int64(id)); err != nil {
 		return err
 	}
 
@@ -217,18 +198,9 @@ func (s *SchedulerService) CleanupOrphanedSchedules() (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dbQueryTimeout)
 	defer cancel()
 
-	// Find and delete schedules where the scan_path no longer exists
-	result, err := s.db.ExecContext(ctx, `
-		DELETE FROM scan_schedules
-		WHERE scan_path_id NOT IN (SELECT id FROM scan_paths)
-	`)
+	affected, err := s.schedules.DeleteOrphaned(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to cleanup orphaned schedules: %w", err)
-	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get affected rows: %w", err)
 	}
 
 	if affected > 0 {
@@ -248,17 +220,7 @@ func (s *SchedulerService) UpdateSchedule(id int, cronExpr string, enabled bool)
 	}
 
 	// Update DB
-	query := "UPDATE scan_schedules SET enabled = ?"
-	args := []interface{}{enabled}
-	if cronExpr != "" {
-		query += ", cron_expression = ?"
-		args = append(args, cronExpr)
-	}
-	query += " WHERE id = ?"
-	args = append(args, id)
-
-	_, err := s.db.Exec(query, args...)
-	if err != nil {
+	if err := s.schedules.Update(context.Background(), int64(id), cronExpr, enabled); err != nil {
 		return err
 	}
 
@@ -275,14 +237,12 @@ func (s *SchedulerService) UpdateSchedule(id int, cronExpr string, enabled bool)
 	// If enabled, add new job
 	if enabled {
 		// We need the scan_path_id and current cron expression (if not updated)
-		var scanPathID int
-		var currentCron string
-		err := s.db.QueryRow("SELECT scan_path_id, cron_expression FROM scan_schedules WHERE id = ?", id).Scan(&scanPathID, &currentCron)
+		sched, err := s.schedules.GetByID(context.Background(), int64(id))
 		if err != nil {
 			return fmt.Errorf("failed to fetch updated schedule: %v", err)
 		}
 
-		if err := s.addJob(id, scanPathID, currentCron); err != nil {
+		if err := s.addJob(id, int(sched.ScanPathID), sched.CronExpression); err != nil {
 			logger.Errorf("Failed to reschedule job %d: %v", id, err)
 		}
 	}
