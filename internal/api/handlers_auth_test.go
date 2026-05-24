@@ -19,6 +19,7 @@ import (
 	"github.com/mescon/Healarr/internal/auth"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/eventbus"
+	"github.com/mescon/Healarr/internal/repository"
 )
 
 // =============================================================================
@@ -78,6 +79,7 @@ func createAuthErrorTestServer(t *testing.T, db *sql.DB) *RESTServer {
 		router:   r,
 		db:       db,
 		eventBus: eb,
+		sessions: repository.NewSessionRepository(db),
 	}
 }
 

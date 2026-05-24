@@ -27,6 +27,7 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/metrics"
 	"github.com/mescon/Healarr/internal/notifier"
+	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/services"
 	"github.com/mescon/Healarr/internal/web"
 )
@@ -68,6 +69,7 @@ type RESTServer struct {
 	hub            *WebSocketHub
 	startTime      time.Time
 	toolChecker    *integration.ToolChecker
+	sessions       *repository.SessionRepository
 }
 
 // ServerDeps contains all dependencies required for the REST server
@@ -213,6 +215,7 @@ func NewRESTServer(deps ServerDeps) *RESTServer {
 		hub:            NewWebSocketHub(deps.EventBus, deps.Metrics),
 		startTime:      time.Now(),
 		toolChecker:    toolChecker,
+		sessions:       repository.NewSessionRepository(deps.DB),
 	}
 
 	s.setupRoutes()
@@ -615,10 +618,18 @@ func (s *RESTServer) verifyAPIToken(token string) error {
 	}
 
 	// Session token path (browsers).
-	if sessErr := s.validateSession(ctx, token); sessErr == nil {
+	sessErr := s.sessions.Validate(ctx, token)
+	if sessErr == nil {
+		// Bump last_used_at on a successful validation. We don't fail the
+		// request if this update errors — the session is valid, the bump
+		// is purely diagnostic ("when did this session last act?").
+		if bumpErr := s.sessions.BumpLastUsed(ctx, token); bumpErr != nil {
+			logger.Debugf("session last_used_at update failed: %v", bumpErr)
+		}
 		return nil
-	} else if !errors.Is(sessErr, sql.ErrNoRows) && !errors.Is(sessErr, errSessionExpired) {
-		// Unknown token (no row) and expired sessions both surface as
+	}
+	if !errors.Is(sessErr, repository.ErrNotFound) && !errors.Is(sessErr, repository.ErrSessionExpired) {
+		// Unknown token and expired sessions both surface as
 		// errInvalidToken to the middleware; any OTHER error (e.g. DB
 		// failure) needs to be returned so the middleware logs it
 		// distinctly rather than treating it as a bad token.

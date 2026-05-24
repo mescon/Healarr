@@ -16,6 +16,7 @@ import (
 	"github.com/mescon/Healarr/internal/auth"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/eventbus"
+	"github.com/mescon/Healarr/internal/repository"
 )
 
 // setupTestDB creates a temporary database with schema for testing
@@ -125,6 +126,7 @@ func setupTestServer(t *testing.T, db *sql.DB) (*gin.Engine, func()) {
 		db:       db,
 		eventBus: eb,
 		hub:      hub,
+		sessions: repository.NewSessionRepository(db),
 	}
 
 	// Register routes manually for testing
@@ -434,6 +436,7 @@ func TestAuthMiddleware_NoToken(t *testing.T) {
 		router:   r,
 		db:       db,
 		eventBus: eb,
+		sessions: repository.NewSessionRepository(db),
 	}
 
 	// Setup API key
@@ -469,6 +472,7 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 		router:   r,
 		db:       db,
 		eventBus: eb,
+		sessions: repository.NewSessionRepository(db),
 	}
 
 	// Setup API key
@@ -505,6 +509,7 @@ func TestAuthMiddleware_InvalidToken(t *testing.T) {
 		router:   r,
 		db:       db,
 		eventBus: eb,
+		sessions: repository.NewSessionRepository(db),
 	}
 
 	// Setup API key
@@ -541,6 +546,7 @@ func TestAuthMiddleware_BearerToken(t *testing.T) {
 		router:   r,
 		db:       db,
 		eventBus: eb,
+		sessions: repository.NewSessionRepository(db),
 	}
 
 	// Setup API key
@@ -577,6 +583,7 @@ func TestAuthMiddleware_QueryToken(t *testing.T) {
 		router:   r,
 		db:       db,
 		eventBus: eb,
+		sessions: repository.NewSessionRepository(db),
 	}
 
 	// Setup API key
@@ -687,6 +694,7 @@ func setupAuthTestServer(t *testing.T, db *sql.DB) (*gin.Engine, string, func())
 		db:       db,
 		eventBus: eb,
 		hub:      hub,
+		sessions: repository.NewSessionRepository(db),
 	}
 
 	// Setup API key for authentication
