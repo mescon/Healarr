@@ -222,24 +222,19 @@ type PathHealth struct {
 // GET /api/stats/path-health
 func (s *RESTServer) getPathHealth(c *gin.Context) {
 	// Get all configured scan paths
-	pathRows, err := s.db.Query(`SELECT id, local_path, enabled FROM scan_paths ORDER BY local_path`)
+	scanPaths, err := s.scanPaths.ListOrderedByLocalPath(c.Request.Context())
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	defer pathRows.Close()
 
-	var paths []PathHealth
-	for pathRows.Next() {
-		var p PathHealth
-		if pathRows.Scan(&p.PathID, &p.LocalPath, &p.Enabled) != nil {
-			continue
-		}
-		paths = append(paths, p)
-	}
-	if err := pathRows.Err(); err != nil {
-		respondDatabaseError(c, err)
-		return
+	paths := make([]PathHealth, 0, len(scanPaths))
+	for _, sp := range scanPaths {
+		paths = append(paths, PathHealth{
+			PathID:    int(sp.ID),
+			LocalPath: sp.LocalPath,
+			Enabled:   sp.Enabled,
+		})
 	}
 
 	if len(paths) == 0 {

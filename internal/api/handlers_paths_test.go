@@ -71,6 +71,7 @@ func setupPathsTestServer(t *testing.T, db *sql.DB) (*gin.Engine, string, func()
 		hub:        hub,
 		pathMapper: mockPathMapper,
 	}
+	s.initRepositories()
 
 	// Setup API key for authentication
 	apiKey, err := auth.GenerateAPIKey()
@@ -1828,6 +1829,7 @@ func setupPathsTestServerWithPathMapper(t *testing.T, db *sql.DB, pm *testutil.M
 		hub:        hub,
 		pathMapper: pm,
 	}
+	s.initRepositories()
 
 	// Setup API key for authentication
 	apiKey, err := auth.GenerateAPIKey()

@@ -71,6 +71,7 @@ type RESTServer struct {
 	toolChecker    *integration.ToolChecker
 	sessions       *repository.SessionRepository
 	arrInstances   *repository.ArrInstanceRepository
+	scanPaths      *repository.ScanPathRepository
 }
 
 // initRepositories populates the domain repository fields from s.db. Called
@@ -80,6 +81,7 @@ type RESTServer struct {
 func (s *RESTServer) initRepositories() {
 	s.sessions = repository.NewSessionRepository(s.db)
 	s.arrInstances = repository.NewArrInstanceRepository(s.db)
+	s.scanPaths = repository.NewScanPathRepository(s.db)
 }
 
 // ServerDeps contains all dependencies required for the REST server

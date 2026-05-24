@@ -81,9 +81,8 @@ func (s *RESTServer) handleSetupStatus(c *gin.Context) {
 	status.HasInstances = instanceCount > 0
 
 	// Check for configured scan paths
-	var pathCount int
-	err = s.db.QueryRow("SELECT COUNT(*) FROM scan_paths").Scan(&pathCount)
-	if err != nil && err != sql.ErrNoRows {
+	pathCount, err := s.scanPaths.Count(c.Request.Context())
+	if err != nil {
 		logger.Errorf("Failed to check scan paths: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return

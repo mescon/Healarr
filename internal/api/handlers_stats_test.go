@@ -71,8 +71,16 @@ func setupStatsTestDB(t *testing.T) (*sql.DB, func()) {
 		CREATE TABLE scan_paths (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			local_path TEXT NOT NULL UNIQUE,
-			arr_path TEXT,
-			enabled BOOLEAN DEFAULT 1
+			arr_path TEXT NOT NULL DEFAULT '',
+			arr_instance_id INTEGER,
+			enabled BOOLEAN DEFAULT 1,
+			auto_remediate BOOLEAN DEFAULT 0,
+			dry_run BOOLEAN DEFAULT 0,
+			detection_method TEXT NOT NULL DEFAULT 'ffprobe',
+			detection_args TEXT,
+			detection_mode TEXT NOT NULL DEFAULT 'quick',
+			max_retries INTEGER DEFAULT 3,
+			verification_timeout_hours INTEGER
 		);
 
 		CREATE VIEW corruption_status AS
@@ -171,7 +179,7 @@ func createStatsTestServer(t *testing.T, db *sql.DB, eb *eventbus.EventBus) *RES
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	return &RESTServer{
+	s := &RESTServer{
 		router:     r,
 		db:         db,
 		eventBus:   eb,
@@ -181,6 +189,8 @@ func createStatsTestServer(t *testing.T, db *sql.DB, eb *eventbus.EventBus) *RES
 		hub:        NewWebSocketHub(eb),
 		startTime:  time.Now(),
 	}
+	s.initRepositories()
+	return s
 }
 
 func TestGetDashboardStats_EmptyDB(t *testing.T) {

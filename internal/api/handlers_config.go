@@ -110,50 +110,34 @@ func (s *RESTServer) exportArrInstances(ctx context.Context) ([]gin.H, error) {
 }
 
 // exportScanPaths exports scan paths from the database.
-func (s *RESTServer) exportScanPaths() ([]gin.H, error) {
-	rows, err := s.db.Query(`SELECT local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run,
-		detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours
-		FROM scan_paths`)
+func (s *RESTServer) exportScanPaths(ctx context.Context) ([]gin.H, error) {
+	rows, err := s.scanPaths.ListAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("query scan_paths: %w", err)
 	}
-	defer rows.Close()
 
 	var paths []gin.H
-	for rows.Next() {
-		var localPath, arrPath, detectionMethod, detectionMode string
-		var arrInstanceID sql.NullInt64
-		var enabled, autoRemediate, dryRun bool
-		var detectionArgs sql.NullString
-		var maxRetries int
-		var verificationTimeout sql.NullInt64
-		if err := rows.Scan(&localPath, &arrPath, &arrInstanceID, &enabled, &autoRemediate, &dryRun,
-			&detectionMethod, &detectionArgs, &detectionMode, &maxRetries, &verificationTimeout); err != nil {
-			return nil, fmt.Errorf("scan scan_paths row: %w", err)
-		}
+	for _, sp := range rows {
 		path := gin.H{
-			"local_path": localPath, "arr_path": arrPath, "enabled": enabled,
-			"auto_remediate": autoRemediate, "dry_run": dryRun, "detection_method": detectionMethod,
-			"detection_mode": detectionMode, "max_retries": maxRetries,
+			"local_path": sp.LocalPath, "arr_path": sp.ArrPath, "enabled": sp.Enabled,
+			"auto_remediate": sp.AutoRemediate, "dry_run": sp.DryRun, "detection_method": sp.DetectionMethod,
+			"detection_mode": sp.DetectionMode, "max_retries": sp.MaxRetries,
 		}
-		if arrInstanceID.Valid {
-			path["arr_instance_id"] = arrInstanceID.Int64
+		if sp.ArrInstanceID.Valid {
+			path["arr_instance_id"] = sp.ArrInstanceID.Int64
 		}
-		if detectionArgs.Valid && detectionArgs.String != "" {
+		if sp.DetectionArgs.Valid && sp.DetectionArgs.String != "" {
 			var args []string
-			if err := json.Unmarshal([]byte(detectionArgs.String), &args); err == nil {
+			if err := json.Unmarshal([]byte(sp.DetectionArgs.String), &args); err == nil {
 				path["detection_args"] = args
 			} else {
-				path["detection_args"] = detectionArgs.String
+				path["detection_args"] = sp.DetectionArgs.String
 			}
 		}
-		if verificationTimeout.Valid {
-			path["verification_timeout_hours"] = verificationTimeout.Int64
+		if sp.VerificationTimeoutHours.Valid {
+			path["verification_timeout_hours"] = sp.VerificationTimeoutHours.Int64
 		}
 		paths = append(paths, path)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate scan_paths: %w", err)
 	}
 	return paths, nil
 }
@@ -230,7 +214,7 @@ func (s *RESTServer) exportConfig(c *gin.Context) {
 		export["arr_instances"] = instances
 	}
 
-	paths, err := s.exportScanPaths()
+	paths, err := s.exportScanPaths(c.Request.Context())
 	if err != nil {
 		logger.Errorf("exportConfig: %v", err)
 		respondWithError(c, http.StatusInternalServerError, "Failed to export configuration", err)
@@ -393,55 +377,68 @@ func normalizeDetectionArgs(raw json.RawMessage) string {
 
 // importScanPaths imports scan paths and returns count and path ID mapping.
 // Skips duplicates based on local_path to prevent creating multiple entries for the same path.
-func (s *RESTServer) importScanPaths(paths []importScanPath) (int, map[string]int64) {
+func (s *RESTServer) importScanPaths(ctx context.Context, paths []importScanPath) (int, map[string]int64) {
 	count := 0
 	pathIDs := make(map[string]int64)
 	for i := range paths {
 		path := &paths[i]
 
 		// Check if a scan path with the same local_path already exists
-		var existingID int64
-		err := s.db.QueryRow("SELECT id FROM scan_paths WHERE local_path = ?", path.LocalPath).Scan(&existingID)
+		existingID, err := s.scanPaths.FindIDByLocalPath(ctx, path.LocalPath)
 		if err == nil {
 			// Path already exists, add to mapping but don't count as imported
 			logger.Debugf("Skipping duplicate scan path %s (existing ID: %d)", path.LocalPath, existingID)
 			pathIDs[path.LocalPath] = existingID
 			continue
 		}
+		if !errors.Is(err, repository.ErrNotFound) {
+			logger.Errorf("Failed to check for duplicate scan path %s: %v", path.LocalPath, err)
+			continue
+		}
 
 		normalizeScanPathDefaults(path)
 
-		result, err := s.db.Exec(`INSERT INTO scan_paths
-			(local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			path.LocalPath, path.ArrPath, path.ArrInstanceID, path.Enabled, path.AutoRemediate, path.DryRun,
-			path.DetectionMethod, normalizeDetectionArgs(path.DetectionArgs), path.DetectionMode, path.MaxRetries, path.VerificationTimeoutHours)
-		if err == nil {
-			count++
-			if newID, idErr := result.LastInsertId(); idErr == nil {
-				pathIDs[path.LocalPath] = newID
-			} else {
-				logger.Warnf("Failed to get ID for imported scan path %s: %v (schedule import will use DB lookup)", path.LocalPath, idErr)
-			}
-		} else {
-			logger.Errorf("Failed to import scan path %s: %v", path.LocalPath, err)
+		fields := repository.ScanPathFields{
+			LocalPath:         path.LocalPath,
+			ArrPath:           path.ArrPath,
+			Enabled:           path.Enabled,
+			AutoRemediate:     path.AutoRemediate,
+			DryRun:            path.DryRun,
+			DetectionMethod:   path.DetectionMethod,
+			DetectionArgsJSON: normalizeDetectionArgs(path.DetectionArgs),
+			DetectionMode:     path.DetectionMode,
+			MaxRetries:        path.MaxRetries,
 		}
+		if path.ArrInstanceID != nil {
+			fields.ArrInstanceID = sql.NullInt64{Int64: int64(*path.ArrInstanceID), Valid: true}
+		}
+		if path.VerificationTimeoutHours != nil {
+			fields.VerificationTimeoutHours = sql.NullInt64{Int64: int64(*path.VerificationTimeoutHours), Valid: true}
+		}
+		newID, err := s.scanPaths.Create(ctx, fields)
+		if err != nil {
+			logger.Errorf("Failed to import scan path %s: %v", path.LocalPath, err)
+			continue
+		}
+		count++
+		pathIDs[path.LocalPath] = newID
 	}
 	return count, pathIDs
 }
 
 // importSchedules imports schedules using the path ID mapping.
 // Skips duplicates based on scan_path_id + cron_expression to prevent duplicate schedules.
-func (s *RESTServer) importSchedules(schedules []importSchedule, pathIDs map[string]int64) int {
+func (s *RESTServer) importSchedules(ctx context.Context, schedules []importSchedule, pathIDs map[string]int64) int {
 	count := 0
 	for _, sched := range schedules {
 		scanPathID, exists := pathIDs[sched.LocalPath]
 		if !exists {
-			row := s.db.QueryRow("SELECT id FROM scan_paths WHERE local_path = ?", sched.LocalPath)
-			if err := row.Scan(&scanPathID); err != nil {
+			found, err := s.scanPaths.FindIDByLocalPath(ctx, sched.LocalPath)
+			if err != nil {
 				logger.Errorf("Failed to find scan path for schedule (local_path=%s): %v", sched.LocalPath, err)
 				continue
 			}
+			scanPathID = found
 		}
 
 		// Check if a schedule with the same path and cron expression already exists
@@ -527,8 +524,8 @@ func (s *RESTServer) importConfig(c *gin.Context) {
 	}
 
 	arrCount := s.importArrInstances(c.Request.Context(), req.ArrInstances)
-	pathCount, pathIDs := s.importScanPaths(req.ScanPaths)
-	schedCount := s.importSchedules(req.Schedules, pathIDs)
+	pathCount, pathIDs := s.importScanPaths(c.Request.Context(), req.ScanPaths)
+	schedCount := s.importSchedules(c.Request.Context(), req.Schedules, pathIDs)
 	notifCount := s.importNotifications(req.Notifications)
 
 	// Reload path mappings and scheduler
