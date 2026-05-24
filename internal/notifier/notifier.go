@@ -20,6 +20,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/network"
+	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/safego"
 )
 
@@ -34,9 +35,6 @@ const (
 	msgFmtReason = "\n📋 Reason: %s"
 	msgFmtDetail = "\n📋 %s"
 )
-
-// notificationColumns is the SQL column list for notification queries.
-const notificationColumns = `id, name, provider_type, config, events, enabled, throttle_seconds, created_at, updated_at`
 
 // ProviderType is the typed enum of supported notification provider kinds.
 // Same template as integration.ArrType (Phase 2.1.a): typed string + Scan
@@ -370,6 +368,7 @@ func GetEventGroups() []EventGroup {
 // Notifier handles sending notifications based on events
 type Notifier struct {
 	db         *sql.DB
+	repo       *repository.NotificationRepository
 	eb         *eventbus.EventBus
 	configs    map[int64]*NotificationConfig
 	lastSent   map[int64]time.Time // Per-provider throttling
@@ -383,6 +382,7 @@ type Notifier struct {
 func NewNotifier(db *sql.DB, eb *eventbus.EventBus) *Notifier {
 	n := &Notifier{
 		db:         db,
+		repo:       repository.NewNotificationRepository(db),
 		eb:         eb,
 		configs:    make(map[int64]*NotificationConfig),
 		lastSent:   make(map[int64]time.Time),
@@ -467,29 +467,34 @@ func (n *Notifier) backgroundWorker() {
 	}
 }
 
-// scanNotificationRow scans a notification config from a database row and decrypts/parses JSON fields.
-func (n *Notifier) scanNotificationRow(scanner interface {
-	Scan(dest ...interface{}) error
-}) (*NotificationConfig, error) {
-	var cfg NotificationConfig
-	var configJSON, eventsJSON string
-	if err := scanner.Scan(&cfg.ID, &cfg.Name, &cfg.ProviderType, &configJSON, &eventsJSON, &cfg.Enabled, &cfg.ThrottleSeconds, &cfg.CreatedAt, &cfg.UpdatedAt); err != nil {
-		return nil, err
+// notificationFromRepoRow converts a repository.Notification (raw
+// persisted shape) into a NotificationConfig (decrypted, JSON-parsed).
+// Encryption + JSON-decoding stay in the notifier package — the repo
+// just stores/reads bytes.
+//
+// Previously this silently set cfg.Events to []string{} on unmarshal
+// failure, which loaded a config with zero subscribed events — it would
+// silently never fire. Returning an error lets the caller skip and log
+// loudly so the operator can fix the corrupt row rather than wonder why
+// notifications stopped working.
+func notificationFromRepoRow(row repository.Notification) (*NotificationConfig, error) {
+	cfg := NotificationConfig{
+		ID:              row.ID,
+		Name:            row.Name,
+		ProviderType:    ProviderType(row.ProviderType),
+		Enabled:         row.Enabled,
+		ThrottleSeconds: row.ThrottleSeconds,
+		CreatedAt:       row.CreatedAt,
+		UpdatedAt:       row.UpdatedAt,
 	}
-
-	decrypted, err := crypto.Decrypt(configJSON)
+	decrypted, err := crypto.Decrypt(row.EncryptedConfig)
 	if err != nil {
 		return nil, fmt.Errorf(logFmtDecryptFailed, cfg.ID, err)
 	}
 	if err := json.Unmarshal([]byte(decrypted), &cfg.Config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config for notification %d: %w", cfg.ID, err)
 	}
-	// Previously this silently set cfg.Events to []string{} on unmarshal
-	// failure, which loaded the notification config with zero subscribed
-	// events — it would silently never fire. Returning an error lets the
-	// caller skip the config and log loudly so the operator can fix the
-	// corrupt row rather than wonder why notifications stopped working.
-	if err := json.Unmarshal([]byte(eventsJSON), &cfg.Events); err != nil {
+	if err := json.Unmarshal([]byte(row.EventsJSON), &cfg.Events); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal events for notification %d: %w", cfg.ID, err)
 	}
 	return &cfg, nil
@@ -499,25 +504,19 @@ func (n *Notifier) loadConfigs() error {
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	rows, err := n.db.QueryContext(ctx,
-		`SELECT `+notificationColumns+` FROM notifications WHERE enabled = 1`)
+	rows, err := n.repo.ListEnabled(ctx)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 
 	configs := make(map[int64]*NotificationConfig)
-	for rows.Next() {
-		cfg, err := n.scanNotificationRow(rows)
+	for _, row := range rows {
+		cfg, err := notificationFromRepoRow(row)
 		if err != nil {
-			logger.Errorf("Failed to scan notification row: %v", err)
+			logger.Errorf("Failed to parse notification row: %v", err)
 			continue
 		}
 		configs[cfg.ID] = cfg
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("error iterating notification configs: %w", err)
 	}
 
 	n.mu.Lock()
@@ -1191,11 +1190,7 @@ func (n *Notifier) logNotification(notificationID int64, eventType, message, sta
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	_, err := n.db.ExecContext(ctx, `
-		INSERT INTO notification_log (notification_id, event_type, message, status, error)
-		VALUES (?, ?, ?, ?, ?)
-	`, notificationID, eventType, message, status, errorMsg)
-	if err != nil {
+	if err := n.repo.AppendLog(ctx, notificationID, eventType, message, status, errorMsg); err != nil {
 		logger.Errorf("Failed to log notification: %v", err)
 	}
 }
@@ -1204,30 +1199,16 @@ func (n *Notifier) cleanupOldLogs() {
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	// Delete logs older than 7 days
-	result, err := n.db.ExecContext(ctx, `
-		DELETE FROM notification_log
-		WHERE sent_at < datetime('now', '-7 days')
-	`)
+	rows, err := n.repo.SweepLogsOlderThan(ctx, 7)
 	if err != nil {
 		logger.Errorf("Failed to cleanup notification logs: %v", err)
 		return
 	}
-	rows, _ := result.RowsAffected()
 	if rows > 0 {
 		logger.Infof("Cleaned up %d old notification log entries", rows)
 	}
 
-	// Also limit to 100 entries per notification
-	_, err = n.db.ExecContext(ctx, `
-		DELETE FROM notification_log
-		WHERE id NOT IN (
-			SELECT id FROM notification_log
-			ORDER BY sent_at DESC
-			LIMIT 100
-		)
-	`)
-	if err != nil {
+	if err := n.repo.LimitLogTotal(ctx, 100); err != nil {
 		logger.Errorf("Failed to limit notification logs: %v", err)
 	}
 }
@@ -1253,27 +1234,20 @@ func (n *Notifier) GetAllConfigs() ([]*NotificationConfig, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	rows, err := n.db.QueryContext(ctx,
-		`SELECT `+notificationColumns+` FROM notifications ORDER BY name`)
+	rows, err := n.repo.ListAll(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	configs := make([]*NotificationConfig, 0)
-	for rows.Next() {
-		cfg, err := n.scanNotificationRow(rows)
+	configs := make([]*NotificationConfig, 0, len(rows))
+	for _, row := range rows {
+		cfg, err := notificationFromRepoRow(row)
 		if err != nil {
-			logger.Errorf("Failed to scan notification row: %v", err)
+			logger.Errorf("Failed to parse notification row: %v", err)
 			continue
 		}
 		configs = append(configs, cfg)
 	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating notification configs: %w", err)
-	}
-
 	return configs, nil
 }
 
@@ -1282,9 +1256,11 @@ func (n *Notifier) GetConfig(id int64) (*NotificationConfig, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	row := n.db.QueryRowContext(ctx,
-		`SELECT `+notificationColumns+` FROM notifications WHERE id = ?`, id)
-	return n.scanNotificationRow(row)
+	row, err := n.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return notificationFromRepoRow(row)
 }
 
 // CreateConfig creates a new notification configuration
@@ -1303,15 +1279,14 @@ func (n *Notifier) CreateConfig(cfg *NotificationConfig) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	result, err := n.db.ExecContext(ctx, `
-		INSERT INTO notifications (name, provider_type, config, events, enabled, throttle_seconds)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, cfg.Name, cfg.ProviderType, encryptedConfig, string(eventsJSON), cfg.Enabled, cfg.ThrottleSeconds)
-	if err != nil {
-		return 0, err
-	}
-
-	id, err := result.LastInsertId()
+	id, err := n.repo.Create(ctx, repository.NotificationFields{
+		Name:            cfg.Name,
+		ProviderType:    string(cfg.ProviderType),
+		EncryptedConfig: encryptedConfig,
+		EventsJSON:      string(eventsJSON),
+		Enabled:         cfg.Enabled,
+		ThrottleSeconds: cfg.ThrottleSeconds,
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -1336,12 +1311,14 @@ func (n *Notifier) UpdateConfig(cfg *NotificationConfig) error {
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	_, err = n.db.ExecContext(ctx, `
-		UPDATE notifications
-		SET name = ?, provider_type = ?, config = ?, events = ?, enabled = ?, throttle_seconds = ?, updated_at = datetime('now')
-		WHERE id = ?
-	`, cfg.Name, cfg.ProviderType, encryptedConfig, string(eventsJSON), cfg.Enabled, cfg.ThrottleSeconds, cfg.ID)
-	if err != nil {
+	if err := n.repo.Update(ctx, cfg.ID, repository.NotificationFields{
+		Name:            cfg.Name,
+		ProviderType:    string(cfg.ProviderType),
+		EncryptedConfig: encryptedConfig,
+		EventsJSON:      string(eventsJSON),
+		Enabled:         cfg.Enabled,
+		ThrottleSeconds: cfg.ThrottleSeconds,
+	}); err != nil {
 		return err
 	}
 
@@ -1354,14 +1331,8 @@ func (n *Notifier) DeleteConfig(id int64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	_, err := n.db.ExecContext(ctx, `DELETE FROM notifications WHERE id = ?`, id)
-	if err != nil {
+	if err := n.repo.Delete(ctx, id); err != nil {
 		return err
-	}
-
-	// Also delete related logs
-	if _, logErr := n.db.ExecContext(ctx, `DELETE FROM notification_log WHERE notification_id = ?`, id); logErr != nil {
-		logger.Warnf("Failed to cleanup notification logs for id=%d: %v", id, logErr)
 	}
 
 	// Clean up lastSent map to prevent memory leak
@@ -1382,39 +1353,22 @@ func (n *Notifier) GetNotificationLog(notificationID int64, limit int) ([]Notifi
 	ctx, cancel := context.WithTimeout(context.Background(), notifierQueryTimeout)
 	defer cancel()
 
-	query := `
-		SELECT id, notification_id, event_type, message, status, error, sent_at
-		FROM notification_log
-	`
-	args := []interface{}{}
-
-	if notificationID > 0 {
-		query += ` WHERE notification_id = ?`
-		args = append(args, notificationID)
-	}
-
-	query += ` ORDER BY sent_at DESC LIMIT ?`
-	args = append(args, limit)
-
-	rows, err := n.db.QueryContext(ctx, query, args...)
+	rows, err := n.repo.ListLog(ctx, notificationID, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	entries := make([]NotificationLogEntry, 0)
-	for rows.Next() {
-		var entry NotificationLogEntry
-		var errorMsg sql.NullString
-		if err := rows.Scan(&entry.ID, &entry.NotificationID, &entry.EventType, &entry.Message, &entry.Status, &errorMsg, &entry.SentAt); err != nil {
-			return nil, err
-		}
-		entry.Error = errorMsg.String
-		entries = append(entries, entry)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating notification log: %w", err)
+	entries := make([]NotificationLogEntry, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, NotificationLogEntry{
+			ID:             row.ID,
+			NotificationID: row.NotificationID,
+			EventType:      row.EventType,
+			Message:        row.Message,
+			Status:         row.Status,
+			Error:          row.Error.String,
+			SentAt:         row.SentAt,
+		})
 	}
 
 	return entries, nil
