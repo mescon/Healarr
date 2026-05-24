@@ -8,36 +8,21 @@ import (
 )
 
 func (s *RESTServer) getSchedules(c *gin.Context) {
-	rows, err := s.db.Query(`
-		SELECT s.id, s.scan_path_id, p.local_path, s.cron_expression, s.enabled
-		FROM scan_schedules s
-		JOIN scan_paths p ON s.scan_path_id = p.id
-	`)
+	rows, err := s.schedules.ListWithPaths(c.Request.Context())
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	defer rows.Close()
 
-	schedules := make([]gin.H, 0)
-	for rows.Next() {
-		var id, scanPathID int
-		var localPath, cronExpr string
-		var enabled bool
-		if rows.Scan(&id, &scanPathID, &localPath, &cronExpr, &enabled) != nil {
-			continue
-		}
+	schedules := make([]gin.H, 0, len(rows))
+	for _, sched := range rows {
 		schedules = append(schedules, gin.H{
-			"id":              id,
-			"scan_path_id":    scanPathID,
-			"local_path":      localPath,
-			"cron_expression": cronExpr,
-			"enabled":         enabled,
+			"id":              sched.ID,
+			"scan_path_id":    sched.ScanPathID,
+			"local_path":      sched.LocalPath,
+			"cron_expression": sched.CronExpression,
+			"enabled":         sched.Enabled,
 		})
-	}
-	if rows.Err() != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading schedules"})
-		return
 	}
 	c.JSON(http.StatusOK, schedules)
 }

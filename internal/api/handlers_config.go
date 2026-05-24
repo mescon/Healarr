@@ -143,30 +143,17 @@ func (s *RESTServer) exportScanPaths(ctx context.Context) ([]gin.H, error) {
 }
 
 // exportSchedules exports scan schedules from the database.
-func (s *RESTServer) exportSchedules() ([]gin.H, error) {
-	rows, err := s.db.Query(`
-		SELECT ss.cron_expression, ss.enabled, sp.local_path
-		FROM scan_schedules ss
-		JOIN scan_paths sp ON ss.scan_path_id = sp.id
-	`)
+func (s *RESTServer) exportSchedules(ctx context.Context) ([]gin.H, error) {
+	rows, err := s.schedules.ListWithPaths(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("query scan_schedules: %w", err)
 	}
-	defer rows.Close()
 
 	var schedules []gin.H
-	for rows.Next() {
-		var cronExpr, localPath string
-		var enabled bool
-		if err := rows.Scan(&cronExpr, &enabled, &localPath); err != nil {
-			return nil, fmt.Errorf("scan scan_schedule row: %w", err)
-		}
+	for _, sched := range rows {
 		schedules = append(schedules, gin.H{
-			"local_path": localPath, "cron_expression": cronExpr, "enabled": enabled,
+			"local_path": sched.LocalPath, "cron_expression": sched.CronExpression, "enabled": sched.Enabled,
 		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate scan_schedules: %w", err)
 	}
 	return schedules, nil
 }
@@ -224,7 +211,7 @@ func (s *RESTServer) exportConfig(c *gin.Context) {
 		export["scan_paths"] = paths
 	}
 
-	schedules, err := s.exportSchedules()
+	schedules, err := s.exportSchedules(c.Request.Context())
 	if err != nil {
 		logger.Errorf("exportConfig: %v", err)
 		respondWithError(c, http.StatusInternalServerError, "Failed to export configuration", err)
@@ -442,21 +429,19 @@ func (s *RESTServer) importSchedules(ctx context.Context, schedules []importSche
 		}
 
 		// Check if a schedule with the same path and cron expression already exists
-		var existingID int
-		err := s.db.QueryRow("SELECT id FROM scan_schedules WHERE scan_path_id = ? AND cron_expression = ?",
-			scanPathID, sched.CronExpression).Scan(&existingID)
-		if err == nil {
+		if _, err := s.schedules.FindIDByPathAndCron(ctx, scanPathID, sched.CronExpression); err == nil {
 			logger.Debugf("Skipping duplicate schedule for path ID %d with cron %s", scanPathID, sched.CronExpression)
+			continue
+		} else if !errors.Is(err, repository.ErrNotFound) {
+			logger.Errorf("Failed to check for duplicate schedule for %s: %v", sched.LocalPath, err)
 			continue
 		}
 
-		_, err = s.db.Exec("INSERT INTO scan_schedules (scan_path_id, cron_expression, enabled) VALUES (?, ?, ?)",
-			scanPathID, sched.CronExpression, sched.Enabled)
-		if err == nil {
-			count++
-		} else {
+		if _, err := s.schedules.Create(ctx, scanPathID, sched.CronExpression, sched.Enabled); err != nil {
 			logger.Errorf("Failed to import schedule for %s: %v", sched.LocalPath, err)
+			continue
 		}
+		count++
 	}
 	return count
 }

@@ -60,6 +60,7 @@ func setupSchedulesTestServer(t *testing.T, db *sql.DB, scheduler *testutil.Mock
 		hub:       hub,
 		scheduler: scheduler,
 	}
+	s.initRepositories()
 
 	// Setup API key for authentication
 	apiKey, err := auth.GenerateAPIKey()
