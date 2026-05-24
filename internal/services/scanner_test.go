@@ -1069,6 +1069,7 @@ func TestScannerService_GetScanPathConfig(t *testing.T) {
 		filesInProgress: make(map[string]bool),
 		shutdownCh:      make(chan struct{}),
 	}
+	scanner.initRepositories()
 
 	t.Run("returns error for no matching path", func(t *testing.T) {
 		_, _, err := scanner.getScanPathConfig("/non/existent/path/file.mkv")
@@ -1375,6 +1376,7 @@ func TestScannerService_ScanPathCache(t *testing.T) {
 		filesInProgress: make(map[string]bool),
 		shutdownCh:      make(chan struct{}),
 	}
+	scanner.initRepositories()
 
 	t.Run("cache is populated on first access", func(t *testing.T) {
 		// Insert test scan paths
@@ -1862,6 +1864,7 @@ func TestScannerService_RefreshScanPathCache(t *testing.T) {
 		filesInProgress: make(map[string]bool),
 		shutdownCh:      make(chan struct{}),
 	}
+	scanner.initRepositories()
 
 	t.Run("does not refresh when cache is valid", func(t *testing.T) {
 		// Insert a scan path

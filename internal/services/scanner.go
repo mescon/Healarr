@@ -20,6 +20,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/safego"
 )
 
@@ -306,6 +307,7 @@ type Scanner interface {
 // ScannerService manages file scanning operations for corruption detection.
 type ScannerService struct {
 	db          *sql.DB
+	scanPaths   *repository.ScanPathRepository
 	eventBus    *eventbus.EventBus
 	detector    integration.HealthChecker
 	pathMapper  integration.PathMapper
@@ -326,7 +328,7 @@ type ScannerService struct {
 
 // NewScannerService creates a new ScannerService with the given dependencies.
 func NewScannerService(db *sql.DB, eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper) *ScannerService {
-	return &ScannerService{
+	s := &ScannerService{
 		db:              db,
 		eventBus:        eb,
 		detector:        detector,
@@ -335,6 +337,25 @@ func NewScannerService(db *sql.DB, eb *eventbus.EventBus, detector integration.H
 		filesInProgress: make(map[string]bool),
 		shutdownCh:      make(chan struct{}),
 	}
+	s.initRepositories()
+	return s
+}
+
+// initRepositories populates the domain repository fields from s.db. Safe
+// to call multiple times; safe when s.db is nil. Called from
+// NewScannerService and also lazily from scanPathRepo() so existing tests
+// that construct &ScannerService{} directly don't need a fixture update
+// just to satisfy a new repo field.
+func (s *ScannerService) initRepositories() {
+	if s.scanPaths == nil && s.db != nil {
+		s.scanPaths = repository.NewScanPathRepository(s.db)
+	}
+}
+
+// scanPathRepo returns the lazy-initialized ScanPathRepository.
+func (s *ScannerService) scanPathRepo() *repository.ScanPathRepository {
+	s.initRepositories()
+	return s.scanPaths
 }
 
 // IsFileBeingScanned returns true if the given file is currently being scanned.
@@ -732,26 +753,24 @@ type scanPathSettings struct {
 // loadScanPathSettings loads the scan configuration from the database
 func (s *ScannerService) loadScanPathSettings(pathID int64) scanPathSettings {
 	var autoRemediate, dryRun bool
-	var detectionMethod, detectionMode string
-	var detectionArgsJSON sql.NullString
-
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
-	err := s.db.QueryRowContext(ctx, `
-		SELECT auto_remediate, dry_run, detection_method, detection_args, detection_mode
-		FROM scan_paths WHERE id = ?
-	`, pathID).Scan(&autoRemediate, &dryRun, &detectionMethod, &detectionArgsJSON, &detectionMode)
-
+	path, err := s.scanPathRepo().GetByID(ctx, pathID)
+	detectionMethod := "ffprobe"
+	detectionMode := "quick"
 	if err != nil {
 		logger.Errorf("Error querying scan path config: %v", err)
-		detectionMethod = "ffprobe"
-		detectionMode = "quick"
+	} else {
+		autoRemediate = path.AutoRemediate
+		dryRun = path.DryRun
+		detectionMethod = path.DetectionMethod
+		detectionMode = path.DetectionMode
 	}
 
 	var detectionArgs []string
-	if detectionArgsJSON.Valid && detectionArgsJSON.String != "" {
-		if err := json.Unmarshal([]byte(detectionArgsJSON.String), &detectionArgs); err != nil {
+	if err == nil && path.DetectionArgs.Valid && path.DetectionArgs.String != "" {
+		if err := json.Unmarshal([]byte(path.DetectionArgs.String), &detectionArgs); err != nil {
 			logger.Errorf("Error parsing detection args: %v", err)
 		}
 	}
@@ -1645,23 +1664,18 @@ func (s *ScannerService) refreshScanPathCache() error {
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
-	rows, err := s.db.QueryContext(ctx, "SELECT local_path, auto_remediate, COALESCE(dry_run, 0) FROM scan_paths WHERE enabled = 1")
+	rows, err := s.scanPathRepo().ListEnabled(ctx)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 
-	cache := make([]scanPathConfig, 0, 10)
-	for rows.Next() {
-		var cfg scanPathConfig
-		if rows.Scan(&cfg.LocalPath, &cfg.AutoRemediate, &cfg.DryRun) != nil {
-			continue
-		}
-		cache = append(cache, cfg)
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("error iterating scan path cache: %w", err)
+	cache := make([]scanPathConfig, 0, len(rows))
+	for _, p := range rows {
+		cache = append(cache, scanPathConfig{
+			LocalPath:     p.LocalPath,
+			AutoRemediate: p.AutoRemediate,
+			DryRun:        p.DryRun,
+		})
 	}
 
 	s.scanPathCache = cache

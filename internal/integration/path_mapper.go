@@ -1,17 +1,21 @@
 package integration
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/mescon/Healarr/internal/repository"
 )
 
 // SQLPathMapper translates between local filesystem paths and *arr paths.
 type SQLPathMapper struct {
-	db       *sql.DB
-	mappings []PathMapping
-	mu       sync.RWMutex
+	db        *sql.DB
+	scanPaths *repository.ScanPathRepository
+	mappings  []PathMapping
+	mu        sync.RWMutex
 }
 
 // PathMapping defines a mapping between a local path and its *arr equivalent.
@@ -23,7 +27,8 @@ type PathMapping struct {
 // NewPathMapper creates a SQLPathMapper and loads mappings from the database.
 func NewPathMapper(db *sql.DB) (*SQLPathMapper, error) {
 	pm := &SQLPathMapper{
-		db: db,
+		db:        db,
+		scanPaths: repository.NewScanPathRepository(db),
 	}
 	if err := pm.Reload(); err != nil {
 		return nil, err
@@ -35,27 +40,19 @@ func (pm *SQLPathMapper) Reload() error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	rows, err := pm.db.Query("SELECT local_path, arr_path FROM scan_paths WHERE enabled = 1")
+	rows, err := pm.scanPaths.ListEnabled(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to query scan_paths: %w", err)
 	}
-	defer rows.Close()
 
-	var mappings []PathMapping
-	for rows.Next() {
-		var m PathMapping
-		if err := rows.Scan(&m.LocalPath, &m.ArrPath); err != nil {
-			return fmt.Errorf("failed to scan path mapping: %w", err)
-		}
+	mappings := make([]PathMapping, 0, len(rows))
+	for _, row := range rows {
 		// Ensure paths don't have trailing slashes for consistent matching,
 		// unless it's root (which shouldn't happen for media folders)
-		m.LocalPath = strings.TrimRight(m.LocalPath, "/")
-		m.ArrPath = strings.TrimRight(m.ArrPath, "/")
-		mappings = append(mappings, m)
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("error iterating path mappings: %w", err)
+		mappings = append(mappings, PathMapping{
+			LocalPath: strings.TrimRight(row.LocalPath, "/"),
+			ArrPath:   strings.TrimRight(row.ArrPath, "/"),
+		})
 	}
 
 	pm.mappings = mappings

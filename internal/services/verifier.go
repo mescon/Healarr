@@ -17,6 +17,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/safego"
 )
 
@@ -60,6 +61,7 @@ type VerifierService struct {
 	pathMapper integration.PathMapper
 	arrClient  integration.ArrClient
 	db         *sql.DB
+	scanPaths  *repository.ScanPathRepository
 	clk        clock.Clock
 
 	// Graceful shutdown support
@@ -89,7 +91,7 @@ func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecke
 	if len(clocks) > 0 && clocks[0] != nil {
 		c = clocks[0]
 	}
-	return &VerifierService{
+	v := &VerifierService{
 		eventBus:     eb,
 		detector:     detector,
 		pathMapper:   pm,
@@ -102,6 +104,10 @@ func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecke
 		verifyMeta:   make(map[string]*VerificationMeta),
 		activeVerify: make(map[string]context.CancelFunc),
 	}
+	if db != nil {
+		v.scanPaths = repository.NewScanPathRepository(db)
+	}
+	return v
 }
 
 // setLastState updates the last known state for a corruption (thread-safe)
@@ -1171,13 +1177,12 @@ func (v *VerifierService) getVerificationTimeout(pathID int64) time.Duration {
 	ctx, cancel := context.WithTimeout(context.Background(), verifierQueryTimeout)
 	defer cancel()
 
-	var timeoutHours sql.NullInt64
-	err := v.db.QueryRowContext(ctx, "SELECT verification_timeout_hours FROM scan_paths WHERE id = ?", pathID).Scan(&timeoutHours)
-	if err != nil || !timeoutHours.Valid {
+	path, err := v.scanPaths.GetByID(ctx, pathID)
+	if err != nil || !path.VerificationTimeoutHours.Valid {
 		return defaultTimeout
 	}
 
-	return time.Duration(timeoutHours.Int64) * time.Hour
+	return time.Duration(path.VerificationTimeoutHours.Int64) * time.Hour
 }
 
 // emitPartialReplacement handles the case where only some files were replaced

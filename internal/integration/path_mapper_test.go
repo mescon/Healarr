@@ -25,9 +25,15 @@ func newTestDBForPathMapper() (*sql.DB, error) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			local_path TEXT NOT NULL,
 			arr_path TEXT NOT NULL,
+			arr_instance_id INTEGER,
 			auto_remediate INTEGER NOT NULL DEFAULT 0,
 			dry_run INTEGER NOT NULL DEFAULT 0,
 			enabled INTEGER NOT NULL DEFAULT 1,
+			detection_method TEXT NOT NULL DEFAULT 'ffprobe',
+			detection_args TEXT,
+			detection_mode TEXT NOT NULL DEFAULT 'quick',
+			max_retries INTEGER DEFAULT 3,
+			verification_timeout_hours INTEGER,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
