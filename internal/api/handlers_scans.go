@@ -2,12 +2,14 @@ package api
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/safego"
 )
 
@@ -21,11 +23,12 @@ func (s *RESTServer) triggerScan(c *gin.Context) {
 	}
 
 	// Look up path
-	var localPath string
-	if s.db.QueryRow("SELECT local_path FROM scan_paths WHERE id = ?", req.PathID).Scan(&localPath) != nil {
+	path, err := s.scanPaths.GetByID(c.Request.Context(), req.PathID)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Path not found"})
 		return
 	}
+	localPath := path.LocalPath
 
 	// Check if scan is already in progress
 	if s.scanner.IsPathBeingScanned(localPath) {
@@ -216,9 +219,8 @@ func (s *RESTServer) rescanPath(c *gin.Context) {
 	}
 
 	// Find the scan_path that matches this path (to get the path_id)
-	var pathID int64
-	err = s.db.QueryRow("SELECT id FROM scan_paths WHERE local_path = ? AND enabled = 1", path).Scan(&pathID)
-	if err == sql.ErrNoRows {
+	pathID, err := s.scanPaths.FindEnabledIDByLocalPath(c.Request.Context(), path)
+	if errors.Is(err, repository.ErrNotFound) {
 		// Path might not be in scan_paths (e.g., webhook scan) - scan directly
 		safego.Run("rescan-file", func() {
 			if scanErr := s.scanner.ScanFile(path); scanErr != nil {
@@ -396,24 +398,16 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 
 // triggerScanAll triggers scans for all enabled paths
 func (s *RESTServer) triggerScanAll(c *gin.Context) {
-	rows, err := s.db.Query("SELECT id, local_path FROM scan_paths WHERE enabled = 1")
+	paths, err := s.scanPaths.ListEnabled(c.Request.Context())
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	defer rows.Close()
 
 	started := 0
 	skipped := 0
-	for rows.Next() {
-		var pathID int64
-		var localPath string
-		if err := rows.Scan(&pathID, &localPath); err != nil {
-			logger.Errorf("Failed to scan row in triggerScanAll: %v", err)
-			continue
-		}
-
-		if s.scanner.IsPathBeingScanned(localPath) {
+	for _, p := range paths {
+		if s.scanner.IsPathBeingScanned(p.LocalPath) {
 			skipped++
 			continue
 		}
@@ -422,13 +416,8 @@ func (s *RESTServer) triggerScanAll(c *gin.Context) {
 			if err := s.scanner.ScanPath(pid, path); err != nil {
 				logger.Errorf("Scan failed for path %d (%s): %v", pid, path, err)
 			}
-		}(pathID, localPath)
+		}(p.ID, p.LocalPath)
 		started++
-	}
-
-	if err := rows.Err(); err != nil {
-		logger.Errorf("Error iterating scan paths: %v", err)
-		// Continue with partial results since some scans may have started
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{

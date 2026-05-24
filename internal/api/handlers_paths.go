@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -14,7 +15,32 @@ import (
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 )
+
+// scanPathFieldsFromRequest builds the persistence-layer field bundle
+// from the validated scan-path request and its already-canonicalized
+// detection_args JSON.
+func scanPathFieldsFromRequest(req *scanPathRequest, detectionArgsJSON []byte) repository.ScanPathFields {
+	fields := repository.ScanPathFields{
+		LocalPath:         req.LocalPath,
+		ArrPath:           req.ArrPath,
+		Enabled:           req.Enabled,
+		AutoRemediate:     req.AutoRemediate,
+		DryRun:            req.DryRun,
+		DetectionMethod:   req.DetectionMethod,
+		DetectionArgsJSON: string(detectionArgsJSON),
+		DetectionMode:     req.DetectionMode,
+		MaxRetries:        req.MaxRetries,
+	}
+	if req.ArrInstanceID != nil {
+		fields.ArrInstanceID = sql.NullInt64{Int64: int64(*req.ArrInstanceID), Valid: true}
+	}
+	if req.VerificationTimeoutHours != nil {
+		fields.VerificationTimeoutHours = sql.NullInt64{Int64: int64(*req.VerificationTimeoutHours), Valid: true}
+	}
+	return fields
+}
 
 const errMsgReloadPathMappings = "Failed to reload path mappings: %v"
 
@@ -127,62 +153,46 @@ func prepareScanPathRequest(req *scanPathRequest, c *gin.Context) ([]byte, bool)
 }
 
 func (s *RESTServer) getScanPaths(c *gin.Context) {
-	rows, err := s.db.Query("SELECT id, local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours FROM scan_paths")
+	rows, err := s.scanPaths.ListAll(c.Request.Context())
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	defer rows.Close()
 
-	var paths []gin.H
-	for rows.Next() {
-		var id int
-		var localPath, arrPath string
-		var arrInstanceID sql.NullInt64
-		var enabled, autoRemediate, dryRun bool
-		var detectionMethod, detectionMode string
-		var detectionArgs sql.NullString
-		var maxRetries int
-		var verificationTimeoutHours sql.NullInt64
-		if rows.Scan(&id, &localPath, &arrPath, &arrInstanceID, &enabled, &autoRemediate, &dryRun, &detectionMethod, &detectionArgs, &detectionMode, &maxRetries, &verificationTimeoutHours) != nil {
-			continue
-		}
+	paths := make([]gin.H, 0, len(rows))
+	for _, p := range rows {
 		path := gin.H{
-			"id":               id,
-			"local_path":       localPath,
-			"arr_path":         arrPath,
-			"enabled":          enabled,
-			"auto_remediate":   autoRemediate,
-			"dry_run":          dryRun,
-			"detection_method": detectionMethod,
-			"detection_mode":   detectionMode,
-			"max_retries":      maxRetries,
+			"id":               p.ID,
+			"local_path":       p.LocalPath,
+			"arr_path":         p.ArrPath,
+			"enabled":          p.Enabled,
+			"auto_remediate":   p.AutoRemediate,
+			"dry_run":          p.DryRun,
+			"detection_method": p.DetectionMethod,
+			"detection_mode":   p.DetectionMode,
+			"max_retries":      p.MaxRetries,
 		}
-		if arrInstanceID.Valid {
-			path["arr_instance_id"] = arrInstanceID.Int64
+		if p.ArrInstanceID.Valid {
+			path["arr_instance_id"] = p.ArrInstanceID.Int64
 		} else {
 			path["arr_instance_id"] = nil
 		}
-		if detectionArgs.Valid && detectionArgs.String != "" {
+		if p.DetectionArgs.Valid && p.DetectionArgs.String != "" {
 			var args []string
-			if err := json.Unmarshal([]byte(detectionArgs.String), &args); err == nil {
+			if err := json.Unmarshal([]byte(p.DetectionArgs.String), &args); err == nil {
 				path["detection_args"] = args
 			} else {
-				path["detection_args"] = detectionArgs.String
+				path["detection_args"] = p.DetectionArgs.String
 			}
 		} else {
 			path["detection_args"] = nil
 		}
-		if verificationTimeoutHours.Valid {
-			path["verification_timeout_hours"] = verificationTimeoutHours.Int64
+		if p.VerificationTimeoutHours.Valid {
+			path["verification_timeout_hours"] = p.VerificationTimeoutHours.Int64
 		} else {
 			path["verification_timeout_hours"] = nil
 		}
 		paths = append(paths, path)
-	}
-	if rows.Err() != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading scan paths"})
-		return
 	}
 	c.JSON(http.StatusOK, paths)
 }
@@ -274,12 +284,7 @@ func (s *RESTServer) createScanPath(c *gin.Context) {
 		return
 	}
 
-	_, err := s.db.Exec(`INSERT INTO scan_paths
-		(local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run, detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		req.LocalPath, req.ArrPath, req.ArrInstanceID, req.Enabled, req.AutoRemediate,
-		req.DryRun, req.DetectionMethod, detectionArgsJSON, req.DetectionMode, req.MaxRetries, req.VerificationTimeoutHours)
-	if err != nil {
+	if _, err := s.scanPaths.Create(c.Request.Context(), scanPathFieldsFromRequest(&req, detectionArgsJSON)); err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
@@ -292,9 +297,12 @@ func (s *RESTServer) createScanPath(c *gin.Context) {
 }
 
 func (s *RESTServer) deleteScanPath(c *gin.Context) {
-	id := c.Param("id")
-	_, err := s.db.Exec("DELETE FROM scan_paths WHERE id = ?", id)
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid scan path ID"})
+		return
+	}
+	if err := s.scanPaths.Delete(c.Request.Context(), id); err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
@@ -407,15 +415,12 @@ func (s *RESTServer) updateScanPath(c *gin.Context) {
 		return
 	}
 
-	_, err := s.db.Exec(`UPDATE scan_paths SET
-		local_path = ?, arr_path = ?, arr_instance_id = ?, enabled = ?,
-		auto_remediate = ?, dry_run = ?, detection_method = ?, detection_args = ?,
-		detection_mode = ?, max_retries = ?, verification_timeout_hours = ?
-		WHERE id = ?`,
-		req.LocalPath, req.ArrPath, req.ArrInstanceID, req.Enabled,
-		req.AutoRemediate, req.DryRun, req.DetectionMethod, detectionArgsJSON,
-		req.DetectionMode, req.MaxRetries, req.VerificationTimeoutHours, id)
-	if err != nil {
+	idInt, parseErr := strconv.ParseInt(id, 10, 64)
+	if parseErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid scan path ID"})
+		return
+	}
+	if err := s.scanPaths.Update(c.Request.Context(), idInt, scanPathFieldsFromRequest(&req, detectionArgsJSON)); err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
@@ -507,9 +512,13 @@ func (s *RESTServer) validateScanPath(c *gin.Context) {
 	id := c.Param("id")
 
 	// Get the path from database
-	var localPath string
-	err := s.db.QueryRow("SELECT local_path FROM scan_paths WHERE id = ?", id).Scan(&localPath)
-	if err == sql.ErrNoRows {
+	idInt, parseErr := strconv.ParseInt(id, 10, 64)
+	if parseErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid scan path ID"})
+		return
+	}
+	path, err := s.scanPaths.GetByID(c.Request.Context(), idInt)
+	if errors.Is(err, repository.ErrNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Scan path not found"})
 		return
 	}
@@ -517,6 +526,7 @@ func (s *RESTServer) validateScanPath(c *gin.Context) {
 		respondDatabaseError(c, err)
 		return
 	}
+	localPath := path.LocalPath
 
 	// Check if path exists and is accessible
 	info, err := os.Stat(localPath)

@@ -68,7 +68,15 @@ func setupScansTestDB(t *testing.T) (*sql.DB, func()) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			local_path TEXT NOT NULL,
 			arr_path TEXT,
+			arr_instance_id INTEGER,
 			enabled BOOLEAN DEFAULT 1,
+			auto_remediate BOOLEAN DEFAULT 0,
+			dry_run BOOLEAN DEFAULT 0,
+			detection_method TEXT NOT NULL DEFAULT 'ffprobe',
+			detection_args TEXT,
+			detection_mode TEXT NOT NULL DEFAULT 'quick',
+			max_retries INTEGER DEFAULT 3,
+			verification_timeout_hours INTEGER,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 
@@ -108,7 +116,7 @@ func createScansTestServer(t *testing.T, db *sql.DB, eb *eventbus.EventBus) *RES
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	return &RESTServer{
+	s := &RESTServer{
 		router:     r,
 		db:         db,
 		eventBus:   eb,
@@ -118,6 +126,8 @@ func createScansTestServer(t *testing.T, db *sql.DB, eb *eventbus.EventBus) *RES
 		hub:        NewWebSocketHub(eb),
 		startTime:  time.Now(),
 	}
+	s.initRepositories()
+	return s
 }
 
 func TestTriggerScan_PathNotFound(t *testing.T) {
@@ -153,7 +163,7 @@ func TestTriggerScan_Success(t *testing.T) {
 	defer eb.Shutdown()
 
 	// Insert a scan path
-	_, err := db.Exec("INSERT INTO scan_paths (local_path, enabled) VALUES (?, 1)", "/test/media")
+	_, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path, enabled) VALUES (?, ?, 1)", "/test/media", "/arr/media")
 	if err != nil {
 		t.Fatalf("Failed to insert scan path: %v", err)
 	}
@@ -988,16 +998,16 @@ func TestTriggerScanAll_WithPaths(t *testing.T) {
 	defer eb.Shutdown()
 
 	// Insert enabled scan paths
-	_, err := db.Exec("INSERT INTO scan_paths (local_path, enabled) VALUES (?, 1)", "/test/path1")
+	_, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path, enabled) VALUES (?, '', 1)", "/test/path1")
 	if err != nil {
 		t.Fatalf("Failed to insert scan path: %v", err)
 	}
-	_, err = db.Exec("INSERT INTO scan_paths (local_path, enabled) VALUES (?, 1)", "/test/path2")
+	_, err = db.Exec("INSERT INTO scan_paths (local_path, arr_path, enabled) VALUES (?, '', 1)", "/test/path2")
 	if err != nil {
 		t.Fatalf("Failed to insert scan path: %v", err)
 	}
 	// Insert disabled path (should not be scanned)
-	_, err = db.Exec("INSERT INTO scan_paths (local_path, enabled) VALUES (?, 0)", "/test/disabled")
+	_, err = db.Exec("INSERT INTO scan_paths (local_path, arr_path, enabled) VALUES (?, '', 0)", "/test/disabled")
 	if err != nil {
 		t.Fatalf("Failed to insert scan path: %v", err)
 	}
@@ -1115,7 +1125,7 @@ func createMockScanServer(t *testing.T, db *sql.DB, eb *eventbus.EventBus, scann
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	return &RESTServer{
+	s := &RESTServer{
 		router:    r,
 		db:        db,
 		eventBus:  eb,
@@ -1124,6 +1134,8 @@ func createMockScanServer(t *testing.T, db *sql.DB, eb *eventbus.EventBus, scann
 		hub:       NewWebSocketHub(eb),
 		startTime: time.Now(),
 	}
+	s.initRepositories()
+	return s
 }
 
 func TestPauseAllScans_WithActiveScans(t *testing.T) {
@@ -1287,7 +1299,7 @@ func TestRescanPath_SuccessWithScanPath(t *testing.T) {
 	}
 
 	// Insert a scan_path that matches
-	_, err = db.Exec("INSERT INTO scan_paths (local_path, enabled) VALUES (?, 1)", "/test/media/shows")
+	_, err = db.Exec("INSERT INTO scan_paths (local_path, arr_path, enabled) VALUES (?, '', 1)", "/test/media/shows")
 	if err != nil {
 		t.Fatalf("Failed to insert scan path: %v", err)
 	}
@@ -1374,7 +1386,7 @@ func TestTriggerScan_ScanAlreadyRunning(t *testing.T) {
 	defer eb.Shutdown()
 
 	// Insert a scan path
-	_, err := db.Exec("INSERT INTO scan_paths (local_path, enabled) VALUES (?, 1)", "/test/media")
+	_, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path, enabled) VALUES (?, '', 1)", "/test/media")
 	if err != nil {
 		t.Fatalf("Failed to insert scan path: %v", err)
 	}
@@ -1406,11 +1418,11 @@ func TestTriggerScanAll_WithSkippedScans(t *testing.T) {
 	defer eb.Shutdown()
 
 	// Insert enabled scan paths
-	_, err := db.Exec("INSERT INTO scan_paths (local_path, enabled) VALUES (?, 1)", "/test/path1")
+	_, err := db.Exec("INSERT INTO scan_paths (local_path, arr_path, enabled) VALUES (?, '', 1)", "/test/path1")
 	if err != nil {
 		t.Fatalf("Failed to insert scan path: %v", err)
 	}
-	_, err = db.Exec("INSERT INTO scan_paths (local_path, enabled) VALUES (?, 1)", "/test/path2")
+	_, err = db.Exec("INSERT INTO scan_paths (local_path, arr_path, enabled) VALUES (?, '', 1)", "/test/path2")
 	if err != nil {
 		t.Fatalf("Failed to insert scan path: %v", err)
 	}
@@ -1462,7 +1474,7 @@ func createMockScanServerWithPathCheck(t *testing.T, db *sql.DB, eb *eventbus.Ev
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	return &RESTServer{
+	s := &RESTServer{
 		router:    r,
 		db:        db,
 		eventBus:  eb,
@@ -1471,6 +1483,8 @@ func createMockScanServerWithPathCheck(t *testing.T, db *sql.DB, eb *eventbus.Ev
 		hub:       NewWebSocketHub(eb),
 		startTime: time.Now(),
 	}
+	s.initRepositories()
+	return s
 }
 
 func TestGetScanDetails_DBError(t *testing.T) {
