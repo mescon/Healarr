@@ -70,6 +70,16 @@ type RESTServer struct {
 	startTime      time.Time
 	toolChecker    *integration.ToolChecker
 	sessions       *repository.SessionRepository
+	arrInstances   *repository.ArrInstanceRepository
+}
+
+// initRepositories populates the domain repository fields from s.db. Called
+// from NewRESTServer and from test fixtures that construct &RESTServer{}
+// directly — keeps the prod / test wiring in lockstep as more repositories
+// land in Phase 3.
+func (s *RESTServer) initRepositories() {
+	s.sessions = repository.NewSessionRepository(s.db)
+	s.arrInstances = repository.NewArrInstanceRepository(s.db)
 }
 
 // ServerDeps contains all dependencies required for the REST server
@@ -215,8 +225,8 @@ func NewRESTServer(deps ServerDeps) *RESTServer {
 		hub:            NewWebSocketHub(deps.EventBus, deps.Metrics),
 		startTime:      time.Now(),
 		toolChecker:    toolChecker,
-		sessions:       repository.NewSessionRepository(deps.DB),
 	}
+	s.initRepositories()
 
 	s.setupRoutes()
 

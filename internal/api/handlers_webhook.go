@@ -2,7 +2,6 @@ package api
 
 import (
 	"crypto/subtle"
-	"database/sql"
 	"net/http"
 	"strconv"
 
@@ -56,18 +55,15 @@ func (s *RESTServer) handleWebhook(c *gin.Context) {
 	// Load the instance: enabled flag + (encrypted) per-instance webhook secret
 	// if one has been generated. Missing webhook_secret column on legacy
 	// rows scans into a NULL sql.NullString.
-	var enabled bool
-	var webhookSecret sql.NullString
-	err = s.db.QueryRow(
-		"SELECT enabled, webhook_secret FROM arr_instances WHERE id = ?",
-		instanceID).Scan(&enabled, &webhookSecret)
+	instance, err := s.arrInstances.GetByID(c.Request.Context(), instanceID)
 	if err != nil {
 		logger.Errorf("Webhook rejected: Instance %d not found", instanceID)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Instance not found"})
 		return
 	}
+	webhookSecret := instance.EncryptedWebhookSecret
 
-	if !enabled {
+	if !instance.Enabled {
 		logger.Infof("Webhook rejected: Instance %d is disabled", instanceID)
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error":   "This *arr instance is currently disabled",

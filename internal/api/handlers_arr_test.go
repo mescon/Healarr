@@ -109,6 +109,7 @@ func setupArrTestServer(t *testing.T, db *sql.DB) (*gin.Engine, string, func()) 
 		eventBus: eb,
 		hub:      hub,
 	}
+	s.initRepositories()
 
 	// Setup API key for authentication
 	apiKey, err := auth.GenerateAPIKey()
@@ -777,6 +778,7 @@ func setupArrTestServerWithClient(t *testing.T, db *sql.DB, arrClient integratio
 		hub:       hub,
 		arrClient: arrClient,
 	}
+	s.initRepositories()
 
 	// Setup API key for authentication
 	apiKey, err := auth.GenerateAPIKey()
@@ -927,6 +929,7 @@ func TestGetArrRootFolders_NoClient(t *testing.T) {
 		hub:       hub,
 		arrClient: nil, // No client
 	}
+	s.initRepositories()
 
 	// Setup API key
 	apiKey, _ := auth.GenerateAPIKey()
@@ -1160,6 +1163,7 @@ func TestGenerateInstanceName_FirstInstance(t *testing.T) {
 		router: r,
 		db:     db,
 	}
+	s.initRepositories()
 
 	// No existing instances - should get base name without number
 	name := s.generateInstanceName("sonarr")
@@ -1176,6 +1180,7 @@ func TestGenerateInstanceName_SecondInstance(t *testing.T) {
 		router: r,
 		db:     db,
 	}
+	s.initRepositories()
 
 	// Add one existing instance
 	_, err := db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
@@ -1197,6 +1202,7 @@ func TestGenerateInstanceName_ThirdInstance(t *testing.T) {
 		router: r,
 		db:     db,
 	}
+	s.initRepositories()
 
 	// Add two existing instances
 	_, err := db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
@@ -1221,6 +1227,7 @@ func TestGenerateInstanceName_Radarr(t *testing.T) {
 		router: r,
 		db:     db,
 	}
+	s.initRepositories()
 
 	// No existing Radarr instances
 	name := s.generateInstanceName("radarr")
@@ -1237,6 +1244,7 @@ func TestGenerateInstanceName_Whisparr(t *testing.T) {
 		router: r,
 		db:     db,
 	}
+	s.initRepositories()
 
 	// Add one whisparr-v3 instance
 	_, err := db.Exec("INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES (?, ?, ?, ?, ?)",
@@ -1258,6 +1266,7 @@ func TestGenerateInstanceName_UnknownType(t *testing.T) {
 		router: r,
 		db:     db,
 	}
+	s.initRepositories()
 
 	// Unknown type should capitalize first letter
 	name := s.generateInstanceName("lidarr")
@@ -1274,6 +1283,7 @@ func TestGenerateInstanceName_EmptyType(t *testing.T) {
 		router: r,
 		db:     db,
 	}
+	s.initRepositories()
 
 	// Empty type should use "Instance" as fallback
 	name := s.generateInstanceName("")
@@ -1290,6 +1300,7 @@ func TestGenerateInstanceName_SonarrV3(t *testing.T) {
 		router: r,
 		db:     db,
 	}
+	s.initRepositories()
 
 	// sonarr-v3 should use "Sonarr" display name
 	name := s.generateInstanceName("sonarr-v3")

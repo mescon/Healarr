@@ -1,11 +1,12 @@
 package api
 
 import (
-	"database/sql"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/network"
+	"github.com/mescon/Healarr/internal/repository"
 )
 
 // errInvalidURLScheme is returned when a URL has an invalid scheme.
@@ -64,44 +66,34 @@ func validateArrURL(rawURL string) error {
 }
 
 func (s *RESTServer) getArrInstances(c *gin.Context) {
-	rows, err := s.db.Query("SELECT id, name, type, url, api_key, enabled, webhook_secret FROM arr_instances")
+	rows, err := s.arrInstances.ListAll(c.Request.Context())
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	defer rows.Close()
 
-	instances := make([]map[string]interface{}, 0)
-	for rows.Next() {
-		var id int
-		var name, arrType, url, apiKey string
-		var enabled bool
-		var webhookSecret sql.NullString
-		if err := rows.Scan(&id, &name, &arrType, &url, &apiKey, &enabled, &webhookSecret); err != nil {
-			logger.Warnf("Failed to scan arr_instances row: %v", err)
-			continue
-		}
-		// Decrypt API key for display
-		decryptedKey, err := crypto.Decrypt(apiKey)
+	instances := make([]map[string]interface{}, 0, len(rows))
+	for _, inst := range rows {
+		decryptedKey, err := crypto.Decrypt(inst.EncryptedAPIKey)
 		if err != nil {
-			logger.Errorf("Failed to decrypt API key for instance %d: %v", id, err)
+			logger.Errorf("Failed to decrypt API key for instance %d: %v", inst.ID, err)
 			decryptedKey = "[DECRYPTION_ERROR]"
 		}
 		entry := map[string]interface{}{
-			"id":      id,
-			"name":    name,
-			"type":    arrType,
-			"url":     url,
+			"id":      inst.ID,
+			"name":    inst.Name,
+			"type":    inst.Type,
+			"url":     inst.URL,
 			"api_key": decryptedKey,
-			"enabled": enabled,
+			"enabled": inst.Enabled,
 		}
 		// Webhook secret may be NULL for legacy instances; surface a sentinel
 		// so the UI can show a "no webhook secret configured — generate one"
 		// affordance without confusing it for a normal value.
-		if webhookSecret.Valid && webhookSecret.String != "" {
-			decryptedSecret, derr := crypto.Decrypt(webhookSecret.String)
+		if inst.EncryptedWebhookSecret.Valid && inst.EncryptedWebhookSecret.String != "" {
+			decryptedSecret, derr := crypto.Decrypt(inst.EncryptedWebhookSecret.String)
 			if derr != nil {
-				logger.Errorf("Failed to decrypt webhook secret for instance %d: %v", id, derr)
+				logger.Errorf("Failed to decrypt webhook secret for instance %d: %v", inst.ID, derr)
 				decryptedSecret = "[DECRYPTION_ERROR]"
 			}
 			entry["webhook_secret"] = decryptedSecret
@@ -109,12 +101,6 @@ func (s *RESTServer) getArrInstances(c *gin.Context) {
 			entry["webhook_secret"] = nil
 		}
 		instances = append(instances, entry)
-	}
-
-	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading arr instances"})
-		logger.Errorf("Error iterating arr instances: %v", err)
-		return
 	}
 
 	c.JSON(http.StatusOK, instances)
@@ -142,18 +128,12 @@ func (s *RESTServer) generateInstanceName(arrType string) string {
 
 	// Count existing instances of this base type
 	var count int
-	baseType := arrType
+	ctx := context.Background()
 	if strings.HasPrefix(arrType, "whisparr") {
 		// Count all whisparr variants together
-		err := s.db.QueryRow("SELECT COUNT(*) FROM arr_instances WHERE type LIKE 'whisparr%'").Scan(&count)
-		if err != nil {
-			count = 0
-		}
+		count, _ = s.arrInstances.CountByTypePrefix(ctx, "whisparr")
 	} else {
-		err := s.db.QueryRow("SELECT COUNT(*) FROM arr_instances WHERE type = ?", baseType).Scan(&count)
-		if err != nil {
-			count = 0
-		}
+		count, _ = s.arrInstances.CountByType(ctx, arrType)
 	}
 
 	if count == 0 {
@@ -220,14 +200,18 @@ func (s *RESTServer) createArrInstance(c *gin.Context) {
 		return
 	}
 
-	result, err := s.db.Exec(
-		"INSERT INTO arr_instances (name, type, url, api_key, enabled, webhook_secret) VALUES (?, ?, ?, ?, ?, ?)",
-		instanceName, req.Type, req.URL, encryptedKey, req.Enabled, encryptedSecret)
+	id, err := s.arrInstances.Create(c.Request.Context(), repository.CreateArrInstanceParams{
+		Name:                   instanceName,
+		Type:                   req.Type,
+		URL:                    req.URL,
+		EncryptedAPIKey:        encryptedKey,
+		Enabled:                req.Enabled,
+		EncryptedWebhookSecret: encryptedSecret,
+	})
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	id, _ := result.LastInsertId()
 
 	c.JSON(http.StatusCreated, gin.H{
 		"id":             id,
@@ -258,16 +242,17 @@ func (s *RESTServer) regenerateWebhookSecret(c *gin.Context) {
 		return
 	}
 
-	result, err := s.db.Exec(
-		"UPDATE arr_instances SET webhook_secret = ? WHERE id = ?",
-		encryptedSecret, id)
-	if err != nil {
-		respondDatabaseError(c, err)
+	idInt, parseErr := strconv.ParseInt(id, 10, 64)
+	if parseErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid instance ID"})
 		return
 	}
-	n, _ := result.RowsAffected()
-	if n == 0 {
+	switch err := s.arrInstances.UpdateWebhookSecret(c.Request.Context(), idInt, encryptedSecret); {
+	case errors.Is(err, repository.ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": "Instance not found"})
+		return
+	case err != nil:
+		respondDatabaseError(c, err)
 		return
 	}
 
@@ -275,9 +260,12 @@ func (s *RESTServer) regenerateWebhookSecret(c *gin.Context) {
 }
 
 func (s *RESTServer) deleteArrInstance(c *gin.Context) {
-	id := c.Param("id")
-	_, err := s.db.Exec("DELETE FROM arr_instances WHERE id = ?", id)
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid instance ID"})
+		return
+	}
+	if err := s.arrInstances.Delete(c.Request.Context(), id); err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
@@ -312,9 +300,18 @@ func (s *RESTServer) updateArrInstance(c *gin.Context) {
 		return
 	}
 
-	_, err = s.db.Exec("UPDATE arr_instances SET name = ?, type = ?, url = ?, api_key = ?, enabled = ? WHERE id = ?",
-		req.Name, req.Type, req.URL, encryptedKey, req.Enabled, id)
-	if err != nil {
+	idInt, parseErr := strconv.ParseInt(id, 10, 64)
+	if parseErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid instance ID"})
+		return
+	}
+	if err := s.arrInstances.Update(c.Request.Context(), idInt, repository.UpdateArrInstanceParams{
+		Name:            req.Name,
+		Type:            req.Type,
+		URL:             req.URL,
+		EncryptedAPIKey: encryptedKey,
+		Enabled:         req.Enabled,
+	}); err != nil {
 		respondDatabaseError(c, err)
 		return
 	}

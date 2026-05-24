@@ -64,6 +64,7 @@ func setupConfigTestDB(t *testing.T) (*sql.DB, func()) {
 			url TEXT NOT NULL,
 			api_key TEXT NOT NULL,
 			enabled INTEGER DEFAULT 1,
+			webhook_secret TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 
@@ -128,6 +129,7 @@ func setupConfigTestServer(t *testing.T, db *sql.DB, pm *testutil.MockPathMapper
 		hub:        hub,
 		pathMapper: pm,
 	}
+	s.initRepositories()
 
 	// Optionally add notifier service
 	if withNotifier {
@@ -180,6 +182,7 @@ func setupConfigTestServerWithScheduler(t *testing.T, db *sql.DB, pm *testutil.M
 		scheduler:  scheduler,
 		notifier:   n,
 	}
+	s.initRepositories()
 
 	// Setup API key for authentication
 	apiKey, err := auth.GenerateAPIKey()
@@ -627,6 +630,7 @@ func TestDownloadDatabaseBackup_Success(t *testing.T) {
 		eventBus: eb,
 		hub:      NewWebSocketHub(eb),
 	}
+	s.initRepositories()
 
 	// Setup API key for authentication
 	apiKey, err := auth.GenerateAPIKey()

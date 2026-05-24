@@ -16,7 +16,6 @@ import (
 	"github.com/mescon/Healarr/internal/auth"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/eventbus"
-	"github.com/mescon/Healarr/internal/repository"
 )
 
 // setupTestDB creates a temporary database with schema for testing
@@ -126,8 +125,8 @@ func setupTestServer(t *testing.T, db *sql.DB) (*gin.Engine, func()) {
 		db:       db,
 		eventBus: eb,
 		hub:      hub,
-		sessions: repository.NewSessionRepository(db),
 	}
+	s.initRepositories()
 
 	// Register routes manually for testing
 	api := r.Group("/api")
@@ -436,8 +435,8 @@ func TestAuthMiddleware_NoToken(t *testing.T) {
 		router:   r,
 		db:       db,
 		eventBus: eb,
-		sessions: repository.NewSessionRepository(db),
 	}
+	s.initRepositories()
 
 	// Setup API key
 	apiKey, _ := auth.GenerateAPIKey()
@@ -472,8 +471,8 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 		router:   r,
 		db:       db,
 		eventBus: eb,
-		sessions: repository.NewSessionRepository(db),
 	}
+	s.initRepositories()
 
 	// Setup API key
 	apiKey, _ := auth.GenerateAPIKey()
@@ -509,8 +508,8 @@ func TestAuthMiddleware_InvalidToken(t *testing.T) {
 		router:   r,
 		db:       db,
 		eventBus: eb,
-		sessions: repository.NewSessionRepository(db),
 	}
+	s.initRepositories()
 
 	// Setup API key
 	apiKey, _ := auth.GenerateAPIKey()
@@ -546,8 +545,8 @@ func TestAuthMiddleware_BearerToken(t *testing.T) {
 		router:   r,
 		db:       db,
 		eventBus: eb,
-		sessions: repository.NewSessionRepository(db),
 	}
+	s.initRepositories()
 
 	// Setup API key
 	apiKey, _ := auth.GenerateAPIKey()
@@ -583,8 +582,8 @@ func TestAuthMiddleware_QueryToken(t *testing.T) {
 		router:   r,
 		db:       db,
 		eventBus: eb,
-		sessions: repository.NewSessionRepository(db),
 	}
+	s.initRepositories()
 
 	// Setup API key
 	apiKey, _ := auth.GenerateAPIKey()
@@ -694,8 +693,8 @@ func setupAuthTestServer(t *testing.T, db *sql.DB) (*gin.Engine, string, func())
 		db:       db,
 		eventBus: eb,
 		hub:      hub,
-		sessions: repository.NewSessionRepository(db),
 	}
+	s.initRepositories()
 
 	// Setup API key for authentication
 	apiKey, _ := auth.GenerateAPIKey()

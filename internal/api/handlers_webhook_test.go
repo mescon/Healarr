@@ -126,6 +126,7 @@ func setupWebhookTestServer(t *testing.T, db *sql.DB, pm *testutil.MockPathMappe
 		pathMapper: pm,
 		scanner:    scanner,
 	}
+	s.initRepositories()
 
 	// Setup API key for authentication
 	apiKey, err := auth.GenerateAPIKey()
@@ -542,6 +543,7 @@ func TestWebhook_DecryptError(t *testing.T) {
 		pathMapper: mockPM,
 		scanner:    mockScanner,
 	}
+	s.initRepositories()
 
 	r.POST("/api/webhook/:instance_id", s.handleWebhook)
 
