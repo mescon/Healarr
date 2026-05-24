@@ -136,9 +136,9 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 	corruptionID := event.AggregateID
 
 	// Use type-safe event data parsing
-	data, ok := event.ParseRetryEventData()
-	if !ok || data.FilePath == "" {
-		logger.Warnf("Invalid retry event data for %s: missing or empty file path", corruptionID)
+	data, err := event.ParseRetryEventData()
+	if err != nil || data.FilePath == "" {
+		logger.Warnf("Invalid retry event data for %s: %v", corruptionID, err)
 		r.publishError(corruptionID, domain.SearchFailed, "missing or empty file_path in retry event")
 		return
 	}
@@ -233,9 +233,9 @@ func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
 	corruptionID := event.AggregateID
 
 	// Use type-safe event data parsing
-	data, ok := event.ParseCorruptionEventData()
-	if !ok {
-		logger.Errorf("Missing file_path in event data for corruption %s", corruptionID)
+	data, err := event.ParseCorruptionEventData()
+	if err != nil {
+		logger.Errorf("Invalid corruption event %s: %v", corruptionID, err)
 		r.publishError(corruptionID, domain.DeletionFailed, "missing file_path in event data")
 		return
 	}

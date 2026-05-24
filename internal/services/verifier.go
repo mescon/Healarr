@@ -503,9 +503,9 @@ func (v *VerifierService) handleSearchCompleted(event domain.Event) {
 	v.cancelExistingVerification(corruptionID)
 
 	// Use type-safe event data parsing
-	data, ok := event.ParseSearchCompletedEventData()
-	if !ok {
-		logger.Errorf("Missing file_path in SearchCompleted event for %s", corruptionID)
+	data, err := event.ParseSearchCompletedEventData()
+	if err != nil {
+		logger.Errorf("Invalid SearchCompleted event for %s: %v", corruptionID, err)
 		return
 	}
 
