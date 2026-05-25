@@ -19,6 +19,11 @@ CREATE TABLE scans (
 	corruptions_found  INTEGER DEFAULT 0,
 	total_files        INTEGER DEFAULT 0,
 	current_file_index INTEGER DEFAULT 0,
+	file_list          TEXT,
+	detection_config   TEXT,
+	auto_remediate     INTEGER DEFAULT 0,
+	dry_run            INTEGER DEFAULT 0,
+	error_message      TEXT,
 	started_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	completed_at       TIMESTAMP
 );
@@ -198,5 +203,142 @@ func TestScanRepository_GetLastCompletedScanByPathID(t *testing.T) {
 	// portable across SQLite drivers.
 	if !last.CompletedAt.Valid || last.CompletedAt.String[:10] != "2026-05-05" {
 		t.Errorf("CompletedAt = %+v, want date 2026-05-05", last.CompletedAt)
+	}
+}
+
+func TestScanRepository_Create_andStatusTransitions(t *testing.T) {
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	id, err := repo.Create(ctx, CreateScanParams{
+		Path: "/movies", PathID: 1, TotalFiles: 100,
+		FileListJSON: `["/a.mkv","/b.mkv"]`, DetectionConfigJSON: `{"method":"ffprobe"}`,
+		AutoRemediate: true, DryRun: false,
+	})
+	if err != nil || id == 0 {
+		t.Fatalf("Create = (%d, %v), want (>0, nil)", id, err)
+	}
+
+	got, _ := repo.GetByID(ctx, id)
+	if got.Status != "running" || got.Path != "/movies" {
+		t.Errorf("after Create: %+v, want running /movies", got)
+	}
+
+	if err := repo.SetStatus(ctx, id, "paused"); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if got, _ := repo.GetByID(ctx, id); got.Status != "paused" {
+		t.Errorf("after SetStatus: status = %q, want paused", got.Status)
+	}
+
+	if err := repo.Finalize(ctx, id, "completed", 100); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	got, _ = repo.GetByID(ctx, id)
+	if got.Status != "completed" || got.FilesScanned != 100 || !got.CompletedAt.Valid {
+		t.Errorf("after Finalize: %+v, want completed/100/non-null-completed_at", got)
+	}
+}
+
+func TestScanRepository_MarkInterrupted_Paused_Aborted(t *testing.T) {
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	id, _ := repo.Create(ctx, CreateScanParams{Path: "/p", PathID: 1, TotalFiles: 50, FileListJSON: "[]"})
+
+	if err := repo.MarkInterrupted(ctx, id, 17); err != nil {
+		t.Fatalf("MarkInterrupted: %v", err)
+	}
+	var status string
+	var idx int
+	_ = db.QueryRow(`SELECT status, current_file_index FROM scans WHERE id = ?`, id).Scan(&status, &idx)
+	if status != "interrupted" || idx != 17 {
+		t.Errorf("MarkInterrupted: status/idx = %q/%d, want interrupted/17", status, idx)
+	}
+
+	if err := repo.MarkPaused(ctx, id, 23); err != nil {
+		t.Fatalf("MarkPaused: %v", err)
+	}
+	_ = db.QueryRow(`SELECT status, current_file_index FROM scans WHERE id = ?`, id).Scan(&status, &idx)
+	if status != "paused" || idx != 23 {
+		t.Errorf("MarkPaused: status/idx = %q/%d, want paused/23", status, idx)
+	}
+
+	if err := repo.MarkAborted(ctx, id, "mount lost"); err != nil {
+		t.Fatalf("MarkAborted: %v", err)
+	}
+	var errMsg string
+	_ = db.QueryRow(`SELECT status, error_message FROM scans WHERE id = ?`, id).Scan(&status, &errMsg)
+	if status != "aborted" || errMsg != "mount lost" {
+		t.Errorf("MarkAborted: status/msg = %q/%q, want aborted/mount lost", status, errMsg)
+	}
+}
+
+func TestScanRepository_UpdateProgress_andIncrementCorruptions(t *testing.T) {
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+	id, _ := repo.Create(ctx, CreateScanParams{Path: "/p", PathID: 1, TotalFiles: 50, FileListJSON: "[]"})
+
+	if err := repo.UpdateProgress(ctx, id, 30, 28); err != nil {
+		t.Fatalf("UpdateProgress: %v", err)
+	}
+	var idx, scanned int
+	_ = db.QueryRow(`SELECT current_file_index, files_scanned FROM scans WHERE id = ?`, id).Scan(&idx, &scanned)
+	if idx != 30 || scanned != 28 {
+		t.Errorf("UpdateProgress: idx/scanned = %d/%d, want 30/28", idx, scanned)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := repo.IncrementCorruptions(id); err != nil {
+			t.Fatalf("IncrementCorruptions: %v", err)
+		}
+	}
+	var found int
+	_ = db.QueryRow(`SELECT corruptions_found FROM scans WHERE id = ?`, id).Scan(&found)
+	if found != 3 {
+		t.Errorf("corruptions_found = %d, want 3", found)
+	}
+}
+
+func TestScanRepository_ListInterrupted(t *testing.T) {
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	// Interrupted with a file_list → should be returned.
+	resumable, _ := repo.Create(ctx, CreateScanParams{
+		Path: "/resumable", PathID: 1, TotalFiles: 10,
+		FileListJSON: `["/x.mkv"]`, DetectionConfigJSON: `{"method":"ffprobe"}`, AutoRemediate: true,
+	})
+	_ = repo.MarkInterrupted(ctx, resumable, 5)
+
+	// Interrupted but file_list IS NULL → excluded.
+	mustExecScan(t, db, `INSERT INTO scans (path, status, file_list) VALUES ('/nofiles', 'interrupted', NULL)`)
+	// Running → excluded.
+	_, _ = repo.Create(ctx, CreateScanParams{Path: "/running", PathID: 1, TotalFiles: 1, FileListJSON: "[]"})
+
+	rows, err := repo.ListInterrupted(ctx)
+	if err != nil {
+		t.Fatalf("ListInterrupted: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Path != "/resumable" {
+		t.Fatalf("ListInterrupted = %+v, want only /resumable", rows)
+	}
+	r := rows[0]
+	if r.CurrentFileIndex != 5 || r.FileListJSON != `["/x.mkv"]` || !r.AutoRemediate {
+		t.Errorf("resume shape wrong: %+v", r)
+	}
+	if !r.DetectionConfigJSON.Valid || r.DetectionConfigJSON.String != `{"method":"ffprobe"}` {
+		t.Errorf("detection_config = %+v", r.DetectionConfigJSON)
+	}
+}
+
+func mustExecScan(t *testing.T, db *sql.DB, query string, args ...interface{}) {
+	t.Helper()
+	if _, err := db.Exec(query, args...); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
 	}
 }
