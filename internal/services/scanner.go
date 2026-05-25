@@ -1543,7 +1543,11 @@ func (s *ScannerService) emitProgress(p *ScanProgress) {
 	// event sees a consistent state; the publish happens outside the lock
 	// because Publish does I/O.
 	view := p.Snapshot()
-	if err := s.eventBus.Publish(domain.Event{
+	// Volatile: ScanProgress is an ephemeral UI signal consumed only by the
+	// WebSocket hub and the Prometheus gauge (both in-memory subscribers). It is
+	// never replayed or queried back, so we skip the per-file event-store INSERT.
+	// Durable progress is persisted separately via the scans row (UpdateProgress).
+	s.eventBus.PublishVolatile(domain.Event{
 		AggregateType: "scan",
 		AggregateID:   view.ID,
 		EventType:     domain.ScanProgress,
@@ -1558,9 +1562,7 @@ func (s *ScannerService) emitProgress(p *ScanProgress) {
 			"start_time":   view.StartTime,
 			"scan_db_id":   view.ScanDBID, // Database ID for frontend navigation
 		},
-	}); err != nil {
-		logger.Debugf("Failed to emit scan progress: %v", err)
-	}
+	})
 }
 
 // GetActiveScans returns race-free snapshots of all currently active scans.
