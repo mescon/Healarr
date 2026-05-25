@@ -15,7 +15,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/mescon/Healarr/internal/db"
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
@@ -310,6 +309,7 @@ type ScannerService struct {
 	scanPaths     *repository.ScanPathRepository
 	rescans       *repository.RescanRepository
 	scanFilesRepo *repository.ScanFileRepository
+	scans         *repository.ScanRepository
 	eventBus      *eventbus.EventBus
 	detector      integration.HealthChecker
 	pathMapper    integration.PathMapper
@@ -361,6 +361,9 @@ func (s *ScannerService) initRepositories() {
 	if s.scanFilesRepo == nil {
 		s.scanFilesRepo = repository.NewScanFileRepository(s.db)
 	}
+	if s.scans == nil {
+		s.scans = repository.NewScanRepository(s.db)
+	}
 }
 
 // scanPathRepo returns the lazy-initialized ScanPathRepository.
@@ -379,6 +382,12 @@ func (s *ScannerService) rescanRepo() *repository.RescanRepository {
 func (s *ScannerService) scanFileRepo() *repository.ScanFileRepository {
 	s.initRepositories()
 	return s.scanFilesRepo
+}
+
+// scanRepo returns the lazy-initialized ScanRepository.
+func (s *ScannerService) scanRepo() *repository.ScanRepository {
+	s.initRepositories()
+	return s.scans
 }
 
 // IsFileBeingScanned returns true if the given file is currently being scanned.
@@ -414,10 +423,7 @@ func (s *ScannerService) Shutdown() {
 			logger.Infof("Scanner: saving state for scan %s (file %d/%d)", scanID, filesDone, totalFiles)
 			// Mark as interrupted in database - state is already saved during scanning
 			ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-			_, err := s.db.ExecContext(ctx, `
-				UPDATE scans SET status = 'interrupted', current_file_index = ?
-				WHERE id = ?
-			`, filesDone, scanDBID)
+			err := s.scanRepo().MarkInterrupted(ctx, scanDBID, filesDone)
 			cancel()
 			if err != nil {
 				logger.Errorf("Failed to save scan state for %s: %v", scanID, err)
@@ -454,77 +460,25 @@ func (s *ScannerService) ResumeInterruptedScans() {
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.id, s.path_id, s.path, s.total_files, s.current_file_index, s.file_list, s.detection_config, s.auto_remediate, COALESCE(s.dry_run, 0)
-		FROM scans s
-		WHERE s.status = 'interrupted' AND s.file_list IS NOT NULL
-		ORDER BY s.started_at DESC
-	`)
+	scansToResume, err := s.scanRepo().ListInterrupted(ctx)
 	if err != nil {
 		logger.Errorf("Failed to query interrupted scans: %v", err)
 		return
 	}
-	defer rows.Close()
-
-	var scansToResume []struct {
-		scanDBID        int64
-		pathID          int64
-		path            string
-		totalFiles      int
-		currentIndex    int
-		fileListJSON    string
-		detectionConfig string
-		autoRemediate   bool
-		dryRun          bool
-	}
-
-	for rows.Next() {
-		var scan struct {
-			scanDBID        int64
-			pathID          int64
-			path            string
-			totalFiles      int
-			currentIndex    int
-			fileListJSON    string
-			detectionConfig string
-			autoRemediate   bool
-			dryRun          bool
-		}
-		var pathID sql.NullInt64
-		var detectionConfigNull sql.NullString
-
-		if err := rows.Scan(&scan.scanDBID, &pathID, &scan.path, &scan.totalFiles, &scan.currentIndex, &scan.fileListJSON, &detectionConfigNull, &scan.autoRemediate, &scan.dryRun); err != nil {
-			logger.Errorf("Failed to scan interrupted scan row: %v", err)
-			continue
-		}
-		if pathID.Valid {
-			scan.pathID = pathID.Int64
-		}
-		if detectionConfigNull.Valid {
-			scan.detectionConfig = detectionConfigNull.String
-		}
-		scansToResume = append(scansToResume, scan)
-	}
-
-	// Check for iteration errors
-	if err := rows.Err(); err != nil {
-		logger.Errorf("Error iterating interrupted scans: %v", err)
-		return
-	}
 
 	for _, scan := range scansToResume {
-		logger.Infof("Resuming interrupted scan for %s (starting at file %d/%d)", scan.path, scan.currentIndex, scan.totalFiles)
+		logger.Infof("Resuming interrupted scan for %s (starting at file %d/%d)", scan.Path, scan.CurrentFileIndex, scan.TotalFiles)
 		s.wg.Add(1)
 		cfg := resumeScanConfig{
-			ScanDBID:            scan.scanDBID,
-			PathID:              scan.pathID,
-			LocalPath:           scan.path,
-			TotalFiles:          scan.totalFiles,
-			StartIndex:          scan.currentIndex,
-			FileListJSON:        scan.fileListJSON,
-			DetectionConfigJSON: scan.detectionConfig,
-			AutoRemediate:       scan.autoRemediate,
-			DryRun:              scan.dryRun,
+			ScanDBID:            scan.ID,
+			PathID:              scan.PathID.Int64,
+			LocalPath:           scan.Path,
+			TotalFiles:          scan.TotalFiles,
+			StartIndex:          scan.CurrentFileIndex,
+			FileListJSON:        scan.FileListJSON,
+			DetectionConfigJSON: scan.DetectionConfigJSON.String,
+			AutoRemediate:       scan.AutoRemediate,
+			DryRun:              scan.DryRun,
 		}
 		safego.Run("scanner-resume", func() { s.resumeScan(cfg) })
 	}
@@ -585,7 +539,7 @@ func (s *ScannerService) resumeScan(cfg resumeScanConfig) {
 
 	// Update scan status to running
 	statusCtx, statusCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-	_, err := s.db.ExecContext(statusCtx, `UPDATE scans SET status = 'running' WHERE id = ?`, cfg.ScanDBID)
+	err := s.scanRepo().SetStatus(statusCtx, cfg.ScanDBID, string(ScanStatusRunning))
 	statusCancel()
 	if err != nil {
 		logger.Errorf("Failed to update scan status: %v", err)
@@ -597,10 +551,7 @@ func (s *ScannerService) resumeScan(cfg resumeScanConfig) {
 			finalStatus = progress.Status
 		}
 		deferCtx, deferCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-		_, err := s.db.ExecContext(deferCtx, `
-			UPDATE scans SET status = ?, files_scanned = ?, completed_at = datetime('now')
-			WHERE id = ?
-		`, finalStatus, progress.FilesDone, cfg.ScanDBID)
+		err := s.scanRepo().Finalize(deferCtx, cfg.ScanDBID, finalStatus, progress.FilesDone)
 		deferCancel()
 		if err != nil {
 			logger.Errorf("Failed to update scan record: %v", err)
@@ -890,19 +841,17 @@ func (s *ScannerService) recordScanStart(localPath string, pathID int64, files [
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
-	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO scans (path, path_id, status, files_scanned, corruptions_found, total_files, current_file_index, file_list, detection_config, auto_remediate, dry_run, started_at)
-		VALUES (?, ?, 'running', 0, 0, ?, 0, ?, ?, ?, ?, datetime('now'))
-	`, localPath, pathID, len(files), string(fileListJSON), string(detectionConfigJSON), cfg.AutoRemediate, cfg.DryRun)
-
+	scanDBID, err := s.scanRepo().Create(ctx, repository.CreateScanParams{
+		Path:                localPath,
+		PathID:              pathID,
+		TotalFiles:          len(files),
+		FileListJSON:        string(fileListJSON),
+		DetectionConfigJSON: string(detectionConfigJSON),
+		AutoRemediate:       cfg.AutoRemediate,
+		DryRun:              cfg.DryRun,
+	})
 	if err != nil {
 		logger.Errorf("Failed to record scan start: %v", err)
-		return 0
-	}
-
-	scanDBID, err := result.LastInsertId()
-	if err != nil {
-		logger.Warnf("Failed to get scan ID after insert: %v", err)
 		return 0
 	}
 	return scanDBID
@@ -939,11 +888,7 @@ func (s *ScannerService) finalizeScan(scanID string, progress *ScanProgress, sca
 		}
 		if scanDBID > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-			_, err := s.db.ExecContext(ctx, `
-				UPDATE scans
-				SET status = ?, files_scanned = ?, completed_at = datetime('now')
-				WHERE id = ?
-			`, finalStatus, progress.FilesDone, scanDBID)
+			err := s.scanRepo().Finalize(ctx, scanDBID, finalStatus, progress.FilesDone)
 			cancel()
 			if err != nil {
 				logger.Errorf("Failed to update scan record: %v", err)
@@ -1109,7 +1054,7 @@ func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProg
 	// Save current position
 	if scanDBID > 0 {
 		pauseCtx, pauseCancel := context.WithTimeout(ctx, scannerQueryTimeout)
-		if _, err := s.db.ExecContext(pauseCtx, `UPDATE scans SET current_file_index = ?, status = 'paused' WHERE id = ?`, fileIndex, scanDBID); err != nil {
+		if err := s.scanRepo().MarkPaused(pauseCtx, scanDBID, fileIndex); err != nil {
 			logger.Warnf("Failed to update scan pause state for scan %d: %v", scanDBID, err)
 		}
 		pauseCancel()
@@ -1125,7 +1070,7 @@ func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProg
 		s.mu.Unlock()
 		if scanDBID > 0 {
 			resumeCtx, resumeCancel := context.WithTimeout(ctx, scannerQueryTimeout)
-			if _, err := s.db.ExecContext(resumeCtx, `UPDATE scans SET status = 'running' WHERE id = ?`, scanDBID); err != nil {
+			if err := s.scanRepo().SetStatus(resumeCtx, scanDBID, string(ScanStatusRunning)); err != nil {
 				logger.Warnf("Failed to update scan resume state for scan %d: %v", scanDBID, err)
 			}
 			resumeCancel()
@@ -1238,8 +1183,8 @@ func (s *ScannerService) handleRecoverableError(progress *ScanProgress, sfc *sca
 		progress.Status = ScanStatusAborted
 
 		if sfc.scanDBID > 0 {
-			if _, err := s.db.Exec(`UPDATE scans SET status = 'aborted', error_message = ? WHERE id = ?`,
-				"Scan aborted: filesystem/mount became inaccessible", sfc.scanDBID); err != nil {
+			if err := s.scanRepo().MarkAborted(context.Background(), sfc.scanDBID,
+				"Scan aborted: filesystem/mount became inaccessible"); err != nil {
 				logger.Warnf("Failed to update scan abort state for scan %d: %v", sfc.scanDBID, err)
 			}
 		}
@@ -1306,7 +1251,7 @@ func (s *ScannerService) handleTrueCorruption(ctx context.Context, progress *Sca
 		}
 
 		// Update corruptions count
-		if _, err := db.ExecWithRetry(s.db, `UPDATE scans SET corruptions_found = corruptions_found + 1 WHERE id = ?`, sfc.scanDBID); err != nil {
+		if err := s.scanRepo().IncrementCorruptions(sfc.scanDBID); err != nil {
 			logger.Warnf("Failed to update corruptions count for scan %d: %v", sfc.scanDBID, err)
 		}
 	}
@@ -1564,7 +1509,7 @@ func (s *ScannerService) markFileProcessed(progress *ScanProgress, fileIndex int
 	if fileIndex%10 == 0 {
 		if scanDBID > 0 {
 			progressCtx, progressCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-			if _, err := s.db.ExecContext(progressCtx, `UPDATE scans SET current_file_index = ?, files_scanned = ? WHERE id = ?`, fileIndex, filesDone, scanDBID); err != nil {
+			if err := s.scanRepo().UpdateProgress(progressCtx, scanDBID, fileIndex, filesDone); err != nil {
 				logger.Warnf("Failed to save scan progress for scan %d: %v", scanDBID, err)
 			}
 			progressCancel()

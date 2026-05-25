@@ -5,11 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	"github.com/mescon/Healarr/internal/db"
 )
 
 // Scan is the read-shape of a row from the scans table. Only the columns
-// used by handler-layer reads are populated; the scanner service uses
-// raw SQL for its lifecycle mutations (its own follow-up PR).
+// used by handler-layer reads are populated.
 type Scan struct {
 	ID               int64
 	Path             string
@@ -176,4 +177,161 @@ func (r *ScanRepository) GetLastCompletedScanByPathID(ctx context.Context, pathI
 		return LastScan{}, fmt.Errorf("query last scan by path: %w", err)
 	}
 	return l, nil
+}
+
+// =============================================================================
+// Write path (scanner lifecycle)
+//
+// These methods own the scans state machine that the scanner service drives.
+// IncrementCorruptions uses db.ExecWithRetry because it fires from parallel
+// per-file scan goroutines and can hit SQLite BUSY; the rest run on the
+// single scan-control path and use plain ExecContext.
+// =============================================================================
+
+// CreateScanParams is the input shape for starting a new scan record.
+type CreateScanParams struct {
+	Path                string
+	PathID              int64
+	TotalFiles          int
+	FileListJSON        string
+	DetectionConfigJSON string
+	AutoRemediate       bool
+	DryRun              bool
+}
+
+// InterruptedScan is the resume-shape for a scan that a prior shutdown left
+// in the 'interrupted' state with a persisted file_list.
+type InterruptedScan struct {
+	ID                  int64
+	PathID              sql.NullInt64
+	Path                string
+	TotalFiles          int
+	CurrentFileIndex    int
+	FileListJSON        string
+	DetectionConfigJSON sql.NullString
+	AutoRemediate       bool
+	DryRun              bool
+}
+
+// Create inserts a new scan row in the 'running' state and returns its id.
+func (r *ScanRepository) Create(ctx context.Context, p CreateScanParams) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `
+		INSERT INTO scans (path, path_id, status, files_scanned, corruptions_found, total_files, current_file_index, file_list, detection_config, auto_remediate, dry_run, started_at)
+		VALUES (?, ?, 'running', 0, 0, ?, 0, ?, ?, ?, ?, datetime('now'))
+	`, p.Path, p.PathID, p.TotalFiles, p.FileListJSON, p.DetectionConfigJSON, p.AutoRemediate, p.DryRun)
+	if err != nil {
+		return 0, fmt.Errorf("insert scan: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("last insert id: %w", err)
+	}
+	return id, nil
+}
+
+// SetStatus updates only the status column.
+func (r *ScanRepository) SetStatus(ctx context.Context, scanID int64, status string) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE scans SET status = ? WHERE id = ?`, status, scanID); err != nil {
+		return fmt.Errorf("set scan status: %w", err)
+	}
+	return nil
+}
+
+// Finalize sets the terminal status, the final files_scanned count, and
+// stamps completed_at to now.
+func (r *ScanRepository) Finalize(ctx context.Context, scanID int64, status string, filesScanned int) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE scans SET status = ?, files_scanned = ?, completed_at = datetime('now')
+		WHERE id = ?
+	`, status, filesScanned, scanID)
+	if err != nil {
+		return fmt.Errorf("finalize scan: %w", err)
+	}
+	return nil
+}
+
+// MarkInterrupted records a shutdown-time interruption, saving the file
+// index reached so the scan can resume there.
+func (r *ScanRepository) MarkInterrupted(ctx context.Context, scanID int64, currentFileIndex int) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE scans SET status = 'interrupted', current_file_index = ? WHERE id = ?
+	`, currentFileIndex, scanID)
+	if err != nil {
+		return fmt.Errorf("mark scan interrupted: %w", err)
+	}
+	return nil
+}
+
+// MarkPaused records a pause, saving the file index reached.
+func (r *ScanRepository) MarkPaused(ctx context.Context, scanID int64, currentFileIndex int) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE scans SET current_file_index = ?, status = 'paused' WHERE id = ?
+	`, currentFileIndex, scanID)
+	if err != nil {
+		return fmt.Errorf("mark scan paused: %w", err)
+	}
+	return nil
+}
+
+// MarkAborted sets the 'aborted' status and an explanatory error_message
+// (used when a mount/filesystem becomes inaccessible mid-scan).
+func (r *ScanRepository) MarkAborted(ctx context.Context, scanID int64, errorMessage string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE scans SET status = 'aborted', error_message = ? WHERE id = ?
+	`, errorMessage, scanID)
+	if err != nil {
+		return fmt.Errorf("mark scan aborted: %w", err)
+	}
+	return nil
+}
+
+// UpdateProgress updates the live current_file_index and files_scanned
+// counters during a running scan.
+func (r *ScanRepository) UpdateProgress(ctx context.Context, scanID int64, currentFileIndex, filesScanned int) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE scans SET current_file_index = ?, files_scanned = ? WHERE id = ?
+	`, currentFileIndex, filesScanned, scanID)
+	if err != nil {
+		return fmt.Errorf("update scan progress: %w", err)
+	}
+	return nil
+}
+
+// IncrementCorruptions bumps corruptions_found by one. Uses db.ExecWithRetry
+// because it fires from parallel per-file scan goroutines (SQLite BUSY
+// contention); behavior matches the scanner's prior inline call.
+func (r *ScanRepository) IncrementCorruptions(scanID int64) error {
+	if _, err := db.ExecWithRetry(r.db, `UPDATE scans SET corruptions_found = corruptions_found + 1 WHERE id = ?`, scanID); err != nil {
+		return fmt.Errorf("increment corruptions: %w", err)
+	}
+	return nil
+}
+
+// ListInterrupted returns scans left in the 'interrupted' state with a
+// persisted file_list, newest first — the resume queue consumed at startup.
+func (r *ScanRepository) ListInterrupted(ctx context.Context) ([]InterruptedScan, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, path_id, path, total_files, current_file_index, file_list, detection_config, auto_remediate, COALESCE(dry_run, 0)
+		FROM scans
+		WHERE status = 'interrupted' AND file_list IS NOT NULL
+		ORDER BY started_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query interrupted scans: %w", err)
+	}
+	defer rows.Close()
+
+	var out []InterruptedScan
+	for rows.Next() {
+		var s InterruptedScan
+		if err := rows.Scan(&s.ID, &s.PathID, &s.Path, &s.TotalFiles, &s.CurrentFileIndex,
+			&s.FileListJSON, &s.DetectionConfigJSON, &s.AutoRemediate, &s.DryRun); err != nil {
+			return nil, fmt.Errorf("scan interrupted scan row: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate interrupted scans: %w", err)
+	}
+	return out, nil
 }
