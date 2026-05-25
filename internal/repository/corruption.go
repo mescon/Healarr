@@ -234,3 +234,215 @@ func (r *CorruptionRepository) DeleteEvents(ctx context.Context, aggregateID str
 	}
 	return n, nil
 }
+
+// =============================================================================
+// Dashboard / stats read-model aggregates
+// =============================================================================
+
+// CorruptionStateCounts is the dashboard breakdown of corruptions by lifecycle
+// bucket, derived from the corruption_status view's current_state.
+type CorruptionStateCounts struct {
+	Resolved           int
+	Orphaned           int
+	InProgress         int
+	ManualIntervention int
+	Pending            int
+	Failed             int
+	Ignored            int
+}
+
+// DayCount is a (date, count) pair for time-series stats.
+type DayCount struct {
+	Date  string
+	Count int
+}
+
+// TypeCount is a (corruption_type, count) pair.
+type TypeCount struct {
+	Type  string
+	Count int
+}
+
+// StateCounts returns the dashboard breakdown of corruptions by lifecycle
+// bucket in a single pass over corruption_status.
+func (r *CorruptionRepository) StateCounts(ctx context.Context) (CorruptionStateCounts, error) {
+	var c CorruptionStateCounts
+	err := r.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(DISTINCT CASE WHEN current_state = 'VerificationSuccess' THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state = 'MaxRetriesReached' THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state IN ('SearchStarted', 'SearchQueued', 'RemediationQueued',
+				'DownloadStarted', 'DownloadProgress', 'SearchCompleted', 'DeletionCompleted', 'FileDetected')
+				THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state IN ('ImportBlocked', 'ManuallyRemoved') THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state = 'CorruptionDetected' THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state LIKE '%Failed' AND current_state != 'MaxRetriesReached' THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state = 'CorruptionIgnored' THEN corruption_id END)
+		FROM corruption_status
+	`).Scan(&c.Resolved, &c.Orphaned, &c.InProgress, &c.ManualIntervention, &c.Pending, &c.Failed, &c.Ignored)
+	if err != nil {
+		return CorruptionStateCounts{}, fmt.Errorf("query corruption state counts: %w", err)
+	}
+	return c, nil
+}
+
+// CountDetectedToday returns the number of CorruptionDetected events created
+// today, excluding aggregates the user has ignored.
+func (r *CorruptionRepository) CountDetectedToday(ctx context.Context) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM events e
+		WHERE e.event_type = 'CorruptionDetected'
+		AND substr(e.created_at, 1, 10) = date('now')
+		AND NOT EXISTS (
+			SELECT 1 FROM corruption_status cs
+			WHERE cs.corruption_id = e.aggregate_id
+			AND cs.current_state = 'CorruptionIgnored'
+		)
+	`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count corruptions today: %w", err)
+	}
+	return n, nil
+}
+
+// CountDetectedByDay returns daily CorruptionDetected counts over the last
+// `days` days, oldest day first.
+func (r *CorruptionRepository) CountDetectedByDay(ctx context.Context, days int) ([]DayCount, error) {
+	// The cutoff is a literal like '-30 days' that SQLite's date() understands.
+	cutoff := fmt.Sprintf("-%d days", days)
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT substr(created_at, 1, 10) as date, COUNT(*) as count
+		FROM events
+		WHERE event_type = 'CorruptionDetected'
+		AND substr(created_at, 1, 10) >= date('now', ?)
+		GROUP BY substr(created_at, 1, 10)
+		ORDER BY date ASC
+	`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("query corruptions by day: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]DayCount, 0)
+	for rows.Next() {
+		var d DayCount
+		if err := rows.Scan(&d.Date, &d.Count); err != nil {
+			return nil, fmt.Errorf("scan day-count row: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate day counts: %w", err)
+	}
+	return out, nil
+}
+
+// CountByCorruptionType returns CorruptionDetected counts grouped by the
+// corruption_type field of the event data. A NULL type is reported as "".
+func (r *CorruptionRepository) CountByCorruptionType(ctx context.Context) ([]TypeCount, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT json_extract(event_data, '$.corruption_type') as type, COUNT(*) as count
+		FROM events
+		WHERE event_type = 'CorruptionDetected'
+		GROUP BY type
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query corruptions by type: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]TypeCount, 0)
+	for rows.Next() {
+		var typeName sql.NullString
+		var count int
+		if err := rows.Scan(&typeName, &count); err != nil {
+			return nil, fmt.Errorf("scan type-count row: %w", err)
+		}
+		out = append(out, TypeCount{Type: typeName.String, Count: count})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate type counts: %w", err)
+	}
+	return out, nil
+}
+
+// PathCorruptionStats returns active, total, and resolved corruption counts
+// for a single scan path.
+func (r *CorruptionRepository) PathCorruptionStats(ctx context.Context, pathID int64) (active, total, resolved int, err error) {
+	err = r.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(DISTINCT CASE WHEN current_state NOT IN ('VerificationSuccess', 'MaxRetriesReached', 'CorruptionIgnored') THEN corruption_id END),
+			COUNT(DISTINCT corruption_id),
+			COUNT(DISTINCT CASE WHEN current_state = 'VerificationSuccess' THEN corruption_id END)
+		FROM corruption_status
+		WHERE path_id = ?
+	`, pathID).Scan(&active, &total, &resolved)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("query path corruption stats: %w", err)
+	}
+	return active, total, resolved, nil
+}
+
+// =============================================================================
+// Active-corruption lookups (scanner dedup)
+// =============================================================================
+
+// HasActive reports whether the given file has an unresolved CorruptionDetected
+// event within the last 7 days — used by the scanner to skip files already
+// being remediated. "Active" means a CorruptionDetected with no subsequent
+// VerificationSuccess or MaxRetriesReached for the same aggregate.
+func (r *CorruptionRepository) HasActive(ctx context.Context, filePath string) (bool, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM events e1
+		WHERE e1.event_type = 'CorruptionDetected'
+		AND json_extract(e1.event_data, '$.file_path') = ?
+		AND e1.created_at > datetime('now', '-7 days')
+		AND NOT EXISTS (
+			SELECT 1 FROM events e2
+			WHERE e2.aggregate_id = e1.aggregate_id
+			AND e2.event_type IN ('VerificationSuccess', 'MaxRetriesReached')
+		)
+	`, filePath).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check active corruption: %w", err)
+	}
+	return count > 0, nil
+}
+
+// ListActiveFilePathsUnderRoot returns the set of file paths under rootPath
+// that have an active corruption (same definition as HasActive). Returned as
+// a set so the scanner can do O(1) lookups while walking a path — avoids the
+// N+1 HasActive query per file.
+func (r *CorruptionRepository) ListActiveFilePathsUnderRoot(ctx context.Context, rootPath string) (map[string]bool, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT DISTINCT json_extract(e1.event_data, '$.file_path') as file_path
+		FROM events e1
+		WHERE e1.event_type = 'CorruptionDetected'
+		AND json_extract(e1.event_data, '$.file_path') LIKE ? || '%'
+		AND e1.created_at > datetime('now', '-7 days')
+		AND NOT EXISTS (
+			SELECT 1 FROM events e2
+			WHERE e2.aggregate_id = e1.aggregate_id
+			AND e2.event_type IN ('VerificationSuccess', 'MaxRetriesReached')
+		)
+	`, rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("query active corruptions under root: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]bool)
+	for rows.Next() {
+		var filePath string
+		if err := rows.Scan(&filePath); err != nil {
+			return nil, fmt.Errorf("scan active-corruption file_path: %w", err)
+		}
+		result[filePath] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active corruptions under root: %w", err)
+	}
+	return result, nil
+}
