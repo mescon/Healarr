@@ -61,6 +61,7 @@ type VerifierService struct {
 	pathMapper integration.PathMapper
 	arrClient  integration.ArrClient
 	db         *sql.DB
+	events     *repository.EventRepository
 	scanPaths  *repository.ScanPathRepository
 	clk        clock.Clock
 
@@ -106,6 +107,7 @@ func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecke
 	}
 	if db != nil {
 		v.scanPaths = repository.NewScanPathRepository(db)
+		v.events = repository.NewEventRepository(db)
 	}
 	return v
 }
@@ -450,12 +452,7 @@ func (v *VerifierService) getDurationMetrics(corruptionID string) (int64, int64)
 	defer cancel()
 
 	// Get CorruptionDetected timestamp
-	var corruptionTime time.Time
-	err := v.db.QueryRowContext(ctx, `
-		SELECT created_at FROM events
-		WHERE aggregate_id = ? AND event_type = 'CorruptionDetected'
-		ORDER BY created_at ASC LIMIT 1
-	`, corruptionID).Scan(&corruptionTime)
+	corruptionTime, err := v.events.FirstEventTime(ctx, corruptionID, domain.CorruptionDetected)
 	if err != nil {
 		return 0, 0
 	}
@@ -463,12 +460,7 @@ func (v *VerifierService) getDurationMetrics(corruptionID string) (int64, int64)
 	totalDuration := int64(now.Sub(corruptionTime).Seconds())
 
 	// Get first DownloadProgress timestamp (if any)
-	var downloadStartTime time.Time
-	err = v.db.QueryRowContext(ctx, `
-		SELECT created_at FROM events
-		WHERE aggregate_id = ? AND event_type = 'DownloadProgress'
-		ORDER BY created_at ASC LIMIT 1
-	`, corruptionID).Scan(&downloadStartTime)
+	downloadStartTime, err := v.events.FirstEventTime(ctx, corruptionID, domain.DownloadProgress)
 	if err != nil {
 		// No DownloadProgress event - maybe it completed very quickly
 		return totalDuration, 0

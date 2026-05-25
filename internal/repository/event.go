@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/mescon/Healarr/internal/db"
 	"github.com/mescon/Healarr/internal/domain"
@@ -119,4 +121,24 @@ func scanEventRow(scanner interface {
 		}
 	}
 	return event, nil
+}
+
+// FirstEventTime returns the created_at of the earliest event of the given
+// type for an aggregate. Returns ErrNotFound when the aggregate has no such
+// event. Used to measure elapsed time since a lifecycle milestone (e.g.
+// "how long since CorruptionDetected").
+func (r *EventRepository) FirstEventTime(ctx context.Context, aggregateID string, eventType domain.EventType) (time.Time, error) {
+	var t time.Time
+	err := r.db.QueryRowContext(ctx, `
+		SELECT created_at FROM events
+		WHERE aggregate_id = ? AND event_type = ?
+		ORDER BY created_at ASC LIMIT 1
+	`, aggregateID, eventType).Scan(&t)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, ErrNotFound
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("query first event time: %w", err)
+	}
+	return t, nil
 }

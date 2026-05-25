@@ -1,7 +1,9 @@
 package services
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/safego"
 )
 
@@ -24,11 +27,12 @@ const semaphoreAcquireTimeout = 2 * time.Minute
 
 // RemediatorService handles corruption events by deleting files and triggering searches.
 type RemediatorService struct {
-	eventBus   eventbus.Publisher
-	arrClient  integration.ArrClient
-	pathMapper integration.PathMapper
-	db         *sql.DB
-	semaphore  chan struct{} // limits concurrent remediations
+	eventBus    eventbus.Publisher
+	arrClient   integration.ArrClient
+	pathMapper  integration.PathMapper
+	db          *sql.DB
+	corruptions *repository.CorruptionRepository
+	semaphore   chan struct{} // limits concurrent remediations
 	// Lifecycle management
 	wg         sync.WaitGroup
 	shutdownCh chan struct{}
@@ -45,6 +49,9 @@ func NewRemediatorService(eb eventbus.Publisher, arr integration.ArrClient, pm i
 		db:         db,
 		semaphore:  make(chan struct{}, maxConcurrentRemediations),
 		shutdownCh: make(chan struct{}),
+	}
+	if db != nil {
+		r.corruptions = repository.NewCorruptionRepository(db)
 	}
 	return r
 }
@@ -101,34 +108,26 @@ func (r *RemediatorService) handleRetry(event domain.Event) {
 // checkDeletionCompleted checks if a DeletionCompleted event exists for this corruption
 // and returns the media_id and metadata from that event
 func (r *RemediatorService) checkDeletionCompleted(corruptionID string) (bool, int64, map[string]interface{}) {
-	if r.db == nil {
+	if r.corruptions == nil {
 		return false, 0, nil
 	}
 
-	var mediaIDFloat sql.NullFloat64
-	var metadataJSON sql.NullString
-
-	err := r.db.QueryRow(`
-		SELECT
-			json_extract(event_data, '$.media_id'),
-			json_extract(event_data, '$.metadata')
-		FROM events
-		WHERE aggregate_id = ? AND event_type = 'DeletionCompleted'
-		ORDER BY created_at DESC
-		LIMIT 1
-	`, corruptionID).Scan(&mediaIDFloat, &metadataJSON)
-
+	// Latest DeletionCompleted event for this corruption, if any.
+	raw, err := r.corruptions.LatestEventData(context.Background(), corruptionID, string(domain.DeletionCompleted), "DESC")
 	if err != nil {
-		// No DeletionCompleted event found
+		// No DeletionCompleted event found (ErrNotFound) or query error.
 		return false, 0, nil
 	}
 
-	mediaID := int64(0)
-	if mediaIDFloat.Valid {
-		mediaID = int64(mediaIDFloat.Float64)
+	// Pull media_id from the (decrypted, unmarshaled) event data. JSON numbers
+	// decode to float64; mirror the prior json_extract → int64 conversion.
+	var data struct {
+		MediaID float64 `json:"media_id"`
 	}
-
-	return true, mediaID, nil
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return true, 0, nil
+	}
+	return true, int64(data.MediaID), nil
 }
 
 // retrySearchOnly triggers a new search without attempting deletion
