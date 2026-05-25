@@ -4,6 +4,17 @@ import { useQueryClient } from '@tanstack/react-query';
 import { getWebSocketUrl } from '../lib/basePath';
 
 /**
+ * Dev-only connection logging. Stripped from production builds so the console
+ * stays quiet and — critically — never carries the auth token that rides in the
+ * WebSocket URL's query string. Genuine errors still use console.error directly.
+ */
+const debug = (...args: unknown[]) => {
+    if (import.meta.env.DEV) {
+        console.log('[ws]', ...args);
+    }
+};
+
+/**
  * A WebSocket message after normalization. Backend `event` envelopes are
  * flattened so consumers see `{ type: <event_type>, data: <event_data> }`.
  */
@@ -91,7 +102,8 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
         // Use base path aware WebSocket URL
         const wsUrl = `${getWebSocketUrl()}?token=${token}`;
 
-        console.log('Connecting to WebSocket:', wsUrl);
+        // Log the tokenless URL only — never wsUrl, which carries the token.
+        debug('connecting to', getWebSocketUrl());
 
         // Close existing connection if any (e.g., connecting or closing state)
         if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
@@ -101,13 +113,13 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
         const ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
-            console.log('WebSocket Connected');
+            debug('connected');
             setIsConnected(true);
             retryCountRef.current = 0; // Reset backoff on successful connection
         };
 
         ws.onclose = () => {
-            console.log('WebSocket Disconnected');
+            debug('disconnected');
             setIsConnected(false);
 
             // Reconnect with exponential backoff (max 30 seconds)
@@ -116,7 +128,7 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
             if (!isOnLoginPage && localStorage.getItem('healarr_token')) {
                 const backoff = Math.min(3000 * Math.pow(1.5, retryCountRef.current), 30000);
                 retryCountRef.current++;
-                console.log(`WebSocket reconnecting in ${Math.round(backoff / 1000)}s (attempt ${retryCountRef.current})`);
+                debug(`reconnecting in ${Math.round(backoff / 1000)}s (attempt ${retryCountRef.current})`);
                 setTimeout(() => connectRef.current(), backoff);
             }
         };
