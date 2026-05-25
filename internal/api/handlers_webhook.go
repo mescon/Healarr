@@ -10,6 +10,7 @@ import (
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/safego"
 )
 
@@ -96,8 +97,8 @@ func (s *RESTServer) handleWebhook(c *gin.Context) {
 		}
 	} else {
 		// Legacy fallback: validate against the master API key.
-		var storedKey string
-		if err := s.db.QueryRow("SELECT value FROM settings WHERE key = 'api_key'").Scan(&storedKey); err != nil {
+		storedKey, err := s.settings.Get(c.Request.Context(), repository.SettingKeyAPIKey)
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Authentication error"})
 			return
 		}

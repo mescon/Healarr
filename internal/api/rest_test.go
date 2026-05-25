@@ -328,6 +328,7 @@ func TestHandleRuntimeConfig(t *testing.T) {
 			router: gin.New(),
 			db:     db,
 		}
+		s.initRepositories()
 
 		s.router.GET("/api/runtime-config", s.handleRuntimeConfig)
 
@@ -362,6 +363,7 @@ func TestHandleRuntimeConfig(t *testing.T) {
 			router: gin.New(),
 			db:     db,
 		}
+		s.initRepositories()
 
 		s.router.GET("/api/runtime-config", s.handleRuntimeConfig)
 
@@ -400,6 +402,7 @@ func TestHandleRuntimeConfig(t *testing.T) {
 			router: gin.New(),
 			db:     emptyDB,
 		}
+		s.initRepositories()
 
 		s.router.GET("/api/runtime-config", s.handleRuntimeConfig)
 

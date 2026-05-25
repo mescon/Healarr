@@ -14,14 +14,11 @@ import (
 
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 )
 
-// SQL queries and error messages for setup handlers
-const (
-	sqlCountPasswordHash = "SELECT COUNT(*) FROM settings WHERE key = 'password_hash'"
-	sqlCountAPIKey       = "SELECT COUNT(*) FROM settings WHERE key = 'api_key'"
-	errMsgDatabaseError  = "Database error"
-)
+// Error messages for setup handlers.
+const errMsgDatabaseError = "Database error"
 
 // validatePathWithinDir validates that targetPath is within baseDir (defense in depth)
 // Returns the cleaned target path if valid, or an error if path escapes the base directory
@@ -51,28 +48,28 @@ type SetupStatus struct {
 func (s *RESTServer) handleSetupStatus(c *gin.Context) {
 	status := SetupStatus{}
 
+	ctx := c.Request.Context()
+
 	// Check for password
-	var passwordExists int
-	err := s.db.QueryRow(sqlCountPasswordHash).Scan(&passwordExists)
-	if err != nil && err != sql.ErrNoRows {
+	hasPassword, err := s.settings.Exists(ctx, repository.SettingKeyPasswordHash)
+	if err != nil {
 		logger.Errorf("Failed to check password status: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
-	status.HasPassword = passwordExists > 0
+	status.HasPassword = hasPassword
 
 	// Check for API key
-	var apiKeyExists int
-	err = s.db.QueryRow(sqlCountAPIKey).Scan(&apiKeyExists)
-	if err != nil && err != sql.ErrNoRows {
+	hasAPIKey, err := s.settings.Exists(ctx, repository.SettingKeyAPIKey)
+	if err != nil {
 		logger.Errorf("Failed to check API key status: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
-	status.HasAPIKey = apiKeyExists > 0
+	status.HasAPIKey = hasAPIKey
 
 	// Check for configured instances
-	instanceCount, err := s.arrInstances.Count(c.Request.Context())
+	instanceCount, err := s.arrInstances.Count(ctx)
 	if err != nil {
 		logger.Errorf("Failed to check instances: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
@@ -81,7 +78,7 @@ func (s *RESTServer) handleSetupStatus(c *gin.Context) {
 	status.HasInstances = instanceCount > 0
 
 	// Check for configured scan paths
-	pathCount, err := s.scanPaths.Count(c.Request.Context())
+	pathCount, err := s.scanPaths.Count(ctx)
 	if err != nil {
 		logger.Errorf("Failed to check scan paths: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
@@ -90,14 +87,13 @@ func (s *RESTServer) handleSetupStatus(c *gin.Context) {
 	status.HasScanPaths = pathCount > 0
 
 	// Check if onboarding was dismissed
-	var dismissed sql.NullString
-	err = s.db.QueryRow("SELECT value FROM settings WHERE key = 'onboarding_dismissed'").Scan(&dismissed)
-	if err != nil && err != sql.ErrNoRows {
+	dismissed, err := s.settings.GetOr(ctx, repository.SettingKeyOnboardingDismissed, "")
+	if err != nil {
 		logger.Errorf("Failed to check onboarding dismissed status: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
-	status.OnboardingDismissed = dismissed.Valid && dismissed.String == "true"
+	status.OnboardingDismissed = dismissed == "true"
 
 	// User needs setup if they have no password (first-time setup)
 	status.NeedsSetup = !status.HasPassword
@@ -109,11 +105,7 @@ func (s *RESTServer) handleSetupStatus(c *gin.Context) {
 // This endpoint is public during first-time setup, authenticated otherwise
 func (s *RESTServer) handleSetupDismiss(c *gin.Context) {
 	// Store the dismissal flag
-	_, err := s.db.Exec(`
-		INSERT INTO settings (key, value, updated_at) VALUES ('onboarding_dismissed', 'true', datetime('now'))
-		ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = datetime('now')
-	`)
-	if err != nil {
+	if err := s.settings.Set(c.Request.Context(), repository.SettingKeyOnboardingDismissed, "true"); err != nil {
 		logger.Errorf("Failed to dismiss onboarding: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save preference"})
 		return
@@ -127,11 +119,7 @@ func (s *RESTServer) handleSetupDismiss(c *gin.Context) {
 // This endpoint is authenticated - only logged-in users can reset the wizard
 func (s *RESTServer) handleSetupReset(c *gin.Context) {
 	// Reset the dismissal flag to false
-	_, err := s.db.Exec(`
-		INSERT INTO settings (key, value, updated_at) VALUES ('onboarding_dismissed', 'false', datetime('now'))
-		ON CONFLICT(key) DO UPDATE SET value = 'false', updated_at = datetime('now')
-	`)
-	if err != nil {
+	if err := s.settings.Set(c.Request.Context(), repository.SettingKeyOnboardingDismissed, "false"); err != nil {
 		logger.Errorf("Failed to reset onboarding: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reset setup wizard"})
 		return
@@ -302,14 +290,13 @@ func (s *RESTServer) validateUploadedDatabase(dbPath string) error {
 // It checks if setup is needed before allowing unauthenticated access
 func (s *RESTServer) handleConfigImportPublic(c *gin.Context) {
 	// Check if we're in setup mode (no password set)
-	var passwordExists int
-	err := s.db.QueryRow(sqlCountPasswordHash).Scan(&passwordExists)
+	passwordExists, err := s.settings.Exists(c.Request.Context(), repository.SettingKeyPasswordHash)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
 
-	if passwordExists > 0 {
+	if passwordExists {
 		// Password exists, require authentication
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
@@ -322,14 +309,13 @@ func (s *RESTServer) handleConfigImportPublic(c *gin.Context) {
 // handleDatabaseRestorePublic is a wrapper for handleDatabaseRestore that can be called during setup
 func (s *RESTServer) handleDatabaseRestorePublic(c *gin.Context) {
 	// Check if we're in setup mode (no password set)
-	var passwordExists int
-	err := s.db.QueryRow(sqlCountPasswordHash).Scan(&passwordExists)
+	passwordExists, err := s.settings.Exists(c.Request.Context(), repository.SettingKeyPasswordHash)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errMsgDatabaseError})
 		return
 	}
 
-	if passwordExists > 0 {
+	if passwordExists {
 		// Password exists, require authentication
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
