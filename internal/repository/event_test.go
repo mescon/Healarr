@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -130,5 +131,35 @@ func TestEventRepository_ListUnprocessed_skipsCorruptData(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].AggregateID != "good" {
 		t.Errorf("got %+v, want only the good row", events)
+	}
+}
+
+func TestEventRepository_FirstEventTime(t *testing.T) {
+	db := newEventTestDB(t)
+	repo := NewEventRepository(db)
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	// Two CorruptionDetected events for the same aggregate; FirstEventTime
+	// must return the earliest.
+	for _, at := range []time.Time{base.Add(time.Hour), base} {
+		if _, err := db.Exec(
+			`INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, created_at) VALUES ('corruption', 'c1', ?, '{}', ?)`,
+			domain.CorruptionDetected, at.Format("2006-01-02 15:04:05"),
+		); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	got, err := repo.FirstEventTime(context.Background(), "c1", domain.CorruptionDetected)
+	if err != nil {
+		t.Fatalf("FirstEventTime: %v", err)
+	}
+	if !got.Equal(base) {
+		t.Errorf("FirstEventTime = %v, want earliest %v", got, base)
+	}
+
+	// Aggregate with no event of that type → ErrNotFound.
+	if _, err := repo.FirstEventTime(context.Background(), "c1", domain.DownloadProgress); !errors.Is(err, ErrNotFound) {
+		t.Errorf("FirstEventTime missing type = %v, want ErrNotFound", err)
 	}
 }
