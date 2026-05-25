@@ -929,6 +929,12 @@ func TestRepository_MigrateAPIKeyEncryption_PlainKey(t *testing.T) {
 }
 
 func TestExecWithRetry_BusyExhausted(t *testing.T) {
+	// Exercise the retry loop without paying the real 100+200+400+800ms
+	// backoff. RetryDelay is a package var; restore it after.
+	origRetryDelay := RetryDelay
+	RetryDelay = 0
+	defer func() { RetryDelay = origRetryDelay }()
+
 	tmpDir, err := os.MkdirTemp("", "healarr-busy-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -986,6 +992,11 @@ func TestExecWithRetry_BusyExhausted(t *testing.T) {
 }
 
 func TestQueryWithRetry_BusyExhausted(t *testing.T) {
+	// Exercise the retry loop without paying the real exponential backoff.
+	origRetryDelay := RetryDelay
+	RetryDelay = 0
+	defer func() { RetryDelay = origRetryDelay }()
+
 	tmpDir, err := os.MkdirTemp("", "healarr-busy-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
