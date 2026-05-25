@@ -2,15 +2,14 @@ package eventbus
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/mescon/Healarr/internal/db"
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/safego"
 )
 
@@ -36,6 +35,7 @@ var _ Publisher = (*EventBus)(nil)
 // Events are persisted to the database before being dispatched to subscribers.
 type EventBus struct {
 	db          *sql.DB
+	events      *repository.EventRepository
 	subscribers map[domain.EventType][]chan domain.Event
 	mu          sync.RWMutex
 	stopChan    chan struct{}
@@ -46,6 +46,7 @@ type EventBus struct {
 func NewEventBus(db *sql.DB) *EventBus {
 	return &EventBus{
 		db:          db,
+		events:      repository.NewEventRepository(db),
 		subscribers: make(map[domain.EventType][]chan domain.Event),
 		stopChan:    make(chan struct{}),
 	}
@@ -54,13 +55,7 @@ func NewEventBus(db *sql.DB) *EventBus {
 func (eb *EventBus) Publish(event domain.Event) error {
 	logger.Debugf("EventBus: Publishing event %s (ID: %d, AggregateID: %s)", event.EventType, event.ID, event.AggregateID)
 
-	// 1. Store event in database (source of truth)
-	eventDataJSON, err := json.Marshal(event.EventData)
-	if err != nil {
-		return fmt.Errorf("failed to marshal event data: %w", err)
-	}
-
-	// Set default values if missing
+	// Set default values if missing before persisting
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = time.Now().UTC() // Use UTC for consistent SQLite date parsing
 	}
@@ -68,20 +63,12 @@ func (eb *EventBus) Publish(event domain.Event) error {
 		event.EventVersion = 1
 	}
 
-	res, err := db.ExecWithRetry(eb.db, `
-        INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at, user_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, event.AggregateType, event.AggregateID, event.EventType, eventDataJSON, event.EventVersion, event.CreatedAt, event.UserID)
-
+	// 1. Store event in database (source of truth)
+	id, err := eb.events.Append(event)
 	if err != nil {
 		return fmt.Errorf("failed to persist event: %w", err)
 	}
-
-	// Get the ID of the inserted event
-	id, err := res.LastInsertId()
-	if err == nil {
-		event.ID = id
-	}
+	event.ID = id
 
 	// 2. Publish to in-memory subscribers
 	eb.mu.RLock()
