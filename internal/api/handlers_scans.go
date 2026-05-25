@@ -1,7 +1,6 @@
 package api
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -276,27 +275,14 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 	}
 
 	// Get file counts from scan_files table using single GROUP BY query (performance optimization)
-	rows, err := s.db.Query("SELECT status, COUNT(*) FROM scan_files WHERE scan_id = ? GROUP BY status", scanID)
+	counts, err := s.scanFiles.CountByStatus(c.Request.Context(), scanIDInt)
 	if err != nil {
 		logger.Debugf("Failed to query file counts: %v", err)
 	} else {
-		defer rows.Close()
-		for rows.Next() {
-			var status string
-			var count int
-			if rows.Scan(&status, &count) == nil {
-				switch status {
-				case "healthy":
-					scan.HealthyFiles = count
-				case "corrupt":
-					scan.CorruptFiles = count
-				case "skipped":
-					scan.SkippedFiles = count
-				case "inaccessible":
-					scan.InaccessibleFiles = count
-				}
-			}
-		}
+		scan.HealthyFiles = counts["healthy"]
+		scan.CorruptFiles = counts["corrupt"]
+		scan.SkippedFiles = counts["skipped"]
+		scan.InaccessibleFiles = counts["inaccessible"]
 	}
 
 	c.JSON(http.StatusOK, scan)
@@ -321,68 +307,31 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 		return
 	}
 
-	// Build query with optional status filter
-	whereClause := "WHERE scan_id = ?"
-	args := []interface{}{scanID}
-
-	if statusFilter != "all" {
-		whereClause += " AND status = ?"
-		args = append(args, statusFilter)
-	}
-
-	// Get total count
-	// Security: whereClause contains only fixed strings with ? placeholders, user values are in args
-	var total int
-	countQuery := "SELECT COUNT(*) FROM scan_files " + whereClause // NOSONAR - parameterized query
-	err = s.db.QueryRow(countQuery, args...).Scan(&total)
+	// Get total count (optionally filtered by status)
+	total, err := s.scanFiles.CountForScan(c.Request.Context(), scanIDInt, statusFilter)
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
 
 	// Get paginated data
-	// Security: whereClause uses ? placeholders, ORDER BY is fixed/hardcoded
-	query := fmt.Sprintf(`
-		SELECT id, file_path, status, corruption_type, error_details, file_size, scanned_at
-		FROM scan_files %s
-		ORDER BY status DESC, file_path ASC
-		LIMIT ? OFFSET ?
-	`, whereClause) // NOSONAR - parameterized query with fixed ORDER BY
-	args = append(args, p.Limit, p.Offset)
-
-	rows, err := s.db.Query(query, args...) // NOSONAR
+	rows, err := s.scanFiles.ListForScan(c.Request.Context(), scanIDInt, statusFilter, p.Limit, p.Offset)
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	defer rows.Close()
 
-	files := make([]map[string]interface{}, 0)
-	for rows.Next() {
-		var id int
-		var filePath, status, scannedAt string
-		var corruptionType, errorDetails sql.NullString
-		var fileSize sql.NullInt64
-
-		if rows.Scan(&id, &filePath, &status, &corruptionType, &errorDetails, &fileSize, &scannedAt) != nil {
-			continue
-		}
-
+	files := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
 		files = append(files, map[string]interface{}{
-			"id":              id,
-			"file_path":       filePath,
-			"status":          status,
-			"corruption_type": corruptionType.String,
-			"error_details":   errorDetails.String,
-			"file_size":       fileSize.Int64,
-			"scanned_at":      scannedAt,
+			"id":              row.ID,
+			"file_path":       row.FilePath,
+			"status":          row.Status,
+			"corruption_type": row.CorruptionType.String,
+			"error_details":   row.ErrorDetails.String,
+			"file_size":       row.FileSize.Int64,
+			"scanned_at":      row.ScannedAt,
 		})
-	}
-
-	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading scan files"})
-		logger.Errorf("Error iterating scan files: %v", err)
-		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
