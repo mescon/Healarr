@@ -1651,8 +1651,10 @@ func TestRemediatorService_ExecuteRemediation_ShutdownWhileWaitingForSemaphore(t
 	mockEventBus := testutil.NewMockEventBus()
 	mockClient := &testutil.MockArrClient{
 		FindMediaByPathFunc: func(path string) (int64, error) {
-			// Slow response to keep semaphore busy
-			time.Sleep(5 * time.Second)
+			// Hold the semaphore slot long enough that the waiting goroutine
+			// is still blocked when Stop() fires (~150ms into the test). 500ms
+			// is ample margin without making wg.Wait() pay a full 5s.
+			time.Sleep(500 * time.Millisecond)
 			return 123, nil
 		},
 	}
