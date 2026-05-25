@@ -50,11 +50,7 @@ func (s *RESTServer) updateSettings(c *gin.Context) {
 	}
 
 	// Upsert setting
-	_, err := s.db.Exec(`
-		INSERT INTO settings (key, value, updated_at) VALUES ('base_path', ?, datetime('now'))
-		ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-	`, basePath, basePath)
-	if err != nil {
+	if err := s.settings.Set(c.Request.Context(), repository.SettingKeyBasePath, basePath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save setting"})
 		return
 	}

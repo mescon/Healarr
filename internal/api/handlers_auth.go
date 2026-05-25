@@ -1,7 +1,7 @@
 package api
 
 import (
-	"database/sql"
+	"errors"
 	"net/http"
 	"time"
 
@@ -10,6 +10,7 @@ import (
 	"github.com/mescon/Healarr/internal/auth"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 )
 
 // defaultSessionTTL is how long a newly issued session token remains valid.
@@ -21,8 +22,8 @@ func (s *RESTServer) handleAuthSetup(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// Check if password already exists
-	var exists bool
-	if s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key = 'password_hash')").Scan(&exists) != nil {
+	exists, err := s.settings.Exists(ctx, repository.SettingKeyPasswordHash)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": ErrMsgDatabaseError})
 		return
 	}
@@ -66,9 +67,12 @@ func (s *RESTServer) handleAuthSetup(c *gin.Context) {
 		return
 	}
 
-	// Store both
-	_, err = s.db.Exec("INSERT INTO settings (key, value) VALUES ('password_hash', ?), ('api_key', ?)", hash, encryptedKey)
-	if err != nil {
+	// Store both in one transaction so the user never ends up with one
+	// half (password but no api_key, or vice versa).
+	if err := s.settings.SetMany(ctx, map[string]string{
+		repository.SettingKeyPasswordHash: hash,
+		repository.SettingKeyAPIKey:       encryptedKey,
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save settings"})
 		return
 	}
@@ -92,9 +96,8 @@ func (s *RESTServer) handleLogin(c *gin.Context) {
 	}
 
 	// Get stored hash
-	var hash string
-	err := s.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'password_hash'").Scan(&hash)
-	if err == sql.ErrNoRows {
+	hash, err := s.settings.Get(ctx, repository.SettingKeyPasswordHash)
+	if errors.Is(err, repository.ErrNotFound) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Setup required"})
 		return
 	}
@@ -138,20 +141,20 @@ func (s *RESTServer) handleLogin(c *gin.Context) {
 func (s *RESTServer) handleAuthStatus(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	var count int
-	if s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM settings WHERE key = 'password_hash'").Scan(&count) != nil {
+	isSetup, err := s.settings.Exists(ctx, repository.SettingKeyPasswordHash)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": ErrMsgDatabaseError})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"is_setup": count > 0})
+	c.JSON(http.StatusOK, gin.H{"is_setup": isSetup})
 }
 
 func (s *RESTServer) getAPIKey(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	var encryptedKey string
-	if s.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'api_key'").Scan(&encryptedKey) != nil {
+	encryptedKey, err := s.settings.Get(ctx, repository.SettingKeyAPIKey)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve API key"})
 		return
 	}
@@ -182,8 +185,7 @@ func (s *RESTServer) regenerateAPIKey(c *gin.Context) {
 	}
 
 	// Update in database
-	_, err = s.db.Exec("UPDATE settings SET value = ? WHERE key = 'api_key'", encryptedKey)
-	if err != nil {
+	if err := s.settings.Set(c.Request.Context(), repository.SettingKeyAPIKey, encryptedKey); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update API key"})
 		return
 	}
@@ -212,8 +214,8 @@ func (s *RESTServer) changePassword(c *gin.Context) {
 	}
 
 	// Verify current password
-	var hash string
-	if s.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'password_hash'").Scan(&hash) != nil {
+	hash, err := s.settings.Get(ctx, repository.SettingKeyPasswordHash)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": ErrMsgDatabaseError})
 		return
 	}
@@ -231,8 +233,7 @@ func (s *RESTServer) changePassword(c *gin.Context) {
 	}
 
 	// Update in database
-	_, err = s.db.Exec("UPDATE settings SET value = ? WHERE key = 'password_hash'", newHash)
-	if err != nil {
+	if err := s.settings.Set(ctx, repository.SettingKeyPasswordHash, newHash); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
 		return
 	}

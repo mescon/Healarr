@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mescon/Healarr/internal/repository"
 )
 
 // Version is set at build time via -ldflags
@@ -291,8 +294,8 @@ func LoadBasePathFromDB(db *sql.DB) {
 		return
 	}
 
-	var basePath string
-	err := db.QueryRow("SELECT value FROM settings WHERE key = 'base_path'").Scan(&basePath)
+	basePath, err := repository.NewSettingsRepository(db).
+		GetOr(context.Background(), repository.SettingKeyBasePath, "")
 	if err != nil || basePath == "" {
 		return // Keep default
 	}

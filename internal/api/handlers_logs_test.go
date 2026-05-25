@@ -82,6 +82,7 @@ func setupLogsTestServer(t *testing.T, db *sql.DB) (*gin.Engine, string, func())
 		eventBus: eb,
 		hub:      hub,
 	}
+	s.initRepositories()
 
 	// Setup API key for authentication
 	apiKey, err := auth.GenerateAPIKey()

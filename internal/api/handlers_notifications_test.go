@@ -71,6 +71,7 @@ func setupNotificationsTestServer(t *testing.T, db *sql.DB, withNotifier bool) (
 		eventBus: eb,
 		hub:      hub,
 	}
+	s.initRepositories()
 
 	// Optionally add notifier service
 	if withNotifier {

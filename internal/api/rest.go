@@ -74,6 +74,7 @@ type RESTServer struct {
 	scanPaths      *repository.ScanPathRepository
 	schedules      *repository.ScheduleRepository
 	scans          *repository.ScanRepository
+	settings       *repository.SettingsRepository
 }
 
 // initRepositories populates the domain repository fields from s.db. Called
@@ -86,6 +87,7 @@ func (s *RESTServer) initRepositories() {
 	s.scanPaths = repository.NewScanPathRepository(s.db)
 	s.schedules = repository.NewScheduleRepository(s.db)
 	s.scans = repository.NewScanRepository(s.db)
+	s.settings = repository.NewSettingsRepository(s.db)
 }
 
 // ServerDeps contains all dependencies required for the REST server
@@ -259,8 +261,8 @@ func (s *RESTServer) handleRuntimeConfig(c *gin.Context) {
 	cfg := config.Get()
 	basePath := cfg.BasePath
 
-	var savedBasePath sql.NullString
-	if err := s.db.QueryRow("SELECT value FROM settings WHERE key = 'base_path'").Scan(&savedBasePath); err != nil && err != sql.ErrNoRows {
+	savedBasePath, err := s.settings.GetOr(c.Request.Context(), repository.SettingKeyBasePath, "")
+	if err != nil {
 		logger.Debugf("Failed to query base_path setting: %v", err)
 	}
 
@@ -269,7 +271,7 @@ func (s *RESTServer) handleRuntimeConfig(c *gin.Context) {
 
 	if envBasePath != "" {
 		source = "environment"
-	} else if savedBasePath.Valid && savedBasePath.String != "" {
+	} else if savedBasePath != "" {
 		source = "database"
 	}
 
@@ -617,9 +619,8 @@ var errInvalidToken = errors.New("invalid token")
 func (s *RESTServer) verifyAPIToken(token string) error {
 	ctx := context.Background()
 
-	var encryptedKey string
-	if err := s.db.QueryRowContext(ctx,
-		"SELECT value FROM settings WHERE key = 'api_key'").Scan(&encryptedKey); err != nil {
+	encryptedKey, err := s.settings.Get(ctx, repository.SettingKeyAPIKey)
+	if err != nil {
 		return fmt.Errorf("failed to retrieve API key: %w", err)
 	}
 
