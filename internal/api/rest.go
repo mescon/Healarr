@@ -76,6 +76,7 @@ type RESTServer struct {
 	scans          *repository.ScanRepository
 	settings       *repository.SettingsRepository
 	corruptions    *repository.CorruptionRepository
+	scanFiles      *repository.ScanFileRepository
 }
 
 // initRepositories populates the domain repository fields from s.db. Called
@@ -90,6 +91,7 @@ func (s *RESTServer) initRepositories() {
 	s.scans = repository.NewScanRepository(s.db)
 	s.settings = repository.NewSettingsRepository(s.db)
 	s.corruptions = repository.NewCorruptionRepository(s.db)
+	s.scanFiles = repository.NewScanFileRepository(s.db)
 }
 
 // ServerDeps contains all dependencies required for the REST server

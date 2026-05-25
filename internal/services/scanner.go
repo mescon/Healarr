@@ -306,14 +306,15 @@ type Scanner interface {
 
 // ScannerService manages file scanning operations for corruption detection.
 type ScannerService struct {
-	db          *sql.DB
-	scanPaths   *repository.ScanPathRepository
-	rescans     *repository.RescanRepository
-	eventBus    *eventbus.EventBus
-	detector    integration.HealthChecker
-	pathMapper  integration.PathMapper
-	activeScans map[string]*ScanProgress
-	mu          sync.Mutex
+	db            *sql.DB
+	scanPaths     *repository.ScanPathRepository
+	rescans       *repository.RescanRepository
+	scanFilesRepo *repository.ScanFileRepository
+	eventBus      *eventbus.EventBus
+	detector      integration.HealthChecker
+	pathMapper    integration.PathMapper
+	activeScans   map[string]*ScanProgress
+	mu            sync.Mutex
 	// filesInProgress tracks individual files currently being scanned to prevent race conditions
 	filesInProgress map[string]bool
 	filesMu         sync.Mutex
@@ -357,6 +358,9 @@ func (s *ScannerService) initRepositories() {
 	if s.rescans == nil {
 		s.rescans = repository.NewRescanRepository(s.db)
 	}
+	if s.scanFilesRepo == nil {
+		s.scanFilesRepo = repository.NewScanFileRepository(s.db)
+	}
 }
 
 // scanPathRepo returns the lazy-initialized ScanPathRepository.
@@ -369,6 +373,12 @@ func (s *ScannerService) scanPathRepo() *repository.ScanPathRepository {
 func (s *ScannerService) rescanRepo() *repository.RescanRepository {
 	s.initRepositories()
 	return s.rescans
+}
+
+// scanFileRepo returns the lazy-initialized ScanFileRepository.
+func (s *ScannerService) scanFileRepo() *repository.ScanFileRepository {
+	s.initRepositories()
+	return s.scanFilesRepo
 }
 
 // IsFileBeingScanned returns true if the given file is currently being scanned.
@@ -1142,10 +1152,13 @@ func (s *ScannerService) shouldSkipRecentlyModified(sfc *scanFileContext) bool {
 		logger.Infof("Skipping recently modified file (mtime %v ago): %s",
 			time.Since(sfc.fileMtime).Round(time.Second), sfc.filePath)
 		if sfc.scanDBID > 0 {
-			if _, err := db.ExecWithRetry(s.db, `
-				INSERT INTO scan_files (scan_id, file_path, status, corruption_type, error_details, file_size)
-				VALUES (?, ?, 'skipped', 'RecentlyModified', 'File modified within last 2 minutes - likely still being written', ?)
-			`, sfc.scanDBID, sfc.filePath, sfc.fileSize); err != nil {
+			if err := s.scanFileRepo().Record(context.Background(), sfc.scanDBID, repository.ScanFileRecord{
+				FilePath:       sfc.filePath,
+				Status:         "skipped",
+				CorruptionType: "RecentlyModified",
+				ErrorDetails:   "File modified within last 2 minutes - likely still being written",
+				FileSize:       sfc.fileSize,
+			}); err != nil {
 				logger.Debugf("Failed to record skipped file (recently modified): %v", err)
 			}
 		}
@@ -1162,10 +1175,13 @@ func (s *ScannerService) shouldSkipChangingSize(sfc *scanFileContext) bool {
 		if info2.Size() != sfc.fileSize {
 			logger.Infof("Skipping file with changing size (download in progress?): %s", sfc.filePath)
 			if sfc.scanDBID > 0 {
-				if _, err := db.ExecWithRetry(s.db, `
-					INSERT INTO scan_files (scan_id, file_path, status, corruption_type, error_details, file_size)
-					VALUES (?, ?, 'skipped', 'SizeChanging', 'File size changed during scan - active download/copy', ?)
-				`, sfc.scanDBID, sfc.filePath, sfc.fileSize); err != nil {
+				if err := s.scanFileRepo().Record(context.Background(), sfc.scanDBID, repository.ScanFileRecord{
+					FilePath:       sfc.filePath,
+					Status:         "skipped",
+					CorruptionType: "SizeChanging",
+					ErrorDetails:   "File size changed during scan - active download/copy",
+					FileSize:       sfc.fileSize,
+				}); err != nil {
 					// scan_files rows drive the UI scan-detail screen; losing
 					// writes silently produces empty scan reports. Log loud.
 					logger.Errorf("Failed to record skipped file (size changing): %v", err)
@@ -1180,10 +1196,11 @@ func (s *ScannerService) shouldSkipChangingSize(sfc *scanFileContext) bool {
 // recordHealthyFile records a healthy file in the scan_files table.
 func (s *ScannerService) recordHealthyFile(sfc *scanFileContext) {
 	if sfc.scanDBID > 0 {
-		_, err := db.ExecWithRetry(s.db, `
-			INSERT INTO scan_files (scan_id, file_path, status, file_size)
-			VALUES (?, ?, 'healthy', ?)
-		`, sfc.scanDBID, sfc.filePath, sfc.fileSize)
+		err := s.scanFileRepo().Record(context.Background(), sfc.scanDBID, repository.ScanFileRecord{
+			FilePath: sfc.filePath,
+			Status:   "healthy",
+			FileSize: sfc.fileSize,
+		})
 		if err != nil {
 			// scan_files rows drive the UI scan-detail screen; losing writes
 			// silently produces "0 healthy, 0 corrupt" reports.
@@ -1200,10 +1217,13 @@ func (s *ScannerService) handleRecoverableError(progress *ScanProgress, sfc *sca
 
 	// Record as "inaccessible" not "corrupt"
 	if sfc.scanDBID > 0 {
-		_, err := db.ExecWithRetry(s.db, `
-			INSERT INTO scan_files (scan_id, file_path, status, corruption_type, error_details, file_size)
-			VALUES (?, ?, 'inaccessible', ?, ?, ?)
-		`, sfc.scanDBID, sfc.filePath, healthErr.Type, healthErr.Message, sfc.fileSize)
+		err := s.scanFileRepo().Record(context.Background(), sfc.scanDBID, repository.ScanFileRecord{
+			FilePath:       sfc.filePath,
+			Status:         "inaccessible",
+			CorruptionType: healthErr.Type,
+			ErrorDetails:   healthErr.Message,
+			FileSize:       sfc.fileSize,
+		})
 		if err != nil {
 			logger.Errorf("Failed to record inaccessible file: %v", err)
 		}
@@ -1259,10 +1279,13 @@ func (s *ScannerService) handleTrueCorruption(ctx context.Context, progress *Sca
 	if hasActive {
 		logger.Infof("Skipping duplicate corruption for file already being processed: %s", sfc.filePath)
 		if sfc.scanDBID > 0 {
-			if _, err := db.ExecWithRetry(s.db, `
-				INSERT INTO scan_files (scan_id, file_path, status, corruption_type, error_details, file_size)
-				VALUES (?, ?, 'skipped', 'AlreadyProcessing', 'File already has active corruption record', ?)
-			`, sfc.scanDBID, sfc.filePath, sfc.fileSize); err != nil {
+			if err := s.scanFileRepo().Record(context.Background(), sfc.scanDBID, repository.ScanFileRecord{
+				FilePath:       sfc.filePath,
+				Status:         "skipped",
+				CorruptionType: "AlreadyProcessing",
+				ErrorDetails:   "File already has active corruption record",
+				FileSize:       sfc.fileSize,
+			}); err != nil {
 				logger.Debugf("Failed to record skipped file (already processing): %v", err)
 			}
 		}
@@ -1271,10 +1294,13 @@ func (s *ScannerService) handleTrueCorruption(ctx context.Context, progress *Sca
 
 	// Record corrupt file
 	if sfc.scanDBID > 0 {
-		_, err := db.ExecWithRetry(s.db, `
-			INSERT INTO scan_files (scan_id, file_path, status, corruption_type, error_details, file_size)
-			VALUES (?, ?, 'corrupt', ?, ?, ?)
-		`, sfc.scanDBID, sfc.filePath, healthErr.Type, healthErr.Message, sfc.fileSize)
+		err := s.scanFileRepo().Record(context.Background(), sfc.scanDBID, repository.ScanFileRecord{
+			FilePath:       sfc.filePath,
+			Status:         "corrupt",
+			CorruptionType: healthErr.Type,
+			ErrorDetails:   healthErr.Message,
+			FileSize:       sfc.fileSize,
+		})
 		if err != nil {
 			logger.Debugf("Failed to record corrupt file: %v", err)
 		}
