@@ -327,18 +327,29 @@ type ScannerService struct {
 	scanPathCache     []scanPathConfig
 	scanPathCacheMu   sync.RWMutex
 	scanPathCacheTime time.Time
+
+	// sizeStabilityDelay is how long shouldSkipChangingSize waits before
+	// re-stat'ing a file to detect an in-progress download. A field (default
+	// set by NewScannerService) so tests — which construct &ScannerService{}
+	// directly and leave it at the 0 zero-value — don't pay 500ms per file.
+	sizeStabilityDelay time.Duration
 }
+
+// defaultSizeStabilityDelay is the production re-stat interval for
+// detecting files whose size is still changing (active download/copy).
+const defaultSizeStabilityDelay = 500 * time.Millisecond
 
 // NewScannerService creates a new ScannerService with the given dependencies.
 func NewScannerService(db *sql.DB, eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper) *ScannerService {
 	s := &ScannerService{
-		db:              db,
-		eventBus:        eb,
-		detector:        detector,
-		pathMapper:      pm,
-		activeScans:     make(map[string]*ScanProgress),
-		filesInProgress: make(map[string]bool),
-		shutdownCh:      make(chan struct{}),
+		db:                 db,
+		eventBus:           eb,
+		detector:           detector,
+		pathMapper:         pm,
+		activeScans:        make(map[string]*ScanProgress),
+		filesInProgress:    make(map[string]bool),
+		shutdownCh:         make(chan struct{}),
+		sizeStabilityDelay: defaultSizeStabilityDelay,
 	}
 	s.initRepositories()
 	return s
@@ -1125,7 +1136,7 @@ func (s *ScannerService) shouldSkipRecentlyModified(sfc *scanFileContext) bool {
 // shouldSkipChangingSize checks if file size is actively changing (download in progress).
 // Returns true if file should be skipped.
 func (s *ScannerService) shouldSkipChangingSize(sfc *scanFileContext) bool {
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(s.sizeStabilityDelay)
 	if info2, err := os.Stat(sfc.filePath); err == nil {
 		if info2.Size() != sfc.fileSize {
 			logger.Infof("Skipping file with changing size (download in progress?): %s", sfc.filePath)
