@@ -173,6 +173,11 @@ func setupTestClient(t *testing.T) (*HTTPArrClient, *testDB) {
 
 	db := newTestDB(t)
 	client := NewArrClient(db.DB)
+	// Eliminate real retry backoff sleeps in tests: retry COUNT behavior is
+	// unchanged, only the (attempt+1)*2s wall-clock waits are removed. This
+	// is the single biggest test-suite speedup (the 5xx/network-retry tests
+	// were each paying 2s+4s+... per exhausted retry).
+	client.retryBackoff = 0
 	return client, db
 }
 
