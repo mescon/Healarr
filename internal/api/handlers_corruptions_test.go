@@ -136,7 +136,7 @@ func createCorruptionsTestServer(t *testing.T, db *sql.DB, eb *eventbus.EventBus
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	return &RESTServer{
+	srv := &RESTServer{
 		router:     r,
 		db:         db,
 		eventBus:   eb,
@@ -146,6 +146,8 @@ func createCorruptionsTestServer(t *testing.T, db *sql.DB, eb *eventbus.EventBus
 		hub:        NewWebSocketHub(eb),
 		startTime:  time.Now(),
 	}
+	srv.initRepositories()
+	return srv
 }
 
 func TestGetCorruptions_EmptyDB(t *testing.T) {
