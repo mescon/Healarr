@@ -145,6 +145,44 @@ func (r *ArrInstanceRepository) ListEnabled(ctx context.Context) ([]ArrInstance,
 	return instances, nil
 }
 
+// ArrInstanceWithScanPath pairs an enabled instance with the arr_path of
+// one of its scan_paths (the JOIN produces one row per (instance, path)).
+// Only the columns the arr-client path-matching logic needs are populated
+// — EncryptedWebhookSecret/Enabled are left zero-valued.
+type ArrInstanceWithScanPath struct {
+	ArrInstance
+	ArrPath string
+}
+
+// ListEnabledWithScanPaths returns enabled instances joined with each of
+// their scan_paths' arr_path. Used by the arr-client to resolve which
+// instance owns a given *arr-side path via longest-prefix matching.
+func (r *ArrInstanceRepository) ListEnabledWithScanPaths(ctx context.Context) ([]ArrInstanceWithScanPath, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT i.id, i.name, i.type, i.url, i.api_key, sp.arr_path
+		FROM arr_instances i
+		JOIN scan_paths sp ON sp.arr_instance_id = i.id
+		WHERE i.enabled = 1
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query enabled arr_instances with scan paths: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ArrInstanceWithScanPath
+	for rows.Next() {
+		var row ArrInstanceWithScanPath
+		if err := rows.Scan(&row.ID, &row.Name, &row.Type, &row.URL, &row.EncryptedAPIKey, &row.ArrPath); err != nil {
+			return nil, fmt.Errorf("scan arr_instance+scan_path row: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate arr_instances with scan paths: %w", err)
+	}
+	return out, nil
+}
+
 // GetByID returns the row matching id, or ErrNotFound.
 func (r *ArrInstanceRepository) GetByID(ctx context.Context, id int64) (ArrInstance, error) {
 	var inst ArrInstance
