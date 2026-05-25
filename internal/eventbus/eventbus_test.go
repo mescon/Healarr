@@ -960,3 +960,46 @@ func TestRepublishToSubscribers_NoSubscribers(t *testing.T) {
 		t.Errorf("RepublishToSubscribers should not error with no subscribers: %v", err)
 	}
 }
+
+// TestEventBus_PublishVolatile_DeliversWithoutPersisting verifies that a volatile
+// event reaches in-memory subscribers but is never written to the event store.
+func TestEventBus_PublishVolatile_DeliversWithoutPersisting(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	eb := NewEventBus(db)
+	defer eb.Shutdown()
+
+	received := make(chan domain.Event, 1)
+	eb.Subscribe(domain.ScanProgress, func(e domain.Event) {
+		received <- e
+	})
+
+	eb.PublishVolatile(domain.Event{
+		AggregateType: "scan",
+		AggregateID:   "scan-1",
+		EventType:     domain.ScanProgress,
+		EventData:     map[string]interface{}{"files_done": 5},
+	})
+
+	// Delivered in-memory, with defaults filled in.
+	select {
+	case e := <-received:
+		if e.AggregateID != "scan-1" {
+			t.Errorf("AggregateID = %q, want scan-1", e.AggregateID)
+		}
+		if e.CreatedAt.IsZero() {
+			t.Error("expected CreatedAt to be set")
+		}
+		if e.EventVersion != 1 {
+			t.Errorf("EventVersion = %d, want 1", e.EventVersion)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscriber did not receive volatile event")
+	}
+
+	// But not persisted to the event store.
+	if n := countEventsByType(t, db, domain.ScanProgress); n != 0 {
+		t.Errorf("persisted ScanProgress events = %d, want 0", n)
+	}
+}

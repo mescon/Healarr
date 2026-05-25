@@ -70,27 +70,45 @@ func (eb *EventBus) Publish(event domain.Event) error {
 	}
 	event.ID = id
 
-	// 2. Publish to in-memory subscribers
+	// 2. Publish to in-memory subscribers. A dropped delivery here is not lost:
+	// the event is persisted, and the EventReplayService catches unprocessed
+	// CorruptionDetected events on restart (RecoveryService handles other stale items).
+	eb.dispatch(event)
+
+	return nil
+}
+
+// dispatch delivers an event to all in-memory subscribers for its type using a
+// non-blocking send. If a subscriber's buffer is full the delivery is dropped
+// (callers that persist first treat this as recoverable; volatile callers treat
+// a dropped ephemeral event as benign). Does not touch the database.
+func (eb *EventBus) dispatch(event domain.Event) {
 	eb.mu.RLock()
 	defer eb.mu.RUnlock()
 
-	if subscribers, ok := eb.subscribers[event.EventType]; ok {
-		for _, ch := range subscribers {
-			select {
-			case ch <- event:
-			default:
-				// Non-blocking send failed - buffer is full
-				// This is a warning condition: the event IS persisted to DB (so not lost),
-				// but the in-memory subscriber won't process it immediately.
-				// The EventReplayService will catch unprocessed CorruptionDetected events on restart.
-				// For other event types, RecoveryService handles stale items.
-				logger.Warnf("EventBus: subscriber buffer full for %s (%s) - event persisted to DB but in-memory delivery skipped",
-					event.AggregateID, event.EventType)
-			}
+	for _, ch := range eb.subscribers[event.EventType] {
+		select {
+		case ch <- event:
+		default:
+			logger.Warnf("EventBus: subscriber buffer full for %s (%s) - in-memory delivery skipped",
+				event.AggregateID, event.EventType)
 		}
 	}
+}
 
-	return nil
+// PublishVolatile delivers a high-frequency, in-memory-only event to subscribers
+// WITHOUT persisting it to the event store. Use it for ephemeral UI signals such
+// as ScanProgress that are never replayed or queried back: persisting one per
+// scanned file would add a synchronous, fsync'd INSERT to the scan hot path for
+// no durable benefit. Durable scan state still lives in the scans table.
+func (eb *EventBus) PublishVolatile(event domain.Event) {
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	if event.EventVersion == 0 {
+		event.EventVersion = 1
+	}
+	eb.dispatch(event)
 }
 
 // PublishWithRetry publishes an event with retry logic for transient failures.
@@ -154,18 +172,7 @@ func (eb *EventBus) Subscribe(eventType domain.EventType, handler func(domain.Ev
 // without re-persisting to the database. Used by the event replay service to
 // deliver events that were persisted but not processed before a restart.
 func (eb *EventBus) RepublishToSubscribers(event domain.Event) error {
-	eb.mu.RLock()
-	defer eb.mu.RUnlock()
-
-	if subscribers, ok := eb.subscribers[event.EventType]; ok {
-		for _, ch := range subscribers {
-			select {
-			case ch <- event:
-			default:
-				logger.Warnf("Subscriber buffer full for replayed event %s (%s)", event.AggregateID, event.EventType)
-			}
-		}
-	}
+	eb.dispatch(event)
 	return nil
 }
 
