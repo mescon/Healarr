@@ -21,8 +21,11 @@ import (
 // MaxRetries is the number of times to retry a database operation on SQLITE_BUSY
 const MaxRetries = 5
 
-// RetryDelay is the base delay between retries (increases exponentially)
-const RetryDelay = 100 * time.Millisecond
+// RetryDelay is the base delay between retries (increases exponentially).
+// A var (not a const) so tests exercising full retry exhaustion can shrink
+// it to avoid paying the real 100+200+400+800ms backoff; production keeps
+// the 100ms default.
+var RetryDelay = 100 * time.Millisecond
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
