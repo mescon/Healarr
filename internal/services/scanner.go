@@ -310,6 +310,7 @@ type ScannerService struct {
 	rescans       *repository.RescanRepository
 	scanFilesRepo *repository.ScanFileRepository
 	scans         *repository.ScanRepository
+	corruptions   *repository.CorruptionRepository
 	eventBus      *eventbus.EventBus
 	detector      integration.HealthChecker
 	pathMapper    integration.PathMapper
@@ -364,6 +365,15 @@ func (s *ScannerService) initRepositories() {
 	if s.scans == nil {
 		s.scans = repository.NewScanRepository(s.db)
 	}
+	if s.corruptions == nil {
+		s.corruptions = repository.NewCorruptionRepository(s.db)
+	}
+}
+
+// corruptionRepo returns the lazy-initialized CorruptionRepository.
+func (s *ScannerService) corruptionRepo() *repository.CorruptionRepository {
+	s.initRepositories()
+	return s.corruptions
 }
 
 // scanPathRepo returns the lazy-initialized ScanPathRepository.
@@ -1788,65 +1798,26 @@ func (s *ScannerService) hasActiveCorruption(filePath string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
-	var count int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM events e1
-		WHERE e1.event_type = 'CorruptionDetected'
-		AND json_extract(e1.event_data, '$.file_path') = ?
-		AND e1.created_at > datetime('now', '-7 days')
-		AND NOT EXISTS (
-			SELECT 1 FROM events e2
-			WHERE e2.aggregate_id = e1.aggregate_id
-			AND e2.event_type IN ('VerificationSuccess', 'MaxRetriesReached')
-		)
-	`, filePath).Scan(&count)
-
+	active, err := s.corruptionRepo().HasActive(ctx, filePath)
 	if err != nil {
 		logger.Debugf("Error checking for active corruption: %v", err)
 		return false // Err on the side of processing
 	}
-
-	return count > 0
+	return active
 }
 
 // LoadActiveCorruptionsForPath preloads all active corruptions for a given root path.
 // This fixes the N+1 query problem during path scans by doing a single query upfront.
 // Returns a map of file_path -> true for files with active corruptions.
 func (s *ScannerService) LoadActiveCorruptionsForPath(rootPath string) map[string]bool {
-	result := make(map[string]bool)
-
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
 	// Get all active corruptions for files under this path in a single query
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT json_extract(e1.event_data, '$.file_path') as file_path
-		FROM events e1
-		WHERE e1.event_type = 'CorruptionDetected'
-		AND json_extract(e1.event_data, '$.file_path') LIKE ? || '%'
-		AND e1.created_at > datetime('now', '-7 days')
-		AND NOT EXISTS (
-			SELECT 1 FROM events e2
-			WHERE e2.aggregate_id = e1.aggregate_id
-			AND e2.event_type IN ('VerificationSuccess', 'MaxRetriesReached')
-		)
-	`, rootPath)
+	result, err := s.corruptionRepo().ListActiveFilePathsUnderRoot(ctx, rootPath)
 	if err != nil {
 		logger.Debugf("Error loading active corruptions for path %s: %v", rootPath, err)
-		return result
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var filePath string
-		if rows.Scan(&filePath) != nil {
-			continue
-		}
-		result[filePath] = true
-	}
-
-	if err := rows.Err(); err != nil {
-		logger.Errorf("Error iterating active corruptions for path %s: %v", rootPath, err)
+		return make(map[string]bool)
 	}
 
 	logger.Debugf("Preloaded %d active corruptions for path %s", len(result), rootPath)

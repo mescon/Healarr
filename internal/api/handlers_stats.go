@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net/http"
 
@@ -38,34 +37,25 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	var warnings []string
 
 	// All corruption stats in a single query
-	var resolved, orphaned, inProgress, manualIntervention, pending, failed, ignored int
-	if err := s.db.QueryRow(`
-		SELECT
-			COUNT(DISTINCT CASE WHEN current_state = 'VerificationSuccess' THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state = 'MaxRetriesReached' THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state IN ('SearchStarted', 'SearchQueued', 'RemediationQueued',
-				'DownloadStarted', 'DownloadProgress', 'SearchCompleted', 'DeletionCompleted', 'FileDetected')
-				THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state IN ('ImportBlocked', 'ManuallyRemoved') THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state = 'CorruptionDetected' THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state LIKE '%Failed' AND current_state != 'MaxRetriesReached' THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state = 'CorruptionIgnored' THEN corruption_id END)
-		FROM corruption_status
-	`).Scan(&resolved, &orphaned, &inProgress, &manualIntervention, &pending, &failed, &ignored); err != nil {
+	counts, err := s.corruptions.StateCounts(c.Request.Context())
+	if err != nil {
 		warnings = append(warnings, "failed to query corruption stats")
 		logger.Debugf("Failed to query corruption stats: %v", err)
 	}
+	resolved, inProgress := counts.Resolved, counts.InProgress
+	orphaned := counts.Orphaned
 
-	stats.ResolvedCorruptions = resolved
-	stats.OrphanedCorruptions = orphaned
-	stats.InProgressCorruptions = inProgress
-	stats.ManualInterventionCorruptions = manualIntervention
-	stats.PendingCorruptions = pending
-	stats.FailedCorruptions = failed
-	stats.IgnoredCorruptions = ignored
-	stats.SuccessfulRemediations = resolved
+	stats.ResolvedCorruptions = counts.Resolved
+	stats.OrphanedCorruptions = counts.Orphaned
+	stats.InProgressCorruptions = counts.InProgress
+	stats.ManualInterventionCorruptions = counts.ManualIntervention
+	stats.PendingCorruptions = counts.Pending
+	stats.FailedCorruptions = counts.Failed
+	stats.IgnoredCorruptions = counts.Ignored
+	stats.SuccessfulRemediations = counts.Resolved
 	// Total excludes ignored - they're not part of active remediation
-	stats.TotalCorruptions = pending + resolved + orphaned + manualIntervention + inProgress + failed
+	stats.TotalCorruptions = counts.Pending + counts.Resolved + counts.Orphaned +
+		counts.ManualIntervention + counts.InProgress + counts.Failed
 
 	// All scan stats in a single query
 	if scanStats, err := s.scans.GetScanStats(c.Request.Context()); err != nil {
@@ -79,18 +69,11 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	}
 
 	// Query 3: Corruptions detected today (needs events table)
-	if err := s.db.QueryRow(`
-		SELECT COUNT(*) FROM events e
-		WHERE e.event_type = 'CorruptionDetected'
-		AND substr(e.created_at, 1, 10) = date('now')
-		AND NOT EXISTS (
-			SELECT 1 FROM corruption_status cs
-			WHERE cs.corruption_id = e.aggregate_id
-			AND cs.current_state = 'CorruptionIgnored'
-		)
-	`).Scan(&stats.CorruptionsToday); err != nil {
+	if today, err := s.corruptions.CountDetectedToday(c.Request.Context()); err != nil {
 		warnings = append(warnings, "failed to query corruptions today")
 		logger.Debugf("Failed to query corruptions today: %v", err)
+	} else {
+		stats.CorruptionsToday = today
 	}
 
 	// Query 4: Last completed scan info
@@ -127,74 +110,40 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 func (s *RESTServer) getStatsHistory(c *gin.Context) {
 	// Group by date for the last 30 days
 	// Use substr to extract YYYY-MM-DD from Go's time.Time format
-	rows, err := s.db.Query(`
-		SELECT substr(created_at, 1, 10) as date, COUNT(*) as count
-		FROM events
-		WHERE event_type = 'CorruptionDetected'
-		AND substr(created_at, 1, 10) >= date('now', '-30 days')
-		GROUP BY substr(created_at, 1, 10)
-		ORDER BY date ASC
-	`)
+	days, err := s.corruptions.CountDetectedByDay(c.Request.Context(), 30)
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	defer rows.Close()
 
-	stats := make([]map[string]interface{}, 0)
-	for rows.Next() {
-		var date string
-		var count int
-		if rows.Scan(&date, &count) != nil {
-			continue
-		}
+	stats := make([]map[string]interface{}, 0, len(days))
+	for _, d := range days {
 		stats = append(stats, map[string]interface{}{
-			"date":  date,
-			"count": count,
+			"date":  d.Date,
+			"count": d.Count,
 		})
-	}
-	if err := rows.Err(); err != nil {
-		respondDatabaseError(c, err)
-		return
 	}
 	c.JSON(http.StatusOK, stats)
 }
 
 func (s *RESTServer) getStatsTypes(c *gin.Context) {
 	// Group by corruption type
-	rows, err := s.db.Query(`
-		SELECT json_extract(event_data, '$.corruption_type') as type, COUNT(*) as count
-		FROM events
-		WHERE event_type = 'CorruptionDetected'
-		GROUP BY type
-	`)
+	types, err := s.corruptions.CountByCorruptionType(c.Request.Context())
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	defer rows.Close()
 
-	stats := make([]map[string]interface{}, 0)
-	for rows.Next() {
-		var corruptionType sql.NullString
-		var count int
-		if rows.Scan(&corruptionType, &count) != nil {
-			continue
+	stats := make([]map[string]interface{}, 0, len(types))
+	for _, t := range types {
+		typeName := t.Type
+		if typeName == "" {
+			typeName = "Unknown"
 		}
-
-		typeName := "Unknown"
-		if corruptionType.Valid {
-			typeName = corruptionType.String
-		}
-
 		stats = append(stats, map[string]interface{}{
 			"type":  typeName,
-			"count": count,
+			"count": t.Count,
 		})
-	}
-	if err := rows.Err(); err != nil {
-		respondDatabaseError(c, err)
-		return
 	}
 	c.JSON(http.StatusOK, stats)
 }
@@ -239,7 +188,7 @@ func (s *RESTServer) getPathHealth(c *gin.Context) {
 	// For each path, get last scan and corruption stats
 	for i := range paths {
 		paths[i].LastScanID, paths[i].LastScanTime = s.loadPathLastScan(c.Request.Context(), int64(paths[i].PathID))
-		paths[i].ActiveCorruptions, paths[i].TotalCorruptions, paths[i].ResolvedCount = s.loadPathCorruptionStats(paths[i].PathID)
+		paths[i].ActiveCorruptions, paths[i].TotalCorruptions, paths[i].ResolvedCount = s.loadPathCorruptionStats(c.Request.Context(), int64(paths[i].PathID))
 		paths[i].Status = determinePathHealthStatus(paths[i])
 	}
 
@@ -266,15 +215,8 @@ func (s *RESTServer) loadPathLastScan(ctx context.Context, pathID int64) (*int, 
 }
 
 // loadPathCorruptionStats queries active, total, and resolved corruption counts for a given path.
-func (s *RESTServer) loadPathCorruptionStats(pathID int) (active, total, resolved int) {
-	err := s.db.QueryRow(`
-		SELECT
-			COUNT(DISTINCT CASE WHEN current_state NOT IN ('VerificationSuccess', 'MaxRetriesReached', 'CorruptionIgnored') THEN corruption_id END),
-			COUNT(DISTINCT corruption_id),
-			COUNT(DISTINCT CASE WHEN current_state = 'VerificationSuccess' THEN corruption_id END)
-		FROM corruption_status
-		WHERE path_id = ?
-	`, pathID).Scan(&active, &total, &resolved)
+func (s *RESTServer) loadPathCorruptionStats(ctx context.Context, pathID int64) (active, total, resolved int) {
+	active, total, resolved, err := s.corruptions.PathCorruptionStats(ctx, pathID)
 	if err != nil {
 		return 0, 0, 0
 	}

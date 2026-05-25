@@ -149,8 +149,8 @@ func (s *RESTServer) handleHealth(c *gin.Context) {
 	arrHealth := s.checkArrInstancesHealth(ctx)
 
 	// Get pending corruptions count
-	var pending int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM corruption_status WHERE current_state = 'CorruptionDetected'").Scan(&pending); err != nil {
+	pending, err := s.corruptions.CountByState(ctx, "CorruptionDetected")
+	if err != nil {
 		logger.Debugf("Failed to query pending corruptions: %v", err)
 	}
 
