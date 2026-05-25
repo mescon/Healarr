@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, FileCheck, FileX, Loader2, Filter, HardDrive, Clock, FolderOpen, AlertCircle, X, RefreshCw, ClockArrowDown, ExternalLink, Radio, SkipForward, ShieldAlert, HelpCircle } from 'lucide-react';
@@ -7,7 +7,7 @@ import { getScanDetails, getScanFiles, cancelScan, rescanPath, type ScanFile, ty
 import DataGrid from '../components/ui/DataGrid';
 import { useDateFormat } from '../lib/useDateFormat';
 import { useToast } from '../contexts/ToastContext';
-import { useWebSocket } from '../contexts/WebSocketProvider';
+import { useWebSocketEvent } from '../contexts/WebSocketProvider';
 import { formatBytes } from '../lib/formatters';
 
 const ScanDetails = () => {
@@ -22,7 +22,6 @@ const ScanDetails = () => {
     const { formatCompact, formatTime } = useDateFormat();
     const toast = useToast();
     const queryClient = useQueryClient();
-    const { lastMessage } = useWebSocket();
 
     const scanId = parseInt(id || '0', 10);
 
@@ -46,29 +45,29 @@ const ScanDetails = () => {
         refetchInterval: isRunning ? 3000 : false,
     });
 
-    // Listen for WebSocket ScanProgress events to show current file
-    useEffect(() => {
-        if (!lastMessage || !isRunning) return;
+    // Listen for WebSocket ScanProgress events to show current file. Subscribing
+    // delivers every progress update; the handler reads current scanId/isRunning.
+    useWebSocketEvent((msg) => {
+        if (!isRunning) return;
 
-        if (lastMessage && typeof lastMessage === 'object' && 'type' in lastMessage) {
-            const msg = lastMessage as { type: string; data: ScanProgress };
-            if (msg.type === 'ScanProgress' && msg.data.scan_db_id === scanId) {
-                // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to WebSocket message state
-                setCurrentFile(msg.data.current_file);
+        if (msg.type === 'ScanProgress') {
+            const data = msg.data as ScanProgress;
+            if (data.scan_db_id === scanId) {
+                setCurrentFile(data.current_file);
                 setScanProgress({
-                    filesDone: msg.data.files_done,
-                    totalFiles: msg.data.total_files,
+                    filesDone: data.files_done,
+                    totalFiles: data.total_files,
                 });
-            } else if (msg.type === 'ScanCompleted') {
-                // Clear current file indicator when scan completes
-                setCurrentFile(null);
-                setScanProgress(null);
-                // Refresh data
-                queryClient.invalidateQueries({ queryKey: ['scan-details', scanId] });
-                queryClient.invalidateQueries({ queryKey: ['scan-files', scanId] });
             }
+        } else if (msg.type === 'ScanCompleted') {
+            // Clear current file indicator when scan completes
+            setCurrentFile(null);
+            setScanProgress(null);
+            // Refresh data
+            queryClient.invalidateQueries({ queryKey: ['scan-details', scanId] });
+            queryClient.invalidateQueries({ queryKey: ['scan-files', scanId] });
         }
-    }, [lastMessage, scanId, isRunning, queryClient]);
+    });
 
     const handleCancel = async () => {
         setIsActionLoading(true);

@@ -8,7 +8,7 @@ import type { PathHealth } from '../types/api';
 import { FolderOpen, FolderCheck, FolderX, FolderSearch, FolderMinus } from 'lucide-react';
 import ActivityChart from '../components/charts/ActivityChart';
 import TypeDistributionChart from '../components/charts/TypeDistributionChart';
-import { useWebSocket } from '../contexts/WebSocketProvider';
+import { useWebSocketEvent } from '../contexts/WebSocketProvider';
 import { useToast } from '../contexts/ToastContext';
 import { useNavigate } from 'react-router-dom';
 import ConfigWarningBanner from '../components/ConfigWarningBanner';
@@ -143,7 +143,6 @@ const PathHealthCard = ({ path, formatTimeAgo, onClick }: { path: PathHealth; fo
 
 const ActiveScansTable = () => {
     const [scans, setScans] = useState<Record<string, ScanProgress>>({});
-    const { lastMessage } = useWebSocket();
     const toast = useToast();
     const navigate = useNavigate();
 
@@ -156,26 +155,21 @@ const ActiveScansTable = () => {
         });
     }, []);
 
-    // Handle WS updates
-    useEffect(() => {
-        if (!lastMessage) return;
-
-        if (lastMessage && typeof lastMessage === 'object' && 'type' in lastMessage) {
-            const msg = lastMessage as { type: string; data: unknown };
-            if (msg.type === 'ScanProgress') {
-                const progress = msg.data as ScanProgress;
-                // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to WebSocket message state
-                setScans(prev => ({ ...prev, [progress.id]: progress }));
-            } else if (msg.type === 'ScanCompleted') {
-                const { scan_id } = msg.data as { scan_id: string };
-                setScans(prev => {
-                    const next = { ...prev };
-                    delete next[scan_id];
-                    return next;
-                });
-            }
+    // Handle WS updates. Subscribing delivers every ScanProgress/ScanCompleted
+    // event exactly once, so no active-scan update is missed under bursts.
+    useWebSocketEvent((msg) => {
+        if (msg.type === 'ScanProgress') {
+            const progress = msg.data as ScanProgress;
+            setScans(prev => ({ ...prev, [progress.id]: progress }));
+        } else if (msg.type === 'ScanCompleted') {
+            const { scan_id } = msg.data as { scan_id: string };
+            setScans(prev => {
+                const next = { ...prev };
+                delete next[scan_id];
+                return next;
+            });
         }
-    }, [lastMessage]);
+    });
 
     const activeScansList = Object.values(scans);
 

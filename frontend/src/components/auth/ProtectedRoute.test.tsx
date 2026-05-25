@@ -12,7 +12,7 @@ vi.mock('../../contexts/WebSocketProvider', () => ({
   useWebSocket: () => ({
     reconnect: vi.fn(),
     isConnected: false,
-    connectionState: 'disconnected',
+    subscribe: vi.fn(() => () => {}),
   }),
 }));
 

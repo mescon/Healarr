@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useWebSocket } from '../contexts/WebSocketProvider';
+import { useWebSocket, useWebSocketEvent } from '../contexts/WebSocketProvider';
 import { useConnection } from '../contexts/ConnectionContext';
 import { getRecentLogs, downloadLogs, type LogEntry } from '../lib/api';
 import clsx from 'clsx';
@@ -11,7 +11,7 @@ const LOGS_PER_PAGE = 100;
 const SCROLL_THRESHOLD = 50; // pixels from bottom to consider "at bottom"
 
 const Logs = () => {
-    const { lastMessage, isConnected: wsConnected, reconnect: wsReconnect } = useWebSocket();
+    const { isConnected: wsConnected, reconnect: wsReconnect } = useWebSocket();
     const { isConnected: backendConnected } = useConnection();
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [isPaused, setIsPaused] = useState(false);
@@ -159,16 +159,14 @@ const Logs = () => {
         fetchLogs();
     }, []);
 
-    // Handle new logs from WebSocket
-    useEffect(() => {
-        if (lastMessage && typeof lastMessage === 'object' && 'type' in lastMessage && !isPaused) {
-            const msg = lastMessage as { type: string; data: LogEntry };
-            if (msg.type === 'log') {
-                // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to WebSocket message state
-                setLogs(prev => [...prev, msg.data].slice(-1000));
-            }
+    // Handle new logs from WebSocket. Subscribing (rather than watching a single
+    // lastMessage value) guarantees no log line is dropped when several arrive in
+    // the same tick, and reads the current isPaused without re-subscribing.
+    useWebSocketEvent((msg) => {
+        if (msg.type === 'log' && !isPaused) {
+            setLogs(prev => [...prev, msg.data as LogEntry].slice(-1000));
         }
-    }, [lastMessage, isPaused]);
+    });
 
     // Auto-scroll to bottom for new logs when user is at bottom and not paused
     useEffect(() => {
