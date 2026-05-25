@@ -3,9 +3,22 @@ import React, { createContext, useContext, useEffect, useState, useRef, useCallb
 import { useQueryClient } from '@tanstack/react-query';
 import { getWebSocketUrl } from '../lib/basePath';
 
+/**
+ * A WebSocket message after normalization. Backend `event` envelopes are
+ * flattened so consumers see `{ type: <event_type>, data: <event_data> }`.
+ */
+export interface WSMessage {
+    type: string;
+    data: unknown;
+    _raw?: unknown;
+}
+
+type WSHandler = (message: WSMessage) => void;
+
 interface WebSocketContextType {
     isConnected: boolean;
-    lastMessage: unknown;
+    /** Register a handler for every incoming message. Returns an unsubscribe fn. */
+    subscribe: (handler: WSHandler) => () => void;
     reconnect: () => void;
 }
 
@@ -19,14 +32,39 @@ export const useWebSocket = () => {
     return context;
 };
 
+/**
+ * Subscribe to every WebSocket message exactly once, decoupled from render
+ * timing. The handler may freely close over current props/state — the latest
+ * version is always invoked, so there are no stale closures, no dependency
+ * array to maintain, and no messages dropped when several arrive in one tick
+ * (the failure mode of reading a single `lastMessage` value via useEffect).
+ */
+export const useWebSocketEvent = (handler: WSHandler) => {
+    const { subscribe } = useWebSocket();
+    const handlerRef = useRef(handler);
+    useEffect(() => {
+        handlerRef.current = handler;
+    });
+    useEffect(() => subscribe((msg) => handlerRef.current(msg)), [subscribe]);
+};
+
 export const WebSocketProvider = ({ children }: { children: React.ReactNode }) => {
     const [isConnected, setIsConnected] = useState(false);
-    const [lastMessage, setLastMessage] = useState<unknown>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const retryCountRef = useRef(0);
+    const subscribersRef = useRef<Set<WSHandler>>(new Set());
     const queryClient = useQueryClient();
 
     const connectRef = useRef<() => void>(() => { });
+
+    // Stable across renders: handlers live in a ref, so subscribing never
+    // forces useWebSocketEvent's effect to re-run.
+    const subscribe = useCallback((handler: WSHandler) => {
+        subscribersRef.current.add(handler);
+        return () => {
+            subscribersRef.current.delete(handler);
+        };
+    }, []);
 
     const connect = useCallback(() => {
         // Don't attempt connection on login page
@@ -95,7 +133,7 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
                 // Transform event messages to use event_type as the type
                 // Backend sends: {"type": "event", "data": {"event_type": "ScanProgress", "event_data": {...}}}
                 // Transform to: {"type": "ScanProgress", "data": {...event_data fields...}}
-                let message = rawMessage;
+                let message: WSMessage = rawMessage;
                 if (rawMessage.type === 'event' && rawMessage.data?.event_type) {
                     const eventData = rawMessage.data.event_data || {};
                     message = {
@@ -106,7 +144,15 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
                     };
                 }
 
-                setLastMessage(message);
+                // Fan out to every subscriber. A subscriber throwing must not
+                // skip the others or the centralized query invalidation below.
+                subscribersRef.current.forEach((handler) => {
+                    try {
+                        handler(message);
+                    } catch (err) {
+                        console.error('WebSocket subscriber threw:', err);
+                    }
+                });
 
                 // Invalidate queries based on event type
                 const eventType = message.type;
@@ -174,7 +220,7 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
     }, []);
 
     return (
-        <WebSocketContext.Provider value={{ isConnected, lastMessage, reconnect: connect }}>
+        <WebSocketContext.Provider value={{ isConnected, subscribe, reconnect: connect }}>
             {children}
         </WebSocketContext.Provider>
     );
