@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Folder, FolderOpen, Home, ArrowUp, X, Loader2, AlertCircle, ChevronRight } from 'lucide-react';
 import { browseDirectory, type BrowseResponse } from '../../lib/api';
+import { useModalA11y } from '../../hooks/useModalA11y';
 
 interface FileBrowserProps {
     isOpen: boolean;
@@ -16,6 +17,9 @@ const FileBrowser = ({ isOpen, onClose, onSelect, initialPath = '/' }: FileBrows
     const [parentPath, setParentPath] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    // Focus trap, Escape-to-close and focus restore while the browser is open.
+    const dialogRef = useModalA11y(isOpen, onClose);
 
     const loadDirectory = useCallback(async (path: string) => {
         setIsLoading(true);
@@ -43,18 +47,6 @@ const FileBrowser = ({ isOpen, onClose, onSelect, initialPath = '/' }: FileBrows
             loadDirectory(initialPath || '/');
         }
     }, [isOpen, initialPath, loadDirectory]);
-
-    // Handle keyboard events
-    useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (!isOpen) return;
-            if (e.key === 'Escape') {
-                onClose();
-            }
-        };
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [isOpen, onClose]);
 
     const handleSelect = () => {
         onSelect(currentPath);
@@ -84,18 +76,23 @@ const FileBrowser = ({ isOpen, onClose, onSelect, initialPath = '/' }: FileBrows
 
                 {/* Modal */}
                 <motion.div
+                    ref={dialogRef}
+                    tabIndex={-1}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="file-browser-title"
                     initial={{ opacity: 0, scale: 0.95, y: 20 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95, y: 20 }}
                     transition={{ duration: 0.2, ease: 'easeOut' }}
-                    className="relative bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xl w-full max-w-2xl max-h-[70vh] flex flex-col overflow-hidden"
+                    className="relative bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xl w-full max-w-2xl max-h-[70vh] flex flex-col overflow-hidden focus:outline-none"
                     onClick={(e) => e.stopPropagation()}
                 >
                     {/* Header */}
                     <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
                         <div className="flex items-center gap-3">
                             <FolderOpen className="w-5 h-5 text-blue-500" />
-                            <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Browse Directory</h2>
+                            <h2 id="file-browser-title" className="text-lg font-semibold text-slate-900 dark:text-white">Browse Directory</h2>
                         </div>
                         <button
                             onClick={onClose}

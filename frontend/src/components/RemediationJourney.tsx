@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
+import { useModalA11y } from '../hooks/useModalA11y';
 
 interface RemediationJourneyProps {
     corruptionId: string;
@@ -71,6 +72,8 @@ const getStatusLabel = (status: string): string => {
 
 const RemediationJourney: React.FC<RemediationJourneyProps> = ({ corruptionId, onClose }) => {
     const { formatFull } = useDateFormat();
+    // Mounted == open: focus trap, Escape-to-close and focus restore.
+    const dialogRef = useModalA11y(true, onClose);
     
     const { data: history, isLoading } = useQuery({
         queryKey: ['history', corruptionId],
@@ -200,13 +203,21 @@ const RemediationJourney: React.FC<RemediationJourneyProps> = ({ corruptionId, o
 
     return (
         <div className="fixed inset-0 bg-black/50 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
-            <div className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl w-full max-w-2xl h-[85vh] flex flex-col shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div
+                ref={dialogRef}
+                tabIndex={-1}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="remediation-journey-title"
+                className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl w-full max-w-2xl h-[85vh] flex flex-col shadow-2xl overflow-hidden focus:outline-none"
+                onClick={e => e.stopPropagation()}
+            >
                 {/* Header */}
                 <div className="p-6 border-b border-slate-200 dark:border-slate-800 shrink-0 bg-white dark:bg-slate-900/50 backdrop-blur">
                     <div className="flex justify-between items-start">
                         <div className="flex-1 min-w-0 pr-4">
                             <div className="flex items-center gap-3 mb-2">
-                                <h2 className="text-xl font-bold text-slate-900 dark:text-white">Remediation Journey</h2>
+                                <h2 id="remediation-journey-title" className="text-xl font-bold text-slate-900 dark:text-white">Remediation Journey</h2>
                                 {summary && (
                                     <span className={clsx(
                                         "px-2.5 py-0.5 rounded-full text-xs font-medium border",
