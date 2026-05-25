@@ -308,6 +308,7 @@ type Scanner interface {
 type ScannerService struct {
 	db          *sql.DB
 	scanPaths   *repository.ScanPathRepository
+	rescans     *repository.RescanRepository
 	eventBus    *eventbus.EventBus
 	detector    integration.HealthChecker
 	pathMapper  integration.PathMapper
@@ -347,8 +348,14 @@ func NewScannerService(db *sql.DB, eb *eventbus.EventBus, detector integration.H
 // that construct &ScannerService{} directly don't need a fixture update
 // just to satisfy a new repo field.
 func (s *ScannerService) initRepositories() {
-	if s.scanPaths == nil && s.db != nil {
+	if s.db == nil {
+		return
+	}
+	if s.scanPaths == nil {
 		s.scanPaths = repository.NewScanPathRepository(s.db)
+	}
+	if s.rescans == nil {
+		s.rescans = repository.NewRescanRepository(s.db)
 	}
 }
 
@@ -356,6 +363,12 @@ func (s *ScannerService) initRepositories() {
 func (s *ScannerService) scanPathRepo() *repository.ScanPathRepository {
 	s.initRepositories()
 	return s.scanPaths
+}
+
+// rescanRepo returns the lazy-initialized RescanRepository.
+func (s *ScannerService) rescanRepo() *repository.RescanRepository {
+	s.initRepositories()
+	return s.rescans
 }
 
 // IsFileBeingScanned returns true if the given file is currently being scanned.
@@ -1876,18 +1889,7 @@ func (s *ScannerService) queueForRescan(filePath string, pathID int64, errorType
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO pending_rescans (file_path, path_id, error_type, error_message, next_retry_at)
-		VALUES (?, ?, ?, ?, datetime('now', '+5 minutes'))
-		ON CONFLICT(file_path) DO UPDATE SET
-			retry_count = retry_count + 1,
-			last_attempt_at = CURRENT_TIMESTAMP,
-			error_type = excluded.error_type,
-			error_message = excluded.error_message,
-			next_retry_at = datetime('now', '+' || (5 * (1 << MIN(retry_count, 5))) || ' minutes')
-	`, filePath, pathID, errorType, errorMessage)
-
-	if err != nil {
+	if err := s.rescanRepo().Queue(ctx, filePath, pathID, errorType, errorMessage); err != nil {
 		logger.Errorf("Failed to queue file for rescan: %s: %v", filePath, err)
 	} else {
 		logger.Debugf("Queued for rescan: %s", filePath)
@@ -1933,35 +1935,26 @@ func (s *ScannerService) loadPendingRescanFiles() ([]pendingRescanFile, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, file_path, path_id, retry_count, max_retries
-		FROM pending_rescans
-		WHERE status = 'pending'
-		AND next_retry_at <= datetime('now')
-		AND retry_count < max_retries
-		ORDER BY next_retry_at ASC
-		LIMIT 50
-	`)
+	rows, err := s.rescanRepo().ListReady(ctx, 50)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var files []pendingRescanFile
-	for rows.Next() {
-		var f pendingRescanFile
-		var pathID sql.NullInt64
-		if err := rows.Scan(&f.ID, &f.FilePath, &pathID, &f.RetryCount, &f.MaxRetries); err != nil {
-			logger.Errorf("Failed to scan pending rescan row: %v", err)
-			continue
+	files := make([]pendingRescanFile, 0, len(rows))
+	for _, row := range rows {
+		f := pendingRescanFile{
+			ID:         row.ID,
+			FilePath:   row.FilePath,
+			RetryCount: row.RetryCount,
+			MaxRetries: row.MaxRetries,
 		}
-		if pathID.Valid {
-			f.PathID = pathID.Int64
+		if row.PathID.Valid {
+			f.PathID = row.PathID.Int64
 		}
 		files = append(files, f)
 	}
 
-	return files, rows.Err()
+	return files, nil
 }
 
 // markRescanResolved marks a pending rescan as resolved with the given resolution
@@ -1975,11 +1968,7 @@ func (s *ScannerService) markRescanResolved(id int64, resolution string) {
 		status = "abandoned"
 	}
 
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE pending_rescans
-		SET status = ?, resolved_at = CURRENT_TIMESTAMP, resolution = ?
-		WHERE id = ?
-	`, status, resolution, id); err != nil {
+	if err := s.rescanRepo().MarkResolved(ctx, id, status, resolution); err != nil {
 		logger.Warnf("Failed to mark pending rescan %d as %s: %v", id, resolution, err)
 	}
 }
@@ -1989,15 +1978,7 @@ func (s *ScannerService) updateRescanRetry(f pendingRescanFile, healthErr *integ
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE pending_rescans
-		SET retry_count = retry_count + 1,
-		    last_attempt_at = CURRENT_TIMESTAMP,
-		    error_type = ?,
-		    error_message = ?,
-		    next_retry_at = datetime('now', '+' || (5 * (1 << MIN(retry_count + 1, 5))) || ' minutes')
-		WHERE id = ?
-	`, healthErr.Type, healthErr.Message, f.ID); err != nil {
+	if err := s.rescanRepo().BumpRetry(ctx, f.ID, healthErr.Type, healthErr.Message); err != nil {
 		logger.Warnf("Failed to update pending rescan %d retry state: %v", f.ID, err)
 	}
 
@@ -2086,12 +2067,9 @@ func (s *ScannerService) GetPendingRescanStats() (pending, abandoned, resolved i
 	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 	defer cancel()
 
-	err = s.db.QueryRowContext(ctx, `
-		SELECT
-			COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'abandoned' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END), 0)
-		FROM pending_rescans
-	`).Scan(&pending, &abandoned, &resolved)
-	return
+	stats, err := s.rescanRepo().Stats(ctx)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return stats.Pending, stats.Abandoned, stats.Resolved, nil
 }
