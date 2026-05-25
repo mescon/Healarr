@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 )
 
 func (s *RESTServer) getDashboardStats(c *gin.Context) {
@@ -65,16 +68,14 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	stats.TotalCorruptions = pending + resolved + orphaned + manualIntervention + inProgress + failed
 
 	// All scan stats in a single query
-	if err := s.db.QueryRow(`
-		SELECT
-			COUNT(CASE WHEN status = 'running' THEN 1 END),
-			COUNT(*),
-			COALESCE(SUM(CASE WHEN substr(started_at, 1, 10) = date('now') THEN files_scanned END), 0),
-			COALESCE(SUM(CASE WHEN substr(started_at, 1, 10) >= date('now', '-7 days') THEN files_scanned END), 0)
-		FROM scans
-	`).Scan(&stats.ActiveScans, &stats.TotalScans, &stats.FilesScannedToday, &stats.FilesScannedWeek); err != nil {
+	if scanStats, err := s.scans.GetScanStats(c.Request.Context()); err != nil {
 		warnings = append(warnings, "failed to query scan stats")
 		logger.Debugf("Failed to query scan stats: %v", err)
+	} else {
+		stats.ActiveScans = scanStats.ActiveScans
+		stats.TotalScans = scanStats.TotalScans
+		stats.FilesScannedToday = scanStats.FilesScannedToday
+		stats.FilesScannedWeek = scanStats.FilesScannedWeek
 	}
 
 	// Query 3: Corruptions detected today (needs events table)
@@ -93,27 +94,20 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	}
 
 	// Query 4: Last completed scan info
-	var lastScanID sql.NullInt64
-	var lastScanTime, lastScanPath sql.NullString
-	if err := s.db.QueryRow(`
-		SELECT id, completed_at, path
-		FROM scans
-		WHERE status = 'completed' AND completed_at IS NOT NULL
-		ORDER BY completed_at DESC
-		LIMIT 1
-	`).Scan(&lastScanID, &lastScanTime, &lastScanPath); err != nil && err != sql.ErrNoRows {
+	last, err := s.scans.GetLastCompletedScan(c.Request.Context())
+	if err != nil && !errors.Is(err, repository.ErrNotFound) {
 		warnings = append(warnings, "failed to query last scan")
 		logger.Debugf("Failed to query last scan: %v", err)
 	}
-	if lastScanID.Valid {
-		id := int(lastScanID.Int64)
+	if last.ID.Valid {
+		id := int(last.ID.Int64)
 		stats.LastScanID = &id
 	}
-	if lastScanTime.Valid {
-		stats.LastScanTime = &lastScanTime.String
+	if last.CompletedAt.Valid {
+		stats.LastScanTime = &last.CompletedAt.String
 	}
-	if lastScanPath.Valid {
-		stats.LastScanPath = &lastScanPath.String
+	if last.Path.Valid {
+		stats.LastScanPath = &last.Path.String
 	}
 
 	// Calculate success rate
@@ -244,7 +238,7 @@ func (s *RESTServer) getPathHealth(c *gin.Context) {
 
 	// For each path, get last scan and corruption stats
 	for i := range paths {
-		paths[i].LastScanID, paths[i].LastScanTime = s.loadPathLastScan(paths[i].PathID)
+		paths[i].LastScanID, paths[i].LastScanTime = s.loadPathLastScan(c.Request.Context(), int64(paths[i].PathID))
 		paths[i].ActiveCorruptions, paths[i].TotalCorruptions, paths[i].ResolvedCount = s.loadPathCorruptionStats(paths[i].PathID)
 		paths[i].Status = determinePathHealthStatus(paths[i])
 	}
@@ -253,28 +247,20 @@ func (s *RESTServer) getPathHealth(c *gin.Context) {
 }
 
 // loadPathLastScan queries the last completed scan for a given path, returning nullable ID and time.
-func (s *RESTServer) loadPathLastScan(pathID int) (*int, *string) {
-	var lastScanID sql.NullInt64
-	var lastScanTime sql.NullString
-	err := s.db.QueryRow(`
-		SELECT id, completed_at
-		FROM scans
-		WHERE path_id = ? AND status = 'completed' AND completed_at IS NOT NULL
-		ORDER BY completed_at DESC
-		LIMIT 1
-	`, pathID).Scan(&lastScanID, &lastScanTime)
+func (s *RESTServer) loadPathLastScan(ctx context.Context, pathID int64) (*int, *string) {
+	last, err := s.scans.GetLastCompletedScanByPathID(ctx, pathID)
 	if err != nil {
 		return nil, nil
 	}
 
 	var idPtr *int
-	if lastScanID.Valid {
-		id := int(lastScanID.Int64)
+	if last.ID.Valid {
+		id := int(last.ID.Int64)
 		idPtr = &id
 	}
 	var timePtr *string
-	if lastScanTime.Valid {
-		timePtr = &lastScanTime.String
+	if last.CompletedAt.Valid {
+		timePtr = &last.CompletedAt.String
 	}
 	return idPtr, timePtr
 }

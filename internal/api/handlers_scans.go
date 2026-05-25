@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -64,8 +65,8 @@ func (s *RESTServer) getScans(c *gin.Context) {
 	p := ParsePagination(c, cfg)
 
 	// Get total count
-	var total int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM scans").Scan(&total); err != nil {
+	total, err := s.scans.Count(c.Request.Context())
+	if err != nil {
 		logger.Errorf("Failed to query scans count: %v", err)
 		respondDatabaseError(c, err)
 		return
@@ -81,42 +82,24 @@ func (s *RESTServer) getScans(c *gin.Context) {
 		"corruptions_found": "corruptions_found",
 	}
 	orderByClause := SafeOrderByClause(p.SortBy, p.SortOrder, allowedSortColumns, "started_at", "desc")
-	// Security: orderByClause is validated against allowlist by SafeOrderByClause
-	query := fmt.Sprintf("SELECT id, path, status, files_scanned, corruptions_found, started_at, completed_at FROM scans %s LIMIT ? OFFSET ?", orderByClause) // NOSONAR - validated ORDER BY
-	rows, err := s.db.Query(query, p.Limit, p.Offset)                                                                                                         // NOSONAR
+	rows, err := s.scans.ListPaged(c.Request.Context(), orderByClause, p.Limit, p.Offset)
 	if err != nil {
 		logger.Errorf("Failed to query scans: %v", err)
 		respondDatabaseError(c, err)
 		return
 	}
-	defer rows.Close()
 
-	scans := make([]map[string]interface{}, 0)
-	for rows.Next() {
-		var id int
-		var path, status, startedAt string
-		var completedAt sql.NullString
-		var filesScanned, corruptionsFound int
-
-		if rows.Scan(&id, &path, &status, &filesScanned, &corruptionsFound, &startedAt, &completedAt) != nil {
-			continue
-		}
-
+	scans := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
 		scans = append(scans, map[string]interface{}{
-			"id":                id,
-			"path":              path,
-			"status":            status,
-			"files_scanned":     filesScanned,
-			"corruptions_found": corruptionsFound,
-			"started_at":        startedAt,
-			"completed_at":      completedAt.String,
+			"id":                row.ID,
+			"path":              row.Path,
+			"status":            row.Status,
+			"files_scanned":     row.FilesScanned,
+			"corruptions_found": row.CorruptionsFound,
+			"started_at":        row.StartedAt,
+			"completed_at":      row.CompletedAt.String,
 		})
-	}
-
-	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading scan results"})
-		logger.Errorf("Error iterating scans: %v", err)
-		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -200,10 +183,13 @@ func (s *RESTServer) rescanPath(c *gin.Context) {
 	scanID := c.Param("scan_id")
 
 	// Get the original scan path from the database
-	var path string
-	var status string
-	err := s.db.QueryRow("SELECT path, status FROM scans WHERE id = ?", scanID).Scan(&path, &status)
-	if err == sql.ErrNoRows {
+	scanIDInt, parseErr := strconv.ParseInt(scanID, 10, 64)
+	if parseErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid scan ID"})
+		return
+	}
+	scan, err := s.scans.GetByID(c.Request.Context(), scanIDInt)
+	if errors.Is(err, repository.ErrNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": ErrMsgScanNotFound})
 		return
 	}
@@ -211,9 +197,10 @@ func (s *RESTServer) rescanPath(c *gin.Context) {
 		respondDatabaseError(c, err)
 		return
 	}
+	path := scan.Path
 
 	// Don't allow rescanning a currently running scan
-	if status == "running" {
+	if scan.Status == "running" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Scan is currently running"})
 		return
 	}
@@ -263,14 +250,13 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 		InaccessibleFiles int    `json:"inaccessible_files"`
 	}
 
-	var completedAt sql.NullString
-	var pathID sql.NullInt64
-	err := s.db.QueryRow(`
-		SELECT id, path, path_id, status, files_scanned, corruptions_found, started_at, completed_at
-		FROM scans WHERE id = ?
-	`, scanID).Scan(&scan.ID, &scan.Path, &pathID, &scan.Status, &scan.FilesScanned, &scan.CorruptionsFound, &scan.StartedAt, &completedAt)
-
-	if err == sql.ErrNoRows {
+	scanIDInt, parseErr := strconv.ParseInt(scanID, 10, 64)
+	if parseErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid scan ID"})
+		return
+	}
+	row, err := s.scans.GetByID(c.Request.Context(), scanIDInt)
+	if errors.Is(err, repository.ErrNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": ErrMsgScanNotFound})
 		return
 	}
@@ -278,10 +264,15 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 		respondDatabaseError(c, err)
 		return
 	}
-
-	scan.CompletedAt = completedAt.String
-	if pathID.Valid {
-		scan.PathID = int(pathID.Int64)
+	scan.ID = int(row.ID)
+	scan.Path = row.Path
+	scan.Status = row.Status
+	scan.FilesScanned = row.FilesScanned
+	scan.CorruptionsFound = row.CorruptionsFound
+	scan.StartedAt = row.StartedAt
+	scan.CompletedAt = row.CompletedAt.String
+	if row.PathID.Valid {
+		scan.PathID = int(row.PathID.Int64)
 	}
 
 	// Get file counts from scan_files table using single GROUP BY query (performance optimization)
@@ -319,9 +310,13 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 	p := ParsePagination(c, DefaultPaginationConfig())
 
 	// Verify scan exists
-	var scanExists int
-	err := s.db.QueryRow("SELECT id FROM scans WHERE id = ?", scanID).Scan(&scanExists)
-	if err == sql.ErrNoRows {
+	scanIDInt, parseErr := strconv.ParseInt(scanID, 10, 64)
+	if parseErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid scan ID"})
+		return
+	}
+	exists, err := s.scans.Exists(c.Request.Context(), scanIDInt)
+	if err == nil && !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": ErrMsgScanNotFound})
 		return
 	}

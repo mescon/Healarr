@@ -1562,7 +1562,7 @@ func TestRescanPath_PathNotFound(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.POST("/rescan/:path_id", server.rescanPath)
+	r.POST("/rescan/:scan_id", server.rescanPath)
 
 	// Request rescan for non-existent path
 	req, _ := http.NewRequest("POST", "/rescan/9999", nil)
@@ -1589,7 +1589,7 @@ func TestRescanPath_DBError(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.POST("/rescan/:path_id", server.rescanPath)
+	r.POST("/rescan/:scan_id", server.rescanPath)
 
 	req, _ := http.NewRequest("POST", "/rescan/1", nil)
 	w := httptest.NewRecorder()
