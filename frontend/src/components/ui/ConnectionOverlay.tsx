@@ -9,10 +9,16 @@ const ConnectionOverlay = () => {
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center">
             {/* Dimmed backdrop */}
-            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-            
-            {/* Connection status card */}
-            <div className="relative bg-slate-800 border border-slate-700 rounded-xl p-8 shadow-2xl max-w-md mx-4">
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" aria-hidden="true" />
+
+            {/* Connection status card. role="status" + aria-live announces the
+                lost/reconnecting state to assistive tech; it is informational and
+                non-dismissible, so no focus trap. */}
+            <div
+                role="status"
+                aria-live="polite"
+                className="relative bg-slate-800 border border-slate-700 rounded-xl p-8 shadow-2xl max-w-md mx-4"
+            >
                 <div className="flex flex-col items-center text-center">
                     {/* Icon with animation */}
                     <div className="relative mb-6">

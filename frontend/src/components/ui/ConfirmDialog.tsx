@@ -2,16 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AlertTriangle, Trash2, X } from 'lucide-react';
 import clsx from 'clsx';
-
-/**
- * Get all focusable elements within a container.
- */
-function getFocusableElements(container: HTMLElement): HTMLElement[] {
-    const elements = container.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]):not([disabled])'
-    );
-    return Array.from(elements);
-}
+import { getFocusableElements } from '../../hooks/useModalA11y';
 
 interface ConfirmDialogProps {
     isOpen: boolean;
