@@ -217,9 +217,25 @@ type MockArrClient struct {
 	RefreshMonitoredDownloadsByPathFunc func(arrPath string) error
 	GetMediaDetailsFunc                 func(mediaID int64, arrPath string) (*integration.MediaDetails, error)
 
+	// Strict, when true, makes any method called without its *Func configured
+	// panic instead of silently returning a zero value. Opt-in (default false)
+	// so existing tests that rely on benign zero defaults are unaffected; set
+	// it in tests that must not call unstubbed *arr behavior (e.g. ones
+	// asserting "no deletion happened").
+	Strict bool
+
 	// Call tracking for assertions
 	mu    sync.Mutex
 	Calls []MockCall
+}
+
+// unconfigured panics in strict mode when a method is invoked without its
+// corresponding *Func set — surfacing a test that silently relied on the
+// mock's zero-value default. No-op when Strict is false.
+func (m *MockArrClient) unconfigured(method string) {
+	if m.Strict {
+		panic("MockArrClient." + method + ": called without a configured " + method + "Func (strict mode)")
+	}
 }
 
 // MockCall records a method call for verification in tests.
@@ -259,6 +275,7 @@ func (m *MockArrClient) FindMediaByPath(path string) (int64, error) {
 	if m.FindMediaByPathFunc != nil {
 		return m.FindMediaByPathFunc(path)
 	}
+	m.unconfigured("FindMediaByPath")
 	return 0, nil
 }
 
@@ -267,6 +284,7 @@ func (m *MockArrClient) DeleteFile(mediaID int64, path string) (map[string]inter
 	if m.DeleteFileFunc != nil {
 		return m.DeleteFileFunc(mediaID, path)
 	}
+	m.unconfigured("DeleteFile")
 	return nil, nil
 }
 
@@ -275,6 +293,7 @@ func (m *MockArrClient) GetFilePath(mediaID int64, metadata map[string]interface
 	if m.GetFilePathFunc != nil {
 		return m.GetFilePathFunc(mediaID, metadata, referencePath)
 	}
+	m.unconfigured("GetFilePath")
 	return "", nil
 }
 
@@ -283,6 +302,7 @@ func (m *MockArrClient) GetAllFilePaths(mediaID int64, metadata map[string]inter
 	if m.GetAllFilePathsFunc != nil {
 		return m.GetAllFilePathsFunc(mediaID, metadata, referencePath)
 	}
+	m.unconfigured("GetAllFilePaths")
 	return nil, nil
 }
 
@@ -291,6 +311,7 @@ func (m *MockArrClient) TriggerSearch(mediaID int64, path string, episodeIDs []i
 	if m.TriggerSearchFunc != nil {
 		return m.TriggerSearchFunc(mediaID, path, episodeIDs)
 	}
+	m.unconfigured("TriggerSearch")
 	return nil
 }
 
@@ -299,6 +320,7 @@ func (m *MockArrClient) GetAllInstances() ([]*integration.ArrInstanceInfo, error
 	if m.GetAllInstancesFunc != nil {
 		return m.GetAllInstancesFunc()
 	}
+	m.unconfigured("GetAllInstances")
 	return nil, nil
 }
 
@@ -307,6 +329,7 @@ func (m *MockArrClient) GetInstanceByID(id int64) (*integration.ArrInstanceInfo,
 	if m.GetInstanceByIDFunc != nil {
 		return m.GetInstanceByIDFunc(id)
 	}
+	m.unconfigured("GetInstanceByID")
 	return nil, nil
 }
 
@@ -315,6 +338,7 @@ func (m *MockArrClient) CheckInstanceHealth(instanceID int64) error {
 	if m.CheckInstanceHealthFunc != nil {
 		return m.CheckInstanceHealthFunc(instanceID)
 	}
+	m.unconfigured("CheckInstanceHealth")
 	return nil
 }
 
@@ -323,6 +347,7 @@ func (m *MockArrClient) GetRootFolders(instanceID int64) ([]integration.RootFold
 	if m.GetRootFoldersFunc != nil {
 		return m.GetRootFoldersFunc(instanceID)
 	}
+	m.unconfigured("GetRootFolders")
 	return nil, nil
 }
 
@@ -331,6 +356,7 @@ func (m *MockArrClient) GetQueueForPath(arrPath string) ([]integration.QueueItem
 	if m.GetQueueForPathFunc != nil {
 		return m.GetQueueForPathFunc(arrPath)
 	}
+	m.unconfigured("GetQueueForPath")
 	return nil, nil
 }
 
@@ -339,6 +365,7 @@ func (m *MockArrClient) FindQueueItemsByMediaIDForPath(arrPath string, mediaID i
 	if m.FindQueueItemsByMediaIDForPathFunc != nil {
 		return m.FindQueueItemsByMediaIDForPathFunc(arrPath, mediaID)
 	}
+	m.unconfigured("FindQueueItemsByMediaIDForPath")
 	return nil, nil
 }
 
@@ -347,6 +374,7 @@ func (m *MockArrClient) GetDownloadStatusForPath(arrPath, downloadID string) (st
 	if m.GetDownloadStatusForPathFunc != nil {
 		return m.GetDownloadStatusForPathFunc(arrPath, downloadID)
 	}
+	m.unconfigured("GetDownloadStatusForPath")
 	return "", 0, "", nil
 }
 
@@ -355,6 +383,7 @@ func (m *MockArrClient) GetRecentHistoryForMediaByPath(arrPath string, mediaID i
 	if m.GetRecentHistoryForMediaByPathFunc != nil {
 		return m.GetRecentHistoryForMediaByPathFunc(arrPath, mediaID, limit)
 	}
+	m.unconfigured("GetRecentHistoryForMediaByPath")
 	return nil, nil
 }
 
@@ -363,6 +392,7 @@ func (m *MockArrClient) RemoveFromQueueByPath(arrPath string, queueID int64, rem
 	if m.RemoveFromQueueByPathFunc != nil {
 		return m.RemoveFromQueueByPathFunc(arrPath, queueID, removeFromClient, blocklist)
 	}
+	m.unconfigured("RemoveFromQueueByPath")
 	return nil
 }
 
@@ -371,6 +401,7 @@ func (m *MockArrClient) RefreshMonitoredDownloadsByPath(arrPath string) error {
 	if m.RefreshMonitoredDownloadsByPathFunc != nil {
 		return m.RefreshMonitoredDownloadsByPathFunc(arrPath)
 	}
+	m.unconfigured("RefreshMonitoredDownloadsByPath")
 	return nil
 }
 
@@ -379,6 +410,7 @@ func (m *MockArrClient) GetMediaDetails(mediaID int64, arrPath string) (*integra
 	if m.GetMediaDetailsFunc != nil {
 		return m.GetMediaDetailsFunc(mediaID, arrPath)
 	}
+	m.unconfigured("GetMediaDetails")
 	return nil, nil
 }
 
@@ -410,8 +442,18 @@ type MockPathMapper struct {
 	ToLocalPathFunc func(arrPath string) (string, error)
 	ReloadFunc      func() error
 
+	// Strict makes unconfigured methods panic rather than fall back to the
+	// identity-passthrough default. Opt-in (default false).
+	Strict bool
+
 	mu    sync.Mutex
 	Calls []MockCall
+}
+
+func (m *MockPathMapper) unconfigured(method string) {
+	if m.Strict {
+		panic("MockPathMapper." + method + ": called without a configured " + method + "Func (strict mode)")
+	}
 }
 
 func (m *MockPathMapper) recordCall(method string, args ...interface{}) {
@@ -425,6 +467,7 @@ func (m *MockPathMapper) ToArrPath(localPath string) (string, error) {
 	if m.ToArrPathFunc != nil {
 		return m.ToArrPathFunc(localPath)
 	}
+	m.unconfigured("ToArrPath")
 	// Default: return the same path
 	return localPath, nil
 }
@@ -434,6 +477,7 @@ func (m *MockPathMapper) ToLocalPath(arrPath string) (string, error) {
 	if m.ToLocalPathFunc != nil {
 		return m.ToLocalPathFunc(arrPath)
 	}
+	m.unconfigured("ToLocalPath")
 	// Default: return the same path
 	return arrPath, nil
 }
@@ -443,6 +487,7 @@ func (m *MockPathMapper) Reload() error {
 	if m.ReloadFunc != nil {
 		return m.ReloadFunc()
 	}
+	m.unconfigured("Reload")
 	return nil
 }
 
@@ -465,8 +510,18 @@ type MockHealthChecker struct {
 	CheckWithConfigFunc func(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError)
 	AnalyzeContentFunc  func(path string) (bool, *integration.HealthCheckError)
 
+	// Strict makes unconfigured methods panic rather than fall back to the
+	// "file is healthy" default. Opt-in (default false).
+	Strict bool
+
 	mu    sync.Mutex
 	Calls []MockCall
+}
+
+func (m *MockHealthChecker) unconfigured(method string) {
+	if m.Strict {
+		panic("MockHealthChecker." + method + ": called without a configured " + method + "Func (strict mode)")
+	}
 }
 
 func (m *MockHealthChecker) recordCall(method string, args ...interface{}) {
@@ -480,6 +535,7 @@ func (m *MockHealthChecker) Check(path, mode string) (bool, *integration.HealthC
 	if m.CheckFunc != nil {
 		return m.CheckFunc(path, mode)
 	}
+	m.unconfigured("Check")
 	// Default: file is healthy
 	return true, nil
 }
@@ -489,6 +545,7 @@ func (m *MockHealthChecker) CheckWithConfig(path string, config integration.Dete
 	if m.CheckWithConfigFunc != nil {
 		return m.CheckWithConfigFunc(path, config)
 	}
+	m.unconfigured("CheckWithConfig")
 	// Default: file is healthy
 	return true, nil
 }
@@ -498,6 +555,7 @@ func (m *MockHealthChecker) AnalyzeContent(path string) (bool, *integration.Heal
 	if m.AnalyzeContentFunc != nil {
 		return m.AnalyzeContentFunc(path)
 	}
+	m.unconfigured("AnalyzeContent")
 	// Default: content is healthy
 	return true, nil
 }
