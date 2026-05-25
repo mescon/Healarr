@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -93,7 +92,6 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	pathIDFilter := c.Query("path_id")
 
 	// Build query
-	baseQuery := "FROM corruption_status"
 	whereClauses := []string{}
 	args := []interface{}{}
 
@@ -116,11 +114,11 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 		whereClause = " WHERE " + strings.Join(whereClauses, " AND ")
 	}
 
-	// Get total count with filter
-	// Security: whereClause contains only fixed strings with ? placeholders, user values are in args
-	var total int
-	countQuery := "SELECT COUNT(*) " + baseQuery + whereClause // NOSONAR - uses parameterized query with args
-	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+	// Get total count with filter.
+	// whereClause contains only fixed fragments with ? placeholders; user
+	// values are passed via args. See CorruptionRepository.CountFiltered.
+	total, err := s.corruptions.CountFiltered(ctx, whereClause, args...)
+	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
@@ -136,56 +134,35 @@ func (s *RESTServer) getCorruptions(c *gin.Context) {
 	}
 	orderByClause := SafeOrderByClause(p.SortBy, p.SortOrder, allowedSortColumns, "last_updated_at", "desc")
 
-	// Security: whereClause uses ? placeholders, orderByClause is validated against allowlist
-	query := fmt.Sprintf("SELECT corruption_id, current_state, retry_count, file_path, path_id, last_error, detected_at, last_updated_at, corruption_type %s%s %s LIMIT ? OFFSET ?", baseQuery, whereClause, orderByClause) // NOSONAR - parameterized query + validated ORDER BY
-	args = append(args, p.Limit, p.Offset)
-
-	rows, err := s.db.QueryContext(ctx, query, args...) // NOSONAR
+	rows, err := s.corruptions.ListFiltered(ctx, whereClause, orderByClause, p.Limit, p.Offset, args...)
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	defer rows.Close()
 
-	corruptions := make([]map[string]interface{}, 0)
-	for rows.Next() {
-		var id, state, filePath string
-		var pathID sql.NullInt64
-		var lastError, corruptionType sql.NullString
-		var retryCount int
-		var detectedAt, lastUpdatedAt string
-
-		if rows.Scan(&id, &state, &retryCount, &filePath, &pathID, &lastError, &detectedAt, &lastUpdatedAt, &corruptionType) != nil {
-			continue
-		}
-
+	corruptions := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
 		corruption := map[string]interface{}{
-			"id":              id,
-			"state":           state,
-			"retry_count":     retryCount,
-			"file_path":       filePath,
-			"last_error":      lastError.String,
-			"detected_at":     detectedAt,
-			"last_updated_at": lastUpdatedAt,
-			"corruption_type": corruptionType.String,
+			"id":              row.CorruptionID,
+			"state":           row.CurrentState,
+			"retry_count":     row.RetryCount,
+			"file_path":       row.FilePath,
+			"last_error":      row.LastError.String,
+			"detected_at":     row.DetectedAt,
+			"last_updated_at": row.LastUpdatedAt,
+			"corruption_type": row.CorruptionType.String,
 		}
-		if pathID.Valid {
-			corruption["path_id"] = pathID.Int64
+		if row.PathID.Valid {
+			corruption["path_id"] = row.PathID.Int64
 		}
 
 		// Fetch enriched data from event_data (file_size from CorruptionDetected, media info from SearchCompleted)
-		enriched := s.getEnrichedCorruptionData(ctx, id)
+		enriched := s.getEnrichedCorruptionData(ctx, row.CorruptionID)
 		for k, v := range enriched {
 			corruption[k] = v
 		}
 
 		corruptions = append(corruptions, corruption)
-	}
-
-	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading corruptions"})
-		logger.Errorf("Error iterating corruptions: %v", err)
-		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -216,16 +193,12 @@ func (s *RESTServer) fetchEventData(ctx context.Context, corruptionID, eventType
 	if order != "ASC" && order != "DESC" {
 		order = "DESC"
 	}
-	var eventData sql.NullString
-	query := fmt.Sprintf(`SELECT event_data FROM events WHERE aggregate_id = ? AND event_type = ? ORDER BY created_at %s LIMIT 1`, order) // NOSONAR - order is validated above
-	if s.db.QueryRowContext(ctx, query, corruptionID, eventType).Scan(&eventData) != nil {
-		return nil
-	}
-	if !eventData.Valid {
+	raw, err := s.corruptions.LatestEventData(ctx, corruptionID, eventType, order)
+	if err != nil {
 		return nil
 	}
 	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(eventData.String), &data); err != nil {
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
 		logger.Debugf("Failed to unmarshal %s event data for %s: %v", eventType, corruptionID, err)
 		return nil
 	}
@@ -339,38 +312,28 @@ func (s *RESTServer) getRemediations(c *gin.Context) {
 	p := ParsePagination(c, DefaultPaginationConfig())
 
 	// Get total count
-	var total int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM corruption_status WHERE current_state = ?", string(domain.VerificationSuccess)).Scan(&total); err != nil {
+	resolvedState := string(domain.VerificationSuccess)
+	total, err := s.corruptions.CountByState(ctx, resolvedState)
+	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
 
 	// Get paginated data
-	rows, err := s.db.QueryContext(ctx, "SELECT corruption_id, file_path, last_updated_at FROM corruption_status WHERE current_state = ? ORDER BY last_updated_at DESC LIMIT ? OFFSET ?", string(domain.VerificationSuccess), p.Limit, p.Offset)
+	rows, err := s.corruptions.ListByState(ctx, resolvedState, p.Limit, p.Offset)
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	defer rows.Close()
 
-	remediations := make([]map[string]interface{}, 0)
-	for rows.Next() {
-		var id, filePath, completedAt string
-		if rows.Scan(&id, &filePath, &completedAt) != nil {
-			continue
-		}
+	remediations := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
 		remediations = append(remediations, map[string]interface{}{
-			"id":           id,
-			"file_path":    filePath,
+			"id":           row.CorruptionID,
+			"file_path":    row.FilePath,
 			"status":       "resolved",
-			"completed_at": completedAt,
+			"completed_at": row.LastUpdatedAt,
 		})
-	}
-
-	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading remediations"})
-		logger.Errorf("Error iterating remediations: %v", err)
-		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -385,39 +348,26 @@ func (s *RESTServer) getCorruptionHistory(c *gin.Context) {
 	defer cancel()
 
 	id := c.Param("id")
-	rows, err := s.db.QueryContext(ctx, "SELECT event_type, event_data, created_at FROM events WHERE aggregate_id = ? ORDER BY created_at ASC", id)
+	events, err := s.corruptions.ListEvents(ctx, id)
 	if err != nil {
 		respondDatabaseError(c, err)
 		return
 	}
-	defer rows.Close()
 
-	history := make([]map[string]interface{}, 0)
-	for rows.Next() {
-		var eventType, createdAt string
-		var eventData []byte // event_data is JSON stored as text/blob
-		if rows.Scan(&eventType, &eventData, &createdAt) != nil {
-			continue
-		}
-
+	history := make([]map[string]interface{}, 0, len(events))
+	for _, ev := range events {
 		var data map[string]interface{}
-		if len(eventData) > 0 {
-			if err := json.Unmarshal(eventData, &data); err != nil {
+		if len(ev.EventData) > 0 {
+			if err := json.Unmarshal(ev.EventData, &data); err != nil {
 				logger.Debugf("Failed to unmarshal event data: %v", err)
 			}
 		}
 
 		history = append(history, map[string]interface{}{
-			"event_type": eventType,
+			"event_type": ev.EventType,
 			"data":       data,
-			"timestamp":  createdAt,
+			"timestamp":  ev.CreatedAt,
 		})
-	}
-
-	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading history"})
-		logger.Errorf("Error iterating corruption history: %v", err)
-		return
 	}
 
 	c.JSON(http.StatusOK, history)
@@ -444,17 +394,8 @@ func (s *RESTServer) retryCorruptions(c *gin.Context) {
 
 	retried := 0
 	for _, id := range req.IDs {
-		var filePath sql.NullString
-		var pathID sql.NullInt64
-		err := s.db.QueryRowContext(ctx, `
-			SELECT
-				json_extract(event_data, '$.file_path'),
-				json_extract(event_data, '$.path_id')
-			FROM events
-			WHERE aggregate_id = ? AND event_type = 'CorruptionDetected'
-			LIMIT 1
-		`, id).Scan(&filePath, &pathID)
-		if err != nil || !filePath.Valid || filePath.String == "" {
+		filePath, pathID, err := s.corruptions.CorruptionDetectedFileInfo(ctx, id)
+		if err != nil {
 			logger.Errorf("Failed to get file_path for corruption %s: %v", id, err)
 			continue
 		}
@@ -464,7 +405,7 @@ func (s *RESTServer) retryCorruptions(c *gin.Context) {
 			AggregateType: "corruption",
 			EventType:     domain.RetryScheduled,
 			EventData: map[string]interface{}{
-				"file_path":      filePath.String,
+				"file_path":      filePath,
 				"path_id":        pathID.Int64,
 				"auto_remediate": true,
 				"manual_retry":   true,
@@ -538,14 +479,9 @@ func (s *RESTServer) deleteCorruptions(c *gin.Context) {
 
 	deleted := 0
 	for _, id := range req.IDs {
-		result, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE aggregate_id = ?`, id)
+		rows, err := s.corruptions.DeleteEvents(ctx, id)
 		if err != nil {
 			logger.Errorf("Failed to delete events for corruption %s: %v", id, err)
-			continue
-		}
-		rows, rowsErr := result.RowsAffected()
-		if rowsErr != nil {
-			logger.Debugf("Failed to get rows affected for corruption %s: %v", id, rowsErr)
 			continue
 		}
 		if rows > 0 {

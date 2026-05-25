@@ -75,6 +75,7 @@ type RESTServer struct {
 	schedules      *repository.ScheduleRepository
 	scans          *repository.ScanRepository
 	settings       *repository.SettingsRepository
+	corruptions    *repository.CorruptionRepository
 }
 
 // initRepositories populates the domain repository fields from s.db. Called
@@ -88,6 +89,7 @@ func (s *RESTServer) initRepositories() {
 	s.schedules = repository.NewScheduleRepository(s.db)
 	s.scans = repository.NewScanRepository(s.db)
 	s.settings = repository.NewSettingsRepository(s.db)
+	s.corruptions = repository.NewCorruptionRepository(s.db)
 }
 
 // ServerDeps contains all dependencies required for the REST server
