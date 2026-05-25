@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/mescon/Healarr/internal/clock"
@@ -37,8 +38,15 @@ const verificationSemaphoreTimeout = 5 * time.Minute
 // errMsgShutdownInProgress is the error message used when operations are aborted due to shutdown.
 const errMsgShutdownInProgress = "shutdown in progress"
 
-// historyRetryInterval is the interval between history API retries when waiting for import.
-const historyRetryInterval = 10 * time.Second
+// defaultHistoryRetryInterval is the production interval between history API
+// retries when waiting for import. It's the default for
+// VerifierService.historyRetryInterval (a field so tests can shrink it).
+const defaultHistoryRetryInterval = 10 * time.Second
+
+// defaultRetryBackoffBase is the production base unit for the exponential
+// (1×, 2×, 4×) backoff in the history/file-path retry helpers. Default for
+// VerifierService.retryBackoffBase.
+const defaultRetryBackoffBase = 1 * time.Second
 
 // historyRetryMaxAttempts is the maximum number of history API retries (12 * 10s = 2 min).
 const historyRetryMaxAttempts = 12
@@ -64,6 +72,12 @@ type VerifierService struct {
 	events     *repository.EventRepository
 	scanPaths  *repository.ScanPathRepository
 	clk        clock.Clock
+
+	// Retry timing — fields (not consts) so tests can shrink them to keep the
+	// retry-COUNT behavior while removing real wall-clock waits. Default to
+	// the production values in NewVerifierService.
+	historyRetryInterval time.Duration
+	retryBackoffBase     time.Duration
 
 	// Graceful shutdown support
 	shutdownCh chan struct{}
@@ -104,6 +118,17 @@ func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecke
 		lastState:    make(map[string]string),
 		verifyMeta:   make(map[string]*VerificationMeta),
 		activeVerify: make(map[string]context.CancelFunc),
+	}
+	v.historyRetryInterval = defaultHistoryRetryInterval
+	v.retryBackoffBase = defaultRetryBackoffBase
+	if testing.Testing() {
+		// Shrink retry waits to ~0 under test binaries: the retry COUNT logic
+		// is unchanged, but the history/file-path retry helpers no longer pay
+		// real 1s/2s/4s and 10s waits. Same lever as the arr-client retry
+		// backoff (PR #214); matches the existing testing.Testing() idiom in
+		// crypto.go / integration.interfaces.go.
+		v.historyRetryInterval = time.Millisecond
+		v.retryBackoffBase = time.Millisecond
 	}
 	if db != nil {
 		v.scanPaths = repository.NewScanPathRepository(db)
@@ -704,7 +729,7 @@ func (v *VerifierService) handleDisappearedQueueItem(ctx context.Context, state 
 		// Retry history check multiple times with delay (BUG-1 fix)
 		for i := 0; i < historyRetryMaxAttempts; i++ {
 			// Check for shutdown/cancellation between retries
-			if v.waitWithContext(ctx, historyRetryInterval) {
+			if v.waitWithContext(ctx, v.historyRetryInterval) {
 				return monitorStop
 			}
 
@@ -1001,7 +1026,7 @@ func (v *VerifierService) getFilePathsWithRetry(mediaID int64, metadata map[stri
 
 		lastErr = err
 		if attempt < maxRetries-1 {
-			backoff := time.Duration(1<<uint(attempt)) * time.Second
+			backoff := time.Duration(1<<uint(attempt)) * v.retryBackoffBase
 			logger.Debugf("GetAllFilePaths failed (attempt %d/%d), retrying in %v: %v", attempt+1, maxRetries, backoff, err)
 			if v.waitWithShutdown(backoff) {
 				return nil, errors.New(errMsgShutdownInProgress)
@@ -1044,8 +1069,8 @@ func (v *VerifierService) getHistoryWithRetry(arrPath string, mediaID int64, lim
 
 		lastErr = err
 		if attempt < maxRetries-1 {
-			// Exponential backoff: 1s, 2s, 4s - interruptible for graceful shutdown
-			backoff := time.Duration(1<<uint(attempt)) * time.Second
+			// Exponential backoff: 1×, 2×, 4× retryBackoffBase - interruptible for graceful shutdown
+			backoff := time.Duration(1<<uint(attempt)) * v.retryBackoffBase
 			logger.Debugf("History API failed (attempt %d/%d), retrying in %v: %v", attempt+1, maxRetries, backoff, err)
 			select {
 			case <-v.shutdownCh:
