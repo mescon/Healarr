@@ -147,7 +147,15 @@ type HTTPArrClient struct {
 	httpClient      *http.Client
 	rateLimiter     *RateLimiter
 	circuitBreakers *CircuitBreakerRegistry
+	// retryBackoff is the base delay between retry attempts; the nth retry
+	// waits (n+1)*retryBackoff. A field (not a const) so tests can set it
+	// near-zero — the retry COUNT behavior is unchanged, only the wall-clock
+	// sleep is removed.
+	retryBackoff time.Duration
 }
+
+// defaultRetryBackoff is the production base delay between *arr request retries.
+const defaultRetryBackoff = 2 * time.Second
 
 // NewArrClient creates an HTTPArrClient with rate limiting and circuit breaker support.
 func NewArrClient(db *sql.DB) *HTTPArrClient {
@@ -160,6 +168,7 @@ func NewArrClient(db *sql.DB) *HTTPArrClient {
 		},
 		rateLimiter:     NewRateLimiter(cfg.ArrRateLimitRPS, cfg.ArrRateLimitBurst),
 		circuitBreakers: NewCircuitBreakerRegistry(DefaultCircuitBreakerConfig()),
+		retryBackoff:    defaultRetryBackoff,
 	}
 }
 
@@ -430,7 +439,7 @@ func (c *HTTPArrClient) buildRequest(instance *ArrInstance, method, endpoint str
 }
 
 // handleServerError handles 5xx responses and determines if we should retry
-func handleServerError(resp *http.Response, cb *CircuitBreaker, instance *ArrInstance, attempt, maxRetries int) (retryAction, error) {
+func (c *HTTPArrClient) handleServerError(resp *http.Response, cb *CircuitBreaker, instance *ArrInstance, attempt, maxRetries int) (retryAction, error) {
 	isLastAttempt := attempt >= maxRetries-1
 
 	if isLastAttempt {
@@ -444,7 +453,7 @@ func handleServerError(resp *http.Response, cb *CircuitBreaker, instance *ArrIns
 
 	if !isLastAttempt {
 		logger.Infof("*arr API returned %d, retrying (%d/%d)...", resp.StatusCode, attempt+1, maxRetries)
-		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+		time.Sleep(time.Duration(attempt+1) * c.retryBackoff)
 		return retryActionContinue, nil
 	}
 
@@ -510,7 +519,7 @@ func (c *HTTPArrClient) handleRequestError(err error, cb *CircuitBreaker, attemp
 
 	if attempt < maxRetries-1 {
 		logger.Infof("*arr API request failed (attempt %d/%d): %v, retrying...", attempt+1, maxRetries, err)
-		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+		time.Sleep(time.Duration(attempt+1) * c.retryBackoff)
 	}
 	return nil, err, false // Continue retrying
 }
@@ -519,7 +528,7 @@ func (c *HTTPArrClient) handleRequestError(err error, cb *CircuitBreaker, attemp
 func (c *HTTPArrClient) handleRequestSuccess(resp *http.Response, cb *CircuitBreaker, instance *ArrInstance, attempt, maxRetries int) (*http.Response, error, bool) {
 	// Handle 5xx server errors
 	if resp.StatusCode >= 500 && resp.StatusCode < 600 {
-		action, retryErr := handleServerError(resp, cb, instance, attempt, maxRetries)
+		action, retryErr := c.handleServerError(resp, cb, instance, attempt, maxRetries)
 		if action == retryActionContinue {
 			return nil, nil, false // Continue retrying
 		}
