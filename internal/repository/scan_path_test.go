@@ -52,6 +52,7 @@ func defaultFields(localPath string) ScanPathFields {
 }
 
 func TestScanPathRepository_Create_andGetByID(t *testing.T) {
+	t.Parallel()
 	repo := NewScanPathRepository(newScanPathTestDB(t))
 	ctx := context.Background()
 
@@ -87,6 +88,7 @@ func TestScanPathRepository_Create_andGetByID(t *testing.T) {
 }
 
 func TestScanPathRepository_Create_emptyDetectionArgsStoresNull(t *testing.T) {
+	t.Parallel()
 	repo := NewScanPathRepository(newScanPathTestDB(t))
 	id, err := repo.Create(context.Background(), defaultFields("/p"))
 	if err != nil {
@@ -99,6 +101,7 @@ func TestScanPathRepository_Create_emptyDetectionArgsStoresNull(t *testing.T) {
 }
 
 func TestScanPathRepository_GetByID_notFound(t *testing.T) {
+	t.Parallel()
 	repo := NewScanPathRepository(newScanPathTestDB(t))
 	if _, err := repo.GetByID(context.Background(), 99); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByID = %v, want ErrNotFound", err)
@@ -106,6 +109,7 @@ func TestScanPathRepository_GetByID_notFound(t *testing.T) {
 }
 
 func TestScanPathRepository_FindIDByLocalPath(t *testing.T) {
+	t.Parallel()
 	repo := NewScanPathRepository(newScanPathTestDB(t))
 	ctx := context.Background()
 	id, _ := repo.Create(ctx, defaultFields("/movies"))
@@ -121,6 +125,7 @@ func TestScanPathRepository_FindIDByLocalPath(t *testing.T) {
 }
 
 func TestScanPathRepository_FindEnabledIDByLocalPath_skipsDisabled(t *testing.T) {
+	t.Parallel()
 	repo := NewScanPathRepository(newScanPathTestDB(t))
 	ctx := context.Background()
 	f := defaultFields("/movies")
@@ -133,6 +138,7 @@ func TestScanPathRepository_FindEnabledIDByLocalPath_skipsDisabled(t *testing.T)
 }
 
 func TestScanPathRepository_ListAll_andListEnabled(t *testing.T) {
+	t.Parallel()
 	repo := NewScanPathRepository(newScanPathTestDB(t))
 	ctx := context.Background()
 
@@ -163,6 +169,7 @@ func TestScanPathRepository_ListAll_andListEnabled(t *testing.T) {
 }
 
 func TestScanPathRepository_ListOrderedByLocalPath(t *testing.T) {
+	t.Parallel()
 	repo := NewScanPathRepository(newScanPathTestDB(t))
 	ctx := context.Background()
 	// Insert in non-alphabetical order.
@@ -183,6 +190,7 @@ func TestScanPathRepository_ListOrderedByLocalPath(t *testing.T) {
 }
 
 func TestScanPathRepository_Update(t *testing.T) {
+	t.Parallel()
 	repo := NewScanPathRepository(newScanPathTestDB(t))
 	ctx := context.Background()
 	id, _ := repo.Create(ctx, defaultFields("/old"))
@@ -201,6 +209,7 @@ func TestScanPathRepository_Update(t *testing.T) {
 }
 
 func TestScanPathRepository_Delete(t *testing.T) {
+	t.Parallel()
 	repo := NewScanPathRepository(newScanPathTestDB(t))
 	ctx := context.Background()
 	id, _ := repo.Create(ctx, defaultFields("/x"))
@@ -218,6 +227,7 @@ func TestScanPathRepository_Delete(t *testing.T) {
 }
 
 func TestScanPathRepository_Count(t *testing.T) {
+	t.Parallel()
 	repo := NewScanPathRepository(newScanPathTestDB(t))
 	ctx := context.Background()
 

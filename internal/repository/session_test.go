@@ -35,6 +35,7 @@ func newSessionTestDB(t *testing.T) *sql.DB {
 }
 
 func TestSessionRepository_Create_persistsRow(t *testing.T) {
+	t.Parallel()
 	repo := NewSessionRepository(newSessionTestDB(t))
 
 	session, err := repo.Create(context.Background(), "tok-abc", time.Hour, "ua/1.0", "192.0.2.1")
@@ -53,6 +54,7 @@ func TestSessionRepository_Create_persistsRow(t *testing.T) {
 }
 
 func TestSessionRepository_Validate_active(t *testing.T) {
+	t.Parallel()
 	repo := NewSessionRepository(newSessionTestDB(t))
 	if _, err := repo.Create(context.Background(), "tok", time.Hour, "", ""); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -64,6 +66,7 @@ func TestSessionRepository_Validate_active(t *testing.T) {
 }
 
 func TestSessionRepository_Validate_notFound(t *testing.T) {
+	t.Parallel()
 	repo := NewSessionRepository(newSessionTestDB(t))
 
 	err := repo.Validate(context.Background(), "no-such-token")
@@ -73,6 +76,7 @@ func TestSessionRepository_Validate_notFound(t *testing.T) {
 }
 
 func TestSessionRepository_Validate_expired(t *testing.T) {
+	t.Parallel()
 	db := newSessionTestDB(t)
 	// Insert an already-expired row directly so we don't depend on time travel.
 	past := time.Now().UTC().Add(-time.Hour)
@@ -91,6 +95,7 @@ func TestSessionRepository_Validate_expired(t *testing.T) {
 }
 
 func TestSessionRepository_BumpLastUsed_updatesRow(t *testing.T) {
+	t.Parallel()
 	db := newSessionTestDB(t)
 	repo := NewSessionRepository(db)
 
@@ -125,6 +130,7 @@ func TestSessionRepository_BumpLastUsed_updatesRow(t *testing.T) {
 }
 
 func TestSessionRepository_BumpLastUsed_missingTokenIsNotError(t *testing.T) {
+	t.Parallel()
 	repo := NewSessionRepository(newSessionTestDB(t))
 	// Bumping a token that doesn't exist is fine — last_used_at is purely
 	// diagnostic, so a no-op update isn't an error condition.
@@ -134,6 +140,7 @@ func TestSessionRepository_BumpLastUsed_missingTokenIsNotError(t *testing.T) {
 }
 
 func TestSessionRepository_Delete_removesRow(t *testing.T) {
+	t.Parallel()
 	db := newSessionTestDB(t)
 	repo := NewSessionRepository(db)
 
@@ -154,6 +161,7 @@ func TestSessionRepository_Delete_removesRow(t *testing.T) {
 }
 
 func TestSessionRepository_SweepExpired(t *testing.T) {
+	t.Parallel()
 	db := newSessionTestDB(t)
 	repo := NewSessionRepository(db)
 

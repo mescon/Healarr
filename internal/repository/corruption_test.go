@@ -76,6 +76,7 @@ func seedCorruption(t *testing.T, db *sql.DB, id, filePath, finalState string, b
 }
 
 func TestCorruptionRepository_CountFiltered_andListFiltered(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -105,6 +106,7 @@ func TestCorruptionRepository_CountFiltered_andListFiltered(t *testing.T) {
 }
 
 func TestCorruptionRepository_CountByState_andListByState(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -128,6 +130,7 @@ func TestCorruptionRepository_CountByState_andListByState(t *testing.T) {
 }
 
 func TestCorruptionRepository_LatestEventData(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -153,6 +156,7 @@ func TestCorruptionRepository_LatestEventData(t *testing.T) {
 }
 
 func TestCorruptionRepository_ListEvents(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -171,6 +175,7 @@ func TestCorruptionRepository_ListEvents(t *testing.T) {
 }
 
 func TestCorruptionRepository_CorruptionDetectedFileInfo(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -195,6 +200,7 @@ func TestCorruptionRepository_CorruptionDetectedFileInfo(t *testing.T) {
 }
 
 func TestCorruptionRepository_DeleteEvents(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -216,6 +222,7 @@ func TestCorruptionRepository_DeleteEvents(t *testing.T) {
 }
 
 func TestCorruptionRepository_StateCounts(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -236,6 +243,7 @@ func TestCorruptionRepository_StateCounts(t *testing.T) {
 }
 
 func TestCorruptionRepository_CountDetectedToday(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	now := time.Now().UTC()
@@ -257,6 +265,7 @@ func TestCorruptionRepository_CountDetectedToday(t *testing.T) {
 }
 
 func TestCorruptionRepository_CountByCorruptionType(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -278,6 +287,7 @@ func TestCorruptionRepository_CountByCorruptionType(t *testing.T) {
 }
 
 func TestCorruptionRepository_PathCorruptionStats(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -298,6 +308,7 @@ func TestCorruptionRepository_PathCorruptionStats(t *testing.T) {
 }
 
 func TestCorruptionRepository_HasActive(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	now := time.Now().UTC()
@@ -320,6 +331,7 @@ func TestCorruptionRepository_HasActive(t *testing.T) {
 }
 
 func TestCorruptionRepository_ListActiveFilePathsUnderRoot(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	now := time.Now().UTC()
@@ -342,6 +354,7 @@ func TestCorruptionRepository_ListActiveFilePathsUnderRoot(t *testing.T) {
 }
 
 func TestCorruptionRepository_CountDetectedByDay(t *testing.T) {
+	t.Parallel()
 	db := newCorruptionTestDB(t)
 	repo := NewCorruptionRepository(db)
 	now := time.Now().UTC()

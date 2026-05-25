@@ -40,6 +40,7 @@ func newRescanTestDB(t *testing.T) *sql.DB {
 }
 
 func TestRescanRepository_Queue_insertsAndReQueues(t *testing.T) {
+	t.Parallel()
 	db := newRescanTestDB(t)
 	repo := NewRescanRepository(db)
 	ctx := context.Background()
@@ -68,6 +69,7 @@ func TestRescanRepository_Queue_insertsAndReQueues(t *testing.T) {
 }
 
 func TestRescanRepository_ListReady(t *testing.T) {
+	t.Parallel()
 	db := newRescanTestDB(t)
 	repo := NewRescanRepository(db)
 	ctx := context.Background()
@@ -95,6 +97,7 @@ func TestRescanRepository_ListReady(t *testing.T) {
 }
 
 func TestRescanRepository_ListReady_respectsLimit(t *testing.T) {
+	t.Parallel()
 	db := newRescanTestDB(t)
 	repo := NewRescanRepository(db)
 	for _, p := range []string{"/a", "/b", "/c"} {
@@ -108,6 +111,7 @@ func TestRescanRepository_ListReady_respectsLimit(t *testing.T) {
 }
 
 func TestRescanRepository_MarkResolved(t *testing.T) {
+	t.Parallel()
 	db := newRescanTestDB(t)
 	repo := NewRescanRepository(db)
 	ctx := context.Background()
@@ -132,6 +136,7 @@ func TestRescanRepository_MarkResolved(t *testing.T) {
 }
 
 func TestRescanRepository_BumpRetry(t *testing.T) {
+	t.Parallel()
 	db := newRescanTestDB(t)
 	repo := NewRescanRepository(db)
 	ctx := context.Background()
@@ -152,6 +157,7 @@ func TestRescanRepository_BumpRetry(t *testing.T) {
 }
 
 func TestRescanRepository_Stats(t *testing.T) {
+	t.Parallel()
 	db := newRescanTestDB(t)
 	repo := NewRescanRepository(db)
 	mustExec(t, db, `INSERT INTO pending_rescans (file_path, error_type, status) VALUES ('/p1', 'X', 'pending')`)

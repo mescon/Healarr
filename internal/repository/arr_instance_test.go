@@ -42,6 +42,7 @@ func newArrInstanceTestDB(t *testing.T) *sql.DB {
 }
 
 func TestArrInstanceRepository_Count_empty(t *testing.T) {
+	t.Parallel()
 	repo := NewArrInstanceRepository(newArrInstanceTestDB(t))
 	n, err := repo.Count(context.Background())
 	if err != nil {
@@ -53,6 +54,7 @@ func TestArrInstanceRepository_Count_empty(t *testing.T) {
 }
 
 func TestArrInstanceRepository_Create_andGetByID(t *testing.T) {
+	t.Parallel()
 	repo := NewArrInstanceRepository(newArrInstanceTestDB(t))
 
 	id, err := repo.Create(context.Background(), CreateArrInstanceParams{
@@ -83,6 +85,7 @@ func TestArrInstanceRepository_Create_andGetByID(t *testing.T) {
 }
 
 func TestArrInstanceRepository_Create_nullWebhookSecret(t *testing.T) {
+	t.Parallel()
 	// Empty EncryptedWebhookSecret should land as SQL NULL, matching the
 	// legacy instance shape that pre-dates per-instance webhook secrets.
 	repo := NewArrInstanceRepository(newArrInstanceTestDB(t))
@@ -105,6 +108,7 @@ func TestArrInstanceRepository_Create_nullWebhookSecret(t *testing.T) {
 }
 
 func TestArrInstanceRepository_GetByID_notFound(t *testing.T) {
+	t.Parallel()
 	repo := NewArrInstanceRepository(newArrInstanceTestDB(t))
 	_, err := repo.GetByID(context.Background(), 999)
 	if !errors.Is(err, ErrNotFound) {
@@ -113,6 +117,7 @@ func TestArrInstanceRepository_GetByID_notFound(t *testing.T) {
 }
 
 func TestArrInstanceRepository_FindIDByURL(t *testing.T) {
+	t.Parallel()
 	repo := NewArrInstanceRepository(newArrInstanceTestDB(t))
 	id, _ := repo.Create(context.Background(), CreateArrInstanceParams{
 		Name: "S", Type: "sonarr", URL: "http://a", EncryptedAPIKey: "k", Enabled: true,
@@ -130,6 +135,7 @@ func TestArrInstanceRepository_FindIDByURL(t *testing.T) {
 }
 
 func TestArrInstanceRepository_ListAll_andListEnabled(t *testing.T) {
+	t.Parallel()
 	repo := NewArrInstanceRepository(newArrInstanceTestDB(t))
 	ctx := context.Background()
 	mustCreate := func(p CreateArrInstanceParams) int64 {
@@ -160,6 +166,7 @@ func TestArrInstanceRepository_ListAll_andListEnabled(t *testing.T) {
 }
 
 func TestArrInstanceRepository_ListEnabledWithScanPaths(t *testing.T) {
+	t.Parallel()
 	db := newArrInstanceTestDB(t)
 	repo := NewArrInstanceRepository(db)
 	ctx := context.Background()
@@ -216,6 +223,7 @@ func mustExecArr(t *testing.T, db *sql.DB, query string, args ...interface{}) {
 }
 
 func TestArrInstanceRepository_CountByType_andPrefix(t *testing.T) {
+	t.Parallel()
 	repo := NewArrInstanceRepository(newArrInstanceTestDB(t))
 	ctx := context.Background()
 	for _, p := range []CreateArrInstanceParams{
@@ -239,6 +247,7 @@ func TestArrInstanceRepository_CountByType_andPrefix(t *testing.T) {
 }
 
 func TestArrInstanceRepository_Update(t *testing.T) {
+	t.Parallel()
 	repo := NewArrInstanceRepository(newArrInstanceTestDB(t))
 	ctx := context.Background()
 	id, _ := repo.Create(ctx, CreateArrInstanceParams{
@@ -264,6 +273,7 @@ func TestArrInstanceRepository_Update(t *testing.T) {
 }
 
 func TestArrInstanceRepository_UpdateWebhookSecret(t *testing.T) {
+	t.Parallel()
 	repo := NewArrInstanceRepository(newArrInstanceTestDB(t))
 	ctx := context.Background()
 	id, _ := repo.Create(ctx, CreateArrInstanceParams{
@@ -284,6 +294,7 @@ func TestArrInstanceRepository_UpdateWebhookSecret(t *testing.T) {
 }
 
 func TestArrInstanceRepository_Delete(t *testing.T) {
+	t.Parallel()
 	repo := NewArrInstanceRepository(newArrInstanceTestDB(t))
 	ctx := context.Background()
 	id, _ := repo.Create(ctx, CreateArrInstanceParams{

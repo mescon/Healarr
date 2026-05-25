@@ -31,6 +31,7 @@ func newSettingsTestDB(t *testing.T) *sql.DB {
 }
 
 func TestSettingsRepository_Set_andGet(t *testing.T) {
+	t.Parallel()
 	repo := NewSettingsRepository(newSettingsTestDB(t))
 	ctx := context.Background()
 
@@ -44,6 +45,7 @@ func TestSettingsRepository_Set_andGet(t *testing.T) {
 }
 
 func TestSettingsRepository_Set_overwrites(t *testing.T) {
+	t.Parallel()
 	// SQLite ON CONFLICT(key) DO UPDATE — Set is upsert, not strict insert.
 	repo := NewSettingsRepository(newSettingsTestDB(t))
 	ctx := context.Background()
@@ -57,6 +59,7 @@ func TestSettingsRepository_Set_overwrites(t *testing.T) {
 }
 
 func TestSettingsRepository_Get_notFound(t *testing.T) {
+	t.Parallel()
 	repo := NewSettingsRepository(newSettingsTestDB(t))
 	_, err := repo.Get(context.Background(), "nope")
 	if !errors.Is(err, ErrNotFound) {
@@ -65,6 +68,7 @@ func TestSettingsRepository_Get_notFound(t *testing.T) {
 }
 
 func TestSettingsRepository_GetOr_fallback(t *testing.T) {
+	t.Parallel()
 	repo := NewSettingsRepository(newSettingsTestDB(t))
 	got, err := repo.GetOr(context.Background(), "nope", "default-value")
 	if err != nil || got != "default-value" {
@@ -73,6 +77,7 @@ func TestSettingsRepository_GetOr_fallback(t *testing.T) {
 }
 
 func TestSettingsRepository_GetOr_existing(t *testing.T) {
+	t.Parallel()
 	repo := NewSettingsRepository(newSettingsTestDB(t))
 	_ = repo.Set(context.Background(), "k", "actual")
 	got, _ := repo.GetOr(context.Background(), "k", "default-value")
@@ -82,6 +87,7 @@ func TestSettingsRepository_GetOr_existing(t *testing.T) {
 }
 
 func TestSettingsRepository_Exists(t *testing.T) {
+	t.Parallel()
 	repo := NewSettingsRepository(newSettingsTestDB(t))
 	ctx := context.Background()
 
@@ -95,6 +101,7 @@ func TestSettingsRepository_Exists(t *testing.T) {
 }
 
 func TestSettingsRepository_Delete(t *testing.T) {
+	t.Parallel()
 	repo := NewSettingsRepository(newSettingsTestDB(t))
 	ctx := context.Background()
 	_ = repo.Set(ctx, "k", "v")
@@ -112,6 +119,7 @@ func TestSettingsRepository_Delete(t *testing.T) {
 }
 
 func TestSettingsRepository_SetMany_atomic(t *testing.T) {
+	t.Parallel()
 	// SetMany commits all keys or none. Verify the happy path first.
 	repo := NewSettingsRepository(newSettingsTestDB(t))
 	ctx := context.Background()
@@ -128,6 +136,7 @@ func TestSettingsRepository_SetMany_atomic(t *testing.T) {
 }
 
 func TestSettingsRepository_SetMany_overwrites(t *testing.T) {
+	t.Parallel()
 	repo := NewSettingsRepository(newSettingsTestDB(t))
 	ctx := context.Background()
 	_ = repo.Set(ctx, "a", "old")
