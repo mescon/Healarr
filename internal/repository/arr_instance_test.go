@@ -20,6 +20,12 @@ CREATE TABLE arr_instances (
 	webhook_secret TEXT,
 	created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE scan_paths (
+	id              INTEGER PRIMARY KEY AUTOINCREMENT,
+	local_path      TEXT NOT NULL,
+	arr_path        TEXT NOT NULL,
+	arr_instance_id INTEGER
+);
 `
 
 func newArrInstanceTestDB(t *testing.T) *sql.DB {
@@ -150,6 +156,62 @@ func TestArrInstanceRepository_ListAll_andListEnabled(t *testing.T) {
 		if !inst.Enabled {
 			t.Errorf("ListEnabled returned disabled row: %+v", inst)
 		}
+	}
+}
+
+func TestArrInstanceRepository_ListEnabledWithScanPaths(t *testing.T) {
+	db := newArrInstanceTestDB(t)
+	repo := NewArrInstanceRepository(db)
+	ctx := context.Background()
+
+	enabledID, err := repo.Create(ctx, CreateArrInstanceParams{
+		Name: "sonarr", Type: "sonarr", URL: "http://s", EncryptedAPIKey: "enc-k", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("Create enabled: %v", err)
+	}
+	disabledID, err := repo.Create(ctx, CreateArrInstanceParams{
+		Name: "radarr", Type: "radarr", URL: "http://r", EncryptedAPIKey: "enc-k", Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("Create disabled: %v", err)
+	}
+
+	// Enabled instance with two scan paths → two joined rows.
+	mustExecArr(t, db, `INSERT INTO scan_paths (local_path, arr_path, arr_instance_id) VALUES ('/m', '/data/movies', ?)`, enabledID)
+	mustExecArr(t, db, `INSERT INTO scan_paths (local_path, arr_path, arr_instance_id) VALUES ('/t', '/data/tv', ?)`, enabledID)
+	// Disabled instance's scan path → excluded (WHERE i.enabled = 1).
+	mustExecArr(t, db, `INSERT INTO scan_paths (local_path, arr_path, arr_instance_id) VALUES ('/x', '/data/x', ?)`, disabledID)
+	// Orphan scan path (no instance) → excluded by the INNER JOIN.
+	mustExecArr(t, db, `INSERT INTO scan_paths (local_path, arr_path, arr_instance_id) VALUES ('/o', '/data/o', 999)`)
+
+	rows, err := repo.ListEnabledWithScanPaths(ctx)
+	if err != nil {
+		t.Fatalf("ListEnabledWithScanPaths: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2 (both paths of the enabled instance)", len(rows))
+	}
+
+	arrPaths := map[string]bool{}
+	for _, r := range rows {
+		if r.ID != enabledID {
+			t.Errorf("row references instance %d, want enabled %d", r.ID, enabledID)
+		}
+		if r.EncryptedAPIKey != "enc-k" {
+			t.Errorf("EncryptedAPIKey = %q, want enc-k", r.EncryptedAPIKey)
+		}
+		arrPaths[r.ArrPath] = true
+	}
+	if !arrPaths["/data/movies"] || !arrPaths["/data/tv"] {
+		t.Errorf("arr_paths = %v, want both /data/movies and /data/tv", arrPaths)
+	}
+}
+
+func mustExecArr(t *testing.T, db *sql.DB, query string, args ...interface{}) {
+	t.Helper()
+	if _, err := db.Exec(query, args...); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
 	}
 }
 

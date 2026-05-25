@@ -20,6 +20,7 @@ import (
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 )
 
 // ArrType is the typed enum of supported *arr application kinds. Using a
@@ -142,6 +143,7 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 // HTTPArrClient implements ArrClient for communicating with Sonarr/Radarr APIs.
 type HTTPArrClient struct {
 	db              *sql.DB
+	arrInstances    *repository.ArrInstanceRepository
 	httpClient      *http.Client
 	rateLimiter     *RateLimiter
 	circuitBreakers *CircuitBreakerRegistry
@@ -151,13 +153,37 @@ type HTTPArrClient struct {
 func NewArrClient(db *sql.DB) *HTTPArrClient {
 	cfg := config.Get()
 	return &HTTPArrClient{
-		db: db,
+		db:           db,
+		arrInstances: repository.NewArrInstanceRepository(db),
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 		rateLimiter:     NewRateLimiter(cfg.ArrRateLimitRPS, cfg.ArrRateLimitBurst),
 		circuitBreakers: NewCircuitBreakerRegistry(DefaultCircuitBreakerConfig()),
 	}
+}
+
+// arrInstanceFromRepo converts a repository.ArrInstance (raw persisted
+// shape, encrypted api_key, string type) into the integration ArrInstance
+// the client uses (decrypted api_key, typed ArrType). ParseArrType is the
+// boundary validation: an unknown type string (e.g. a manual SQL insert
+// with a typo) surfaces as an error here rather than downstream.
+func arrInstanceFromRepo(row repository.ArrInstance) (ArrInstance, error) {
+	arrType, err := ParseArrType(row.Type)
+	if err != nil {
+		return ArrInstance{}, fmt.Errorf("instance %d has invalid type %q: %w", row.ID, row.Type, err)
+	}
+	decryptedKey, err := crypto.Decrypt(row.EncryptedAPIKey)
+	if err != nil {
+		return ArrInstance{}, fmt.Errorf("failed to decrypt API key for instance %d: %w", row.ID, err)
+	}
+	return ArrInstance{
+		ID:     row.ID,
+		Name:   row.Name,
+		Type:   arrType,
+		URL:    row.URL,
+		APIKey: decryptedKey,
+	}, nil
 }
 
 // GetCircuitBreakerStats returns statistics for all circuit breakers.
@@ -296,48 +322,34 @@ func normalizedPathLength(rootPath string) int {
 }
 
 func (c *HTTPArrClient) getInstanceForPath(arrPath string) (*ArrInstance, error) {
-	rows, err := c.db.Query("SELECT i.id, i.name, i.type, i.url, i.api_key, sp.arr_path FROM arr_instances i JOIN scan_paths sp ON sp.arr_instance_id = i.id WHERE i.enabled = 1")
+	rows, err := c.arrInstances.ListEnabledWithScanPaths(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to query instances: %w", err)
 	}
-	defer rows.Close()
 
 	var bestMatch *ArrInstance
 	var longestPrefixLen int
 
-	for rows.Next() {
-		var i ArrInstance
-		var rootPath string
-		var encryptedKey string
-		if err := rows.Scan(&i.ID, &i.Name, &i.Type, &i.URL, &encryptedKey, &rootPath); err != nil {
-			// ArrType.Scan rejects unknown DB values here. Logging at Errorf
-			// surfaces the bad row (typically a manual SQL insert with a
-			// typo'd type) rather than silently producing "no instance
-			// found" downstream.
-			logger.Errorf("getInstanceForPath: skipping unscannable row: %v", err)
+	for _, row := range rows {
+		if !isValidPathMatch(row.ArrPath, arrPath) {
 			continue
 		}
 
-		decryptedKey, err := crypto.Decrypt(encryptedKey)
+		instance, err := arrInstanceFromRepo(row.ArrInstance)
 		if err != nil {
-			logger.Errorf("Failed to decrypt API key for instance %d: %v", i.ID, err)
-			continue
-		}
-		i.APIKey = decryptedKey
-
-		if !isValidPathMatch(rootPath, arrPath) {
+			// Surfaces a bad row (typically a manual SQL insert with a
+			// typo'd type, or an undecryptable key) rather than silently
+			// producing "no instance found" downstream.
+			logger.Errorf("getInstanceForPath: skipping invalid instance: %v", err)
 			continue
 		}
 
-		pathLen := normalizedPathLength(rootPath)
+		pathLen := normalizedPathLength(row.ArrPath)
 		if pathLen > longestPrefixLen {
 			longestPrefixLen = pathLen
-			bestMatch = &i
+			matched := instance
+			bestMatch = &matched
 		}
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating instances for path: %w", err)
 	}
 
 	if bestMatch == nil {
@@ -1109,50 +1121,35 @@ func (c *HTTPArrClient) TriggerSearch(mediaID int64, path string, episodeIDs []i
 
 // getAllInstancesInternal returns all enabled *arr instances (internal use)
 func (c *HTTPArrClient) getAllInstancesInternal() ([]*ArrInstance, error) {
-	rows, err := c.db.Query("SELECT id, name, type, url, api_key FROM arr_instances WHERE enabled = 1")
+	rows, err := c.arrInstances.ListEnabled(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to query instances: %w", err)
 	}
-	defer rows.Close()
 
 	var instances []*ArrInstance
-	for rows.Next() {
-		var i ArrInstance
-		var encryptedKey string
-		if rows.Scan(&i.ID, &i.Name, &i.Type, &i.URL, &encryptedKey) != nil {
-			continue
-		}
-		decryptedKey, err := crypto.Decrypt(encryptedKey)
+	for _, row := range rows {
+		instance, err := arrInstanceFromRepo(row)
 		if err != nil {
-			logger.Errorf("Failed to decrypt API key for instance %d: %v", i.ID, err)
+			logger.Errorf("getAllInstancesInternal: skipping invalid instance: %v", err)
 			continue
 		}
-		i.APIKey = decryptedKey
-		instances = append(instances, &i)
+		matched := instance
+		instances = append(instances, &matched)
 	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating instances: %w", err)
-	}
-
 	return instances, nil
 }
 
 // getInstanceByIDInternal returns a specific *arr instance by ID (internal use)
 func (c *HTTPArrClient) getInstanceByIDInternal(id int64) (*ArrInstance, error) {
-	var i ArrInstance
-	var encryptedKey string
-	err := c.db.QueryRow("SELECT id, name, type, url, api_key FROM arr_instances WHERE id = ?", id).
-		Scan(&i.ID, &i.Name, &i.Type, &i.URL, &encryptedKey)
+	row, err := c.arrInstances.GetByID(context.Background(), id)
 	if err != nil {
 		return nil, err
 	}
-	decryptedKey, err := crypto.Decrypt(encryptedKey)
+	instance, err := arrInstanceFromRepo(row)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt API key: %w", err)
+		return nil, err
 	}
-	i.APIKey = decryptedKey
-	return &i, nil
+	return &instance, nil
 }
 
 // GetQueue retrieves the download queue for an *arr instance

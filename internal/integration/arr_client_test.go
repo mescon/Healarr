@@ -44,7 +44,8 @@ func newTestDB(t *testing.T) *testDB {
 			type TEXT NOT NULL,
 			url TEXT NOT NULL,
 			api_key TEXT NOT NULL,
-			enabled INTEGER DEFAULT 1
+			enabled INTEGER DEFAULT 1,
+			webhook_secret TEXT
 		);
 		CREATE TABLE IF NOT EXISTS scan_paths (
 			id INTEGER PRIMARY KEY,
