@@ -57,6 +57,7 @@ func defaultNotifFields(name string) NotificationFields {
 }
 
 func TestNotificationRepository_Create_andGetByID(t *testing.T) {
+	t.Parallel()
 	repo := NewNotificationRepository(newNotificationTestDB(t))
 	id, err := repo.Create(context.Background(), defaultNotifFields("test"))
 	if err != nil {
@@ -75,6 +76,7 @@ func TestNotificationRepository_Create_andGetByID(t *testing.T) {
 }
 
 func TestNotificationRepository_GetByID_notFound(t *testing.T) {
+	t.Parallel()
 	repo := NewNotificationRepository(newNotificationTestDB(t))
 	if _, err := repo.GetByID(context.Background(), 999); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByID = %v, want ErrNotFound", err)
@@ -82,6 +84,7 @@ func TestNotificationRepository_GetByID_notFound(t *testing.T) {
 }
 
 func TestNotificationRepository_ListEnabled_andListAll(t *testing.T) {
+	t.Parallel()
 	repo := NewNotificationRepository(newNotificationTestDB(t))
 	ctx := context.Background()
 
@@ -111,6 +114,7 @@ func TestNotificationRepository_ListEnabled_andListAll(t *testing.T) {
 }
 
 func TestNotificationRepository_Update(t *testing.T) {
+	t.Parallel()
 	repo := NewNotificationRepository(newNotificationTestDB(t))
 	ctx := context.Background()
 	id, _ := repo.Create(ctx, defaultNotifFields("old"))
@@ -128,6 +132,7 @@ func TestNotificationRepository_Update(t *testing.T) {
 }
 
 func TestNotificationRepository_Delete_cascadesLogs(t *testing.T) {
+	t.Parallel()
 	db := newNotificationTestDB(t)
 	repo := NewNotificationRepository(db)
 	ctx := context.Background()
@@ -150,6 +155,7 @@ func TestNotificationRepository_Delete_cascadesLogs(t *testing.T) {
 }
 
 func TestNotificationRepository_AppendLog_andListLog(t *testing.T) {
+	t.Parallel()
 	repo := NewNotificationRepository(newNotificationTestDB(t))
 	ctx := context.Background()
 	id, _ := repo.Create(ctx, defaultNotifFields("x"))
@@ -175,6 +181,7 @@ func TestNotificationRepository_AppendLog_andListLog(t *testing.T) {
 }
 
 func TestNotificationRepository_ListLog_unfilteredReturnsAll(t *testing.T) {
+	t.Parallel()
 	repo := NewNotificationRepository(newNotificationTestDB(t))
 	ctx := context.Background()
 	a, _ := repo.Create(ctx, defaultNotifFields("a"))
@@ -189,6 +196,7 @@ func TestNotificationRepository_ListLog_unfilteredReturnsAll(t *testing.T) {
 }
 
 func TestNotificationRepository_SweepLogsOlderThan(t *testing.T) {
+	t.Parallel()
 	db := newNotificationTestDB(t)
 	repo := NewNotificationRepository(db)
 	ctx := context.Background()
@@ -220,6 +228,7 @@ func TestNotificationRepository_SweepLogsOlderThan(t *testing.T) {
 }
 
 func TestNotificationRepository_LimitLogTotal(t *testing.T) {
+	t.Parallel()
 	repo := NewNotificationRepository(newNotificationTestDB(t))
 	ctx := context.Background()
 	id, _ := repo.Create(ctx, defaultNotifFields("x"))

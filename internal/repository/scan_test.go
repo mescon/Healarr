@@ -64,6 +64,7 @@ func seedScan(t *testing.T, db *sql.DB, path, status string, files, corruptions 
 }
 
 func TestScanRepository_Count(t *testing.T) {
+	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
 	if n, _ := repo.Count(context.Background()); n != 0 {
@@ -77,6 +78,7 @@ func TestScanRepository_Count(t *testing.T) {
 }
 
 func TestScanRepository_GetByID(t *testing.T) {
+	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
 	id := seedScan(t, db, "/path", "completed", 100, 3, "2026-05-01 00:00:00")
@@ -91,6 +93,7 @@ func TestScanRepository_GetByID(t *testing.T) {
 }
 
 func TestScanRepository_GetByID_notFound(t *testing.T) {
+	t.Parallel()
 	repo := NewScanRepository(newScanTestDB(t))
 	if _, err := repo.GetByID(context.Background(), 999); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByID = %v, want ErrNotFound", err)
@@ -98,6 +101,7 @@ func TestScanRepository_GetByID_notFound(t *testing.T) {
 }
 
 func TestScanRepository_Exists(t *testing.T) {
+	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
 	id := seedScan(t, db, "/p", "completed", 1, 0, "")
@@ -111,6 +115,7 @@ func TestScanRepository_Exists(t *testing.T) {
 }
 
 func TestScanRepository_ListPaged(t *testing.T) {
+	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
 	for i := 0; i < 5; i++ {
@@ -129,6 +134,7 @@ func TestScanRepository_ListPaged(t *testing.T) {
 }
 
 func TestScanRepository_GetScanStats(t *testing.T) {
+	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
 	// Seed some scans with timestamps that fall in today/this-week ranges.
@@ -158,6 +164,7 @@ func TestScanRepository_GetScanStats(t *testing.T) {
 }
 
 func TestScanRepository_GetLastCompletedScan(t *testing.T) {
+	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
 	seedScan(t, db, "/older", "completed", 0, 0, "2026-05-01 00:00:00")
@@ -174,6 +181,7 @@ func TestScanRepository_GetLastCompletedScan(t *testing.T) {
 }
 
 func TestScanRepository_GetLastCompletedScan_empty(t *testing.T) {
+	t.Parallel()
 	repo := NewScanRepository(newScanTestDB(t))
 	if _, err := repo.GetLastCompletedScan(context.Background()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("empty DB = %v, want ErrNotFound", err)
@@ -181,6 +189,7 @@ func TestScanRepository_GetLastCompletedScan_empty(t *testing.T) {
 }
 
 func TestScanRepository_GetLastCompletedScanByPathID(t *testing.T) {
+	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
 	// Two paths, two completed scans each — the per-path query should pick
@@ -207,6 +216,7 @@ func TestScanRepository_GetLastCompletedScanByPathID(t *testing.T) {
 }
 
 func TestScanRepository_Create_andStatusTransitions(t *testing.T) {
+	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
 	ctx := context.Background()
@@ -242,6 +252,7 @@ func TestScanRepository_Create_andStatusTransitions(t *testing.T) {
 }
 
 func TestScanRepository_MarkInterrupted_Paused_Aborted(t *testing.T) {
+	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
 	ctx := context.Background()
@@ -277,6 +288,7 @@ func TestScanRepository_MarkInterrupted_Paused_Aborted(t *testing.T) {
 }
 
 func TestScanRepository_UpdateProgress_andIncrementCorruptions(t *testing.T) {
+	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
 	ctx := context.Background()
@@ -304,6 +316,7 @@ func TestScanRepository_UpdateProgress_andIncrementCorruptions(t *testing.T) {
 }
 
 func TestScanRepository_ListInterrupted(t *testing.T) {
+	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
 	ctx := context.Background()

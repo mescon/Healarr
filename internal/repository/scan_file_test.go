@@ -35,6 +35,7 @@ func newScanFileTestDB(t *testing.T) *sql.DB {
 }
 
 func TestScanFileRepository_Record_healthyStoresNullOptionals(t *testing.T) {
+	t.Parallel()
 	db := newScanFileTestDB(t)
 	repo := NewScanFileRepository(db)
 
@@ -60,6 +61,7 @@ func TestScanFileRepository_Record_healthyStoresNullOptionals(t *testing.T) {
 }
 
 func TestScanFileRepository_Record_corruptStoresDetails(t *testing.T) {
+	t.Parallel()
 	db := newScanFileTestDB(t)
 	repo := NewScanFileRepository(db)
 
@@ -81,6 +83,7 @@ func TestScanFileRepository_Record_corruptStoresDetails(t *testing.T) {
 }
 
 func TestScanFileRepository_CountByStatus(t *testing.T) {
+	t.Parallel()
 	db := newScanFileTestDB(t)
 	repo := NewScanFileRepository(db)
 	ctx := context.Background()
@@ -108,6 +111,7 @@ func TestScanFileRepository_CountByStatus(t *testing.T) {
 }
 
 func TestScanFileRepository_CountForScan_andListForScan(t *testing.T) {
+	t.Parallel()
 	db := newScanFileTestDB(t)
 	repo := NewScanFileRepository(db)
 	ctx := context.Background()
@@ -141,6 +145,7 @@ func TestScanFileRepository_CountForScan_andListForScan(t *testing.T) {
 }
 
 func TestScanFileRepository_ListForScan_pagination(t *testing.T) {
+	t.Parallel()
 	db := newScanFileTestDB(t)
 	repo := NewScanFileRepository(db)
 	ctx := context.Background()

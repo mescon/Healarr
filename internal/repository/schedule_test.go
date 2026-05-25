@@ -48,6 +48,7 @@ func seedScanPath(t *testing.T, db *sql.DB, localPath string) int64 {
 }
 
 func TestScheduleRepository_Create_andListEnabled(t *testing.T) {
+	t.Parallel()
 	db := newScheduleTestDB(t)
 	repo := NewScheduleRepository(db)
 	pathID := seedScanPath(t, db, "/a")
@@ -70,6 +71,7 @@ func TestScheduleRepository_Create_andListEnabled(t *testing.T) {
 }
 
 func TestScheduleRepository_ListEnabled_skipsDisabled(t *testing.T) {
+	t.Parallel()
 	db := newScheduleTestDB(t)
 	repo := NewScheduleRepository(db)
 	pathID := seedScanPath(t, db, "/a")
@@ -83,6 +85,7 @@ func TestScheduleRepository_ListEnabled_skipsDisabled(t *testing.T) {
 }
 
 func TestScheduleRepository_ListWithPaths(t *testing.T) {
+	t.Parallel()
 	db := newScheduleTestDB(t)
 	repo := NewScheduleRepository(db)
 	pathID := seedScanPath(t, db, "/movies")
@@ -98,6 +101,7 @@ func TestScheduleRepository_ListWithPaths(t *testing.T) {
 }
 
 func TestScheduleRepository_ListWithPaths_skipsOrphans(t *testing.T) {
+	t.Parallel()
 	// A schedule referencing a deleted scan_path should be excluded by the
 	// INNER JOIN (the export endpoint doesn't show stale rows).
 	db := newScheduleTestDB(t)
@@ -119,6 +123,7 @@ func TestScheduleRepository_ListWithPaths_skipsOrphans(t *testing.T) {
 }
 
 func TestScheduleRepository_GetByID_notFound(t *testing.T) {
+	t.Parallel()
 	repo := NewScheduleRepository(newScheduleTestDB(t))
 	if _, err := repo.GetByID(context.Background(), 999); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByID = %v, want ErrNotFound", err)
@@ -126,6 +131,7 @@ func TestScheduleRepository_GetByID_notFound(t *testing.T) {
 }
 
 func TestScheduleRepository_FindIDByPathAndCron(t *testing.T) {
+	t.Parallel()
 	db := newScheduleTestDB(t)
 	repo := NewScheduleRepository(db)
 	pathID := seedScanPath(t, db, "/a")
@@ -142,6 +148,7 @@ func TestScheduleRepository_FindIDByPathAndCron(t *testing.T) {
 }
 
 func TestScheduleRepository_Update_cronAndEnabled(t *testing.T) {
+	t.Parallel()
 	db := newScheduleTestDB(t)
 	repo := NewScheduleRepository(db)
 	pathID := seedScanPath(t, db, "/a")
@@ -157,6 +164,7 @@ func TestScheduleRepository_Update_cronAndEnabled(t *testing.T) {
 }
 
 func TestScheduleRepository_Update_emptyCronOnlyChangesEnabled(t *testing.T) {
+	t.Parallel()
 	db := newScheduleTestDB(t)
 	repo := NewScheduleRepository(db)
 	pathID := seedScanPath(t, db, "/a")
@@ -175,6 +183,7 @@ func TestScheduleRepository_Update_emptyCronOnlyChangesEnabled(t *testing.T) {
 }
 
 func TestScheduleRepository_Delete(t *testing.T) {
+	t.Parallel()
 	db := newScheduleTestDB(t)
 	repo := NewScheduleRepository(db)
 	pathID := seedScanPath(t, db, "/a")
@@ -189,6 +198,7 @@ func TestScheduleRepository_Delete(t *testing.T) {
 }
 
 func TestScheduleRepository_DeleteOrphaned(t *testing.T) {
+	t.Parallel()
 	db := newScheduleTestDB(t)
 	repo := NewScheduleRepository(db)
 	pathID := seedScanPath(t, db, "/a")

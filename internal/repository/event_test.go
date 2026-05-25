@@ -39,6 +39,7 @@ func newEventTestDB(t *testing.T) *sql.DB {
 }
 
 func TestEventRepository_Append(t *testing.T) {
+	t.Parallel()
 	db := newEventTestDB(t)
 	repo := NewEventRepository(db)
 
@@ -71,6 +72,7 @@ func TestEventRepository_Append(t *testing.T) {
 }
 
 func TestEventRepository_ListUnprocessed_endOfStreamOnly(t *testing.T) {
+	t.Parallel()
 	db := newEventTestDB(t)
 	repo := NewEventRepository(db)
 	ctx := context.Background()
@@ -108,6 +110,7 @@ func TestEventRepository_ListUnprocessed_endOfStreamOnly(t *testing.T) {
 }
 
 func TestEventRepository_ListUnprocessed_skipsCorruptData(t *testing.T) {
+	t.Parallel()
 	db := newEventTestDB(t)
 	repo := NewEventRepository(db)
 
@@ -135,6 +138,7 @@ func TestEventRepository_ListUnprocessed_skipsCorruptData(t *testing.T) {
 }
 
 func TestEventRepository_FirstEventTime(t *testing.T) {
+	t.Parallel()
 	db := newEventTestDB(t)
 	repo := NewEventRepository(db)
 
