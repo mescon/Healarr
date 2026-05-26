@@ -164,6 +164,21 @@ func corsMiddleware(corsOrigins string, allowedOrigins map[string]bool) gin.Hand
 	}
 }
 
+// securityHeadersMiddleware sets defense-in-depth response headers on every
+// response (API and the served web UI):
+//   - X-Content-Type-Options: nosniff   — stop MIME-sniffing of responses
+//   - X-Frame-Options: SAMEORIGIN        — block cross-origin framing (clickjacking)
+//   - Referrer-Policy: no-referrer       — don't leak URLs to third parties
+func securityHeadersMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		h := c.Writer.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "SAMEORIGIN")
+		h.Set("Referrer-Policy", "no-referrer")
+		c.Next()
+	}
+}
+
 // recoveryMiddleware handles panics with enhanced logging.
 func recoveryMiddleware() gin.HandlerFunc {
 	return gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
@@ -200,6 +215,7 @@ func NewRESTServer(deps ServerDeps) *RESTServer {
 
 	// Apply middleware
 	r.Use(requestIDMiddleware())
+	r.Use(securityHeadersMiddleware())
 	r.Use(metricsMiddleware(deps.Metrics))
 	r.Use(recoveryMiddleware())
 
