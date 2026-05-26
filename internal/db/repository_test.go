@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -4226,8 +4227,11 @@ func TestRepository_GetDatabaseStats_TableCounts(t *testing.T) {
 // Metrics tests
 // =============================================================================
 
-// mockMetricsRecorder is a test implementation of DBMetricsRecorder
+// mockMetricsRecorder is a test implementation of DBMetricsRecorder.
+// RecordDBPoolStats is invoked from StartPeriodicPoolStats' background goroutine
+// while tests read the counters, so all access is guarded by mu.
 type mockMetricsRecorder struct {
+	mu             sync.Mutex
 	queryCount     int
 	lastOperation  string
 	lastDuration   float64
@@ -4238,16 +4242,28 @@ type mockMetricsRecorder struct {
 }
 
 func (m *mockMetricsRecorder) RecordDBQuery(operation string, duration float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.queryCount++
 	m.lastOperation = operation
 	m.lastDuration = duration
 }
 
 func (m *mockMetricsRecorder) RecordDBPoolStats(openConns, inUse, idle int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.poolStatsCalls++
 	m.lastOpenConns = openConns
 	m.lastInUse = inUse
 	m.lastIdle = idle
+}
+
+// poolStatsCallCount returns poolStatsCalls under the lock, safe to call while
+// the background pool-stats goroutine is still recording.
+func (m *mockMetricsRecorder) poolStatsCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.poolStatsCalls
 }
 
 func TestRepository_SetMetrics(t *testing.T) {
@@ -4379,8 +4395,8 @@ func TestRepository_StartPeriodicPoolStats_WithMetrics(t *testing.T) {
 	// Wait for at least one report
 	time.Sleep(50 * time.Millisecond)
 
-	if mock.poolStatsCalls < 1 {
-		t.Errorf("Expected at least 1 pool stats call, got %d", mock.poolStatsCalls)
+	if got := mock.poolStatsCallCount(); got < 1 {
+		t.Errorf("Expected at least 1 pool stats call, got %d", got)
 	}
 }
 
@@ -4404,15 +4420,15 @@ func TestRepository_StartPeriodicPoolStats_Stop(t *testing.T) {
 
 	// Wait for at least one report
 	time.Sleep(30 * time.Millisecond)
-	initialCalls := mock.poolStatsCalls
+	initialCalls := mock.poolStatsCallCount()
 
 	// Stop and wait
 	stop()
 	time.Sleep(50 * time.Millisecond)
 
 	// Calls should stop increasing after stop()
-	if mock.poolStatsCalls > initialCalls+1 {
+	if got := mock.poolStatsCallCount(); got > initialCalls+1 {
 		t.Errorf("Pool stats calls should stop after stop(), got %d calls after %d initial",
-			mock.poolStatsCalls, initialCalls)
+			got, initialCalls)
 	}
 }
