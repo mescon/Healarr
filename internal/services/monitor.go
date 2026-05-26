@@ -16,7 +16,7 @@ import (
 
 // MonitorService handles failure events and schedules retries with exponential backoff.
 type MonitorService struct {
-	eventBus      *eventbus.EventBus
+	eventBus      eventbus.Publisher
 	db            *sql.DB
 	clk           clock.Clock
 	wg            sync.WaitGroup         // Tracks in-flight timer callbacks
@@ -28,7 +28,7 @@ type MonitorService struct {
 
 // NewMonitorService creates a new MonitorService.
 // An optional Clock can be provided for testing; if none is provided, RealClock is used.
-func NewMonitorService(eb *eventbus.EventBus, db *sql.DB, clocks ...clock.Clock) *MonitorService {
+func NewMonitorService(eb eventbus.Publisher, db *sql.DB, clocks ...clock.Clock) *MonitorService {
 	var c clock.Clock = clock.NewRealClock()
 	if len(clocks) > 0 && clocks[0] != nil {
 		c = clocks[0]

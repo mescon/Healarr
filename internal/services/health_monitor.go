@@ -21,7 +21,7 @@ const queryTimeout = 10 * time.Second
 // HealthMonitorService monitors system health and detects stuck remediations
 type HealthMonitorService struct {
 	db         *sql.DB
-	eventBus   *eventbus.EventBus
+	eventBus   eventbus.Publisher
 	arrClient  integration.ArrClient
 	shutdownCh chan struct{}
 	wg         sync.WaitGroup
@@ -39,7 +39,7 @@ type HealthMonitorService struct {
 }
 
 // NewHealthMonitorService creates a new health monitoring service
-func NewHealthMonitorService(db *sql.DB, eb *eventbus.EventBus, arrClient integration.ArrClient, staleThreshold time.Duration) *HealthMonitorService {
+func NewHealthMonitorService(db *sql.DB, eb eventbus.Publisher, arrClient integration.ArrClient, staleThreshold time.Duration) *HealthMonitorService {
 	if staleThreshold <= 0 {
 		staleThreshold = 24 * time.Hour
 	}

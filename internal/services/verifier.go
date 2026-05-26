@@ -64,7 +64,7 @@ type VerificationMeta struct {
 
 // VerifierService monitors downloads and verifies replacement files after remediation.
 type VerifierService struct {
-	eventBus   *eventbus.EventBus
+	eventBus   eventbus.Publisher
 	detector   integration.HealthChecker
 	pathMapper integration.PathMapper
 	arrClient  integration.ArrClient
@@ -101,7 +101,7 @@ type VerifierService struct {
 
 // NewVerifierService creates a new VerifierService with the given dependencies.
 // An optional clock.Clock can be passed for testing; defaults to clock.RealClock.
-func NewVerifierService(eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper, arrClient integration.ArrClient, db *sql.DB, clocks ...clock.Clock) *VerifierService {
+func NewVerifierService(eb eventbus.Publisher, detector integration.HealthChecker, pm integration.PathMapper, arrClient integration.ArrClient, db *sql.DB, clocks ...clock.Clock) *VerifierService {
 	var c clock.Clock = clock.NewRealClock()
 	if len(clocks) > 0 && clocks[0] != nil {
 		c = clocks[0]
