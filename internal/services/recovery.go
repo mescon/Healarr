@@ -21,7 +21,7 @@ const recoveryQueryTimeout = 30 * time.Second
 // with the actual state in *arr applications.
 type RecoveryService struct {
 	db         *sql.DB
-	eventBus   *eventbus.EventBus
+	eventBus   eventbus.Publisher
 	arrClient  integration.ArrClient
 	pathMapper integration.PathMapper
 	detector   integration.HealthChecker
@@ -30,7 +30,7 @@ type RecoveryService struct {
 }
 
 // NewRecoveryService creates a new recovery service.
-func NewRecoveryService(db *sql.DB, eb *eventbus.EventBus, arrClient integration.ArrClient, pathMapper integration.PathMapper, detector integration.HealthChecker, staleThreshold time.Duration) *RecoveryService {
+func NewRecoveryService(db *sql.DB, eb eventbus.Publisher, arrClient integration.ArrClient, pathMapper integration.PathMapper, detector integration.HealthChecker, staleThreshold time.Duration) *RecoveryService {
 	if staleThreshold <= 0 {
 		staleThreshold = 24 * time.Hour
 	}

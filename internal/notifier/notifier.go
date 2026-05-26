@@ -367,9 +367,12 @@ func GetEventGroups() []EventGroup {
 
 // Notifier handles sending notifications based on events
 type Notifier struct {
-	db         *sql.DB
-	repo       *repository.NotificationRepository
-	eb         *eventbus.EventBus
+	db   *sql.DB
+	repo *repository.NotificationRepository
+	// eb is the Publisher interface, not *eventbus.EventBus: the notifier only
+	// subscribes and publishes, so depending on the interface keeps it decoupled
+	// from the concrete bus and testable with a mock publisher.
+	eb         eventbus.Publisher
 	configs    map[int64]*NotificationConfig
 	lastSent   map[int64]time.Time // Per-provider throttling
 	mu         sync.RWMutex
@@ -379,7 +382,7 @@ type Notifier struct {
 }
 
 // NewNotifier creates a new notifier service
-func NewNotifier(db *sql.DB, eb *eventbus.EventBus) *Notifier {
+func NewNotifier(db *sql.DB, eb eventbus.Publisher) *Notifier {
 	n := &Notifier{
 		db:         db,
 		repo:       repository.NewNotificationRepository(db),
