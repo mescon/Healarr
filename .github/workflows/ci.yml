@@ -22,9 +22,9 @@ jobs:
         run: go mod download
 
       - name: Run tests with coverage
-        # Note: -race disabled due to pre-existing race conditions in test harness
-        # TODO: Fix race conditions in handlers_config_test.go, handlers_scans_test.go, handlers_webhook_test.go
-        run: go test -coverprofile=coverage.txt -covermode=atomic ./...
+        # -race guards the concurrent paths (scanner worker pool, event bus,
+        # background services). The previously-noted harness races are fixed.
+        run: go test -race -coverprofile=coverage.txt -covermode=atomic ./...
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
