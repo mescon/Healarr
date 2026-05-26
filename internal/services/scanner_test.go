@@ -210,24 +210,11 @@ func TestScannerService_CheckScanCancellation(t *testing.T) {
 }
 
 func TestScannerService_ShouldSkipRecentlyModified(t *testing.T) {
-	db, err := testutil.NewTestDB()
-	if err != nil {
-		t.Fatalf("Failed to create test database: %v", err)
-	}
-	defer db.Close()
-
 	// Create a temp file
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.mkv")
 	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
-	}
-
-	scanner := &ScannerService{
-		db:              db,
-		activeScans:     make(map[string]*ScanProgress),
-		filesInProgress: make(map[string]bool),
-		shutdownCh:      make(chan struct{}),
 	}
 
 	t.Run("skips recently modified file", func(t *testing.T) {
@@ -238,7 +225,7 @@ func TestScannerService_ShouldSkipRecentlyModified(t *testing.T) {
 			scanDBID:  0,          // No DB recording for this test
 		}
 
-		if !scanner.shouldSkipRecentlyModified(sfc) {
+		if !isRecentlyModified(sfc) {
 			t.Error("Expected to skip recently modified file")
 		}
 	})
@@ -251,7 +238,7 @@ func TestScannerService_ShouldSkipRecentlyModified(t *testing.T) {
 			scanDBID:  0,
 		}
 
-		if scanner.shouldSkipRecentlyModified(sfc) {
+		if isRecentlyModified(sfc) {
 			t.Error("Expected not to skip old file")
 		}
 	})
@@ -1611,7 +1598,7 @@ func TestScannerService_ShouldSkipChangingSize(t *testing.T) {
 		}
 
 		// File is stable (not changing)
-		if scanner.shouldSkipChangingSize(sfc) {
+		if scanner.isSizeChanging(sfc) {
 			t.Error("Stable file should not be skipped")
 		}
 	})
@@ -3040,10 +3027,11 @@ func TestScannerService_ShouldSkipRecentlyModified_WithDBRecording(t *testing.T)
 			scanDBID:  scanDBID,
 		}
 
-		skipped := scanner.shouldSkipRecentlyModified(sfc)
+		skipped := isRecentlyModified(sfc)
 		if !skipped {
 			t.Error("Expected file to be skipped")
 		}
+		scanner.recordSkipped(sfc, "RecentlyModified", "File modified within last 2 minutes - likely still being written")
 
 		// Verify record was created in scan_files
 		var count int
@@ -3102,7 +3090,7 @@ func TestScannerService_ShouldSkipChangingSize_WithDBRecording(t *testing.T) {
 			scanDBID: scanDBID,
 		}
 
-		skipped := scanner.shouldSkipChangingSize(sfc)
+		skipped := scanner.isSizeChanging(sfc)
 		if skipped {
 			t.Error("Stable file should not be skipped")
 		}
@@ -3127,7 +3115,7 @@ func TestScannerService_ShouldSkipChangingSize_WithDBRecording(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			time.Sleep(200 * time.Millisecond)
-			// Append to file during the sleep period in shouldSkipChangingSize
+			// Append to file during the sleep period in isSizeChanging
 			f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
 			if err != nil {
 				return
@@ -3136,10 +3124,11 @@ func TestScannerService_ShouldSkipChangingSize_WithDBRecording(t *testing.T) {
 			f.Close()
 		}()
 
-		skipped := scanner.shouldSkipChangingSize(sfc)
+		skipped := scanner.isSizeChanging(sfc)
 		wg.Wait()
 
 		if skipped {
+			scanner.recordSkipped(sfc, "SizeChanging", "File size changed during scan - active download/copy")
 			// Verify record was created in scan_files
 			var count int
 			err := db.QueryRow(`
@@ -4372,4 +4361,73 @@ func TestScannerService_ResumeScan_ClosesChannelForBroadcast(t *testing.T) {
 	default:
 		// Expected: open channel with no value yet.
 	}
+}
+
+// TestScannerService_DetectFile covers the pure detection seam the scan worker
+// pool parallelizes: stat-based skips and health verification, with no DB writes
+// or progress mutation.
+func TestScannerService_DetectFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldMtime := time.Now().Add(-10 * time.Minute)
+	makeOldFile := func(name string) (string, int64) {
+		p := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(p, []byte("content"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		if err := os.Chtimes(p, oldMtime, oldMtime); err != nil {
+			t.Fatalf("chtimes: %v", err)
+		}
+		info, _ := os.Stat(p)
+		return p, info.Size()
+	}
+
+	t.Run("recently modified is skipped before any health check", func(t *testing.T) {
+		// detector is nil: detectFile must return before reaching it.
+		s := &ScannerService{}
+		sfc := &scanFileContext{filePath: filepath.Join(tmpDir, "x.mkv"), fileMtime: time.Now(), fileSize: 7}
+		if got := s.detectFile(sfc, scanFilesConfig{}); got.outcome != outcomeSkippedRecentlyModified {
+			t.Errorf("outcome = %d, want outcomeSkippedRecentlyModified", got.outcome)
+		}
+	})
+
+	t.Run("changing size is skipped before any health check", func(t *testing.T) {
+		p, _ := makeOldFile("changing.mkv")
+		s := &ScannerService{} // sizeStabilityDelay zero; detector nil
+		// Recorded size differs from on-disk size => treated as still changing.
+		sfc := &scanFileContext{filePath: p, fileMtime: oldMtime, fileSize: 999999}
+		if got := s.detectFile(sfc, scanFilesConfig{}); got.outcome != outcomeSkippedSizeChanging {
+			t.Errorf("outcome = %d, want outcomeSkippedSizeChanging", got.outcome)
+		}
+	})
+
+	t.Run("healthy file", func(t *testing.T) {
+		p, size := makeOldFile("healthy.mkv")
+		s := &ScannerService{detector: &testutil.MockHealthChecker{
+			CheckWithConfigFunc: func(string, integration.DetectionConfig) (bool, *integration.HealthCheckError) {
+				return true, nil
+			},
+		}}
+		sfc := &scanFileContext{filePath: p, fileMtime: oldMtime, fileSize: size}
+		if got := s.detectFile(sfc, scanFilesConfig{}); got.outcome != outcomeHealthy {
+			t.Errorf("outcome = %d, want outcomeHealthy", got.outcome)
+		}
+	})
+
+	t.Run("unhealthy file propagates the health error", func(t *testing.T) {
+		p, size := makeOldFile("corrupt.mkv")
+		wantErr := &integration.HealthCheckError{Type: "Corrupted", Message: "bad stream"}
+		s := &ScannerService{detector: &testutil.MockHealthChecker{
+			CheckWithConfigFunc: func(string, integration.DetectionConfig) (bool, *integration.HealthCheckError) {
+				return false, wantErr
+			},
+		}}
+		sfc := &scanFileContext{filePath: p, fileMtime: oldMtime, fileSize: size}
+		got := s.detectFile(sfc, scanFilesConfig{})
+		if got.outcome != outcomeUnhealthy {
+			t.Errorf("outcome = %d, want outcomeUnhealthy", got.outcome)
+		}
+		if got.healthErr != wantErr {
+			t.Errorf("healthErr = %v, want the error returned by the detector", got.healthErr)
+		}
+	})
 }
