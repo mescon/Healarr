@@ -246,6 +246,8 @@ All configuration options can be set via environment variables or command-line f
 | `--stale-threshold` | `HEALARR_STALE_THRESHOLD` | `24h` | Auto-fix items Healarr lost track of |
 | `--arr-rate-limit` | `HEALARR_ARR_RATE_LIMIT_RPS` | `5` | Max requests/second to *arr APIs |
 | `--arr-rate-burst` | `HEALARR_ARR_RATE_LIMIT_BURST` | `10` | Burst size for rate limiting |
+| - | `HEALARR_SCANNER_WORKERS` | `4` | Files scanned in parallel per scan, clamped to 1–32 (env only) |
+| - | `HEALARR_SCANNER_SHUTDOWN_TIMEOUT` | `30s` | Grace period for in-flight scans to finish on shutdown (env only) |
 | `--version` / `-v` | - | - | Print version and exit |
 
 **Examples:**

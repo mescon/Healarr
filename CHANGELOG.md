@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-05-27
+
+### Added
+- **Parallel scanning**: file detection now runs across a small worker pool, so large libraries scan substantially faster. Tunable via `HEALARR_SCANNER_WORKERS` (default 4, range 1–32).
+- Configurable shutdown grace period for in-flight scans via `HEALARR_SCANNER_SHUTDOWN_TIMEOUT` (default 30s).
+- Defense-in-depth HTTP security headers on all responses (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`).
+
+### Changed
+- Faster database writes during scans: SQLite now uses `synchronous=NORMAL` under WAL (still corruption-safe), and per-file scan-progress updates no longer hit the durable event store.
+
+### Fixed
+- **Files on a temporarily-unavailable mount or network share are no longer mistaken for corruption** — preventing deletion of healthy files when a mount drops mid-scan. Mount/network errors are now classified by OS error code, so this also holds on non-English systems.
+- Live log and scan-progress updates no longer drop messages under load (WebSocket delivery rework).
+- A paused scan could fail to resume if the resume signal raced with the scan loop; resume is now reliable.
+
+### Security
+- The authentication token is no longer written to the browser console on WebSocket connect.
+
 ## [1.3.0] - 2026-02-19
 
 ### Added
