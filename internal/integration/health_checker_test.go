@@ -312,6 +312,14 @@ func TestCmdHealthChecker_ClassifyOSError(t *testing.T) {
 func TestCmdHealthChecker_ClassifyDetectorError(t *testing.T) {
 	hc := NewHealthChecker()
 
+	// The generic/corruption fallthrough re-checks accessibility before
+	// concluding corruption, so use a real, accessible file as the path.
+	tmpDir := t.TempDir()
+	accessible := filepath.Join(tmpDir, "file.mkv")
+	if err := os.WriteFile(accessible, []byte("data"), 0644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
 	tests := []struct {
 		name         string
 		errorMsg     string
@@ -329,11 +337,29 @@ func TestCmdHealthChecker_ClassifyDetectorError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := &testDetectorError{msg: tt.errorMsg}
-			result := hc.classifyDetectorError(err, "/test/path")
+			result := hc.classifyDetectorError(err, accessible)
 			if result.Type != tt.expectedType {
 				t.Errorf("Expected %s, got %s", tt.expectedType, result.Type)
 			}
 		})
+	}
+}
+
+// TestCmdHealthChecker_ClassifyDetectorError_FailsafeOnInaccessible verifies the
+// safety property: an unrecognized detector error against a file that is no
+// longer accessible (e.g. a mount that dropped mid-probe) must NOT be classified
+// as corruption — corruption routes to the destructive remediation/deletion path.
+func TestCmdHealthChecker_ClassifyDetectorError_FailsafeOnInaccessible(t *testing.T) {
+	hc := NewHealthChecker()
+
+	err := &testDetectorError{msg: "some unrecognized ffprobe failure"}
+	result := hc.classifyDetectorError(err, "/nonexistent/path/file.mkv")
+
+	if result.Type == ErrorTypeCorruptHeader {
+		t.Fatalf("inaccessible file must not be classified as corruption (would delete a healthy file); got %s", result.Type)
+	}
+	if !result.IsRecoverable() {
+		t.Errorf("expected a recoverable classification for an inaccessible file, got %s (recoverable=%v)", result.Type, result.IsRecoverable())
 	}
 }
 
