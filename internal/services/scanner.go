@@ -328,7 +328,7 @@ type ScannerService struct {
 	scanPathCacheMu   sync.RWMutex
 	scanPathCacheTime time.Time
 
-	// sizeStabilityDelay is how long shouldSkipChangingSize waits before
+	// sizeStabilityDelay is how long isSizeChanging waits before
 	// re-stat'ing a file to detect an in-progress download. A field (default
 	// set by NewScannerService) so tests — which construct &ScannerService{}
 	// directly and leave it at the 0 zero-value — don't pay 500ms per file.
@@ -1113,52 +1113,43 @@ func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProg
 	}
 }
 
-// shouldSkipRecentlyModified checks if a file was modified too recently and should be skipped.
-// Returns true if file should be skipped (likely still being written).
-func (s *ScannerService) shouldSkipRecentlyModified(sfc *scanFileContext) bool {
-	if time.Since(sfc.fileMtime) < 2*time.Minute {
-		logger.Infof("Skipping recently modified file (mtime %v ago): %s",
-			time.Since(sfc.fileMtime).Round(time.Second), sfc.filePath)
-		if sfc.scanDBID > 0 {
-			if err := s.scanFileRepo().Record(context.Background(), sfc.scanDBID, repository.ScanFileRecord{
-				FilePath:       sfc.filePath,
-				Status:         "skipped",
-				CorruptionType: "RecentlyModified",
-				ErrorDetails:   "File modified within last 2 minutes - likely still being written",
-				FileSize:       sfc.fileSize,
-			}); err != nil {
-				logger.Debugf("Failed to record skipped file (recently modified): %v", err)
-			}
-		}
-		return true
-	}
-	return false
+// recentlyModifiedWindow is how fresh a file's mtime must be for the scanner to
+// treat it as "likely still being written" and skip it.
+const recentlyModifiedWindow = 2 * time.Minute
+
+// isRecentlyModified reports whether the file was modified within
+// recentlyModifiedWindow (likely still being written). Pure: no side effects.
+func isRecentlyModified(sfc *scanFileContext) bool {
+	return time.Since(sfc.fileMtime) < recentlyModifiedWindow
 }
 
-// shouldSkipChangingSize checks if file size is actively changing (download in progress).
-// Returns true if file should be skipped.
-func (s *ScannerService) shouldSkipChangingSize(sfc *scanFileContext) bool {
+// isSizeChanging reports whether the file's size changes across sizeStabilityDelay
+// — an active download/copy, even when the mtime is preserved (e.g. rsync
+// --times). Aside from the delay and a re-stat it has no side effects: no
+// database writes, no progress mutation, so it is safe to run concurrently.
+func (s *ScannerService) isSizeChanging(sfc *scanFileContext) bool {
 	time.Sleep(s.sizeStabilityDelay)
-	if info2, err := os.Stat(sfc.filePath); err == nil {
-		if info2.Size() != sfc.fileSize {
-			logger.Infof("Skipping file with changing size (download in progress?): %s", sfc.filePath)
-			if sfc.scanDBID > 0 {
-				if err := s.scanFileRepo().Record(context.Background(), sfc.scanDBID, repository.ScanFileRecord{
-					FilePath:       sfc.filePath,
-					Status:         "skipped",
-					CorruptionType: "SizeChanging",
-					ErrorDetails:   "File size changed during scan - active download/copy",
-					FileSize:       sfc.fileSize,
-				}); err != nil {
-					// scan_files rows drive the UI scan-detail screen; losing
-					// writes silently produces empty scan reports. Log loud.
-					logger.Errorf("Failed to record skipped file (size changing): %v", err)
-				}
-			}
-			return true
-		}
+	info2, err := os.Stat(sfc.filePath)
+	return err == nil && info2.Size() != sfc.fileSize
+}
+
+// recordSkipped writes a "skipped" row to scan_files. It is separated from the
+// skip decision (isRecentlyModified / isSizeChanging) so detection can run
+// concurrently — workers decide, the coordinator records sequentially. scan_files
+// rows drive the UI scan-detail screen, so a failed write is logged loudly.
+func (s *ScannerService) recordSkipped(sfc *scanFileContext, corruptionType, details string) {
+	if sfc.scanDBID <= 0 {
+		return
 	}
-	return false
+	if err := s.scanFileRepo().Record(context.Background(), sfc.scanDBID, repository.ScanFileRecord{
+		FilePath:       sfc.filePath,
+		Status:         "skipped",
+		CorruptionType: corruptionType,
+		ErrorDetails:   details,
+		FileSize:       sfc.fileSize,
+	}); err != nil {
+		logger.Errorf("Failed to record skipped file (%s): %v", corruptionType, err)
+	}
 }
 
 // recordHealthyFile records a healthy file in the scan_files table.
@@ -1455,6 +1446,57 @@ func (s *ScannerService) buildScanFileContext(
 }
 
 // checkAndHandleFile performs safety checks and health verification for a file.
+// fileOutcome is the read-only verdict produced by detectFile.
+type fileOutcome int
+
+const (
+	outcomeHealthy fileOutcome = iota
+	outcomeUnhealthy
+	outcomeSkippedRecentlyModified
+	outcomeSkippedSizeChanging
+)
+
+// detectionResult is the read-only result of detecting one file.
+type detectionResult struct {
+	outcome   fileOutcome
+	healthErr *integration.HealthCheckError // populated only when outcomeUnhealthy
+}
+
+// detectFile performs all READ-ONLY detection for a single file: the stat-based
+// safety skips (recently modified, actively changing size) and health
+// verification (ffprobe, plus a content-analysis pass in thorough mode). It
+// performs no database writes and mutates no scan progress, so it is safe to run
+// concurrently across files — the seam the scan worker pool will parallelize.
+// The caller records the outcome and advances progress sequentially.
+func (s *ScannerService) detectFile(sfc *scanFileContext, cfg scanFilesConfig) detectionResult {
+	// SAFETY: recently modified files are likely still being written.
+	if isRecentlyModified(sfc) {
+		logger.Infof("Skipping recently modified file (mtime %v ago): %s",
+			time.Since(sfc.fileMtime).Round(time.Second), sfc.filePath)
+		return detectionResult{outcome: outcomeSkippedRecentlyModified}
+	}
+
+	// SAFETY: a file whose size is still changing is an active download/copy.
+	if s.isSizeChanging(sfc) {
+		logger.Infof("Skipping file with changing size (download in progress?): %s", sfc.filePath)
+		return detectionResult{outcome: outcomeSkippedSizeChanging}
+	}
+
+	healthy, healthErr := s.detector.CheckWithConfig(sfc.filePath, cfg.DetectionConfig)
+	if healthy && cfg.DetectionConfig.Mode == integration.ModeThorough {
+		// Thorough mode: structurally-healthy files get a content-analysis pass.
+		healthy, healthErr = s.detector.AnalyzeContent(sfc.filePath)
+	}
+	if healthy {
+		return detectionResult{outcome: outcomeHealthy}
+	}
+	return detectionResult{outcome: outcomeUnhealthy, healthErr: healthErr}
+}
+
+// checkAndHandleFile runs detection for a file and applies the outcome: it
+// records the scan_files row (or routes corruption to remediation) and advances
+// progress. Detection (detectFile) is read-only; the recording/handling here is
+// the sequential, stateful half.
 func (s *ScannerService) checkAndHandleFile(
 	ctx context.Context,
 	progress *ScanProgress,
@@ -1462,36 +1504,22 @@ func (s *ScannerService) checkAndHandleFile(
 	fileIndex int,
 	sfc *scanFileContext,
 ) scanLoopAction {
-	// SAFETY: Skip recently modified files (likely being written)
-	if s.shouldSkipRecentlyModified(sfc) {
-		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
-		return scanContinue
-	}
+	result := s.detectFile(sfc, cfg)
 
-	// SAFETY: Skip files with changing size (download in progress)
-	if s.shouldSkipChangingSize(sfc) {
-		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
-		return scanContinue
-	}
-
-	// Run health check
-	healthy, healthErr := s.detector.CheckWithConfig(sfc.filePath, cfg.DetectionConfig)
-
-	if healthy {
-		// In thorough mode, run content analysis on structurally healthy files
-		if cfg.DetectionConfig.Mode == integration.ModeThorough {
-			healthy, healthErr = s.detector.AnalyzeContent(sfc.filePath)
-			if !healthy {
-				return s.handleHealthCheckResult(ctx, progress, cfg, fileIndex, sfc, healthErr)
-			}
-		}
+	switch result.outcome {
+	case outcomeSkippedRecentlyModified:
+		s.recordSkipped(sfc, "RecentlyModified", "File modified within last 2 minutes - likely still being written")
+	case outcomeSkippedSizeChanging:
+		s.recordSkipped(sfc, "SizeChanging", "File size changed during scan - active download/copy")
+	case outcomeHealthy:
 		s.recordHealthyFile(sfc)
-		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
-		return scanContinue
+	case outcomeUnhealthy:
+		// handleHealthCheckResult marks the file processed itself and returns the action.
+		return s.handleHealthCheckResult(ctx, progress, cfg, fileIndex, sfc, result.healthErr)
 	}
 
-	// Handle the health check result
-	return s.handleHealthCheckResult(ctx, progress, cfg, fileIndex, sfc, healthErr)
+	s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
+	return scanContinue
 }
 
 // handleHealthCheckResult processes the result of a failed health check.
