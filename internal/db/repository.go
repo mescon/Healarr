@@ -119,9 +119,12 @@ func configureSQLite(db *sql.DB) error {
 
 	// Non-critical pragmas - log failures but continue
 	optionalPragmas := []string{
-		// Synchronous FULL ensures durability even on power loss during checkpoint
-		// Slightly slower than NORMAL but prevents corruption on unexpected shutdown
-		"PRAGMA synchronous=FULL",
+		// synchronous=NORMAL is the recommended setting with WAL: it is fully
+		// corruption-safe (WAL guarantees database integrity at NORMAL), and only
+		// risks losing the last committed transaction(s) on an OS crash / power
+		// loss — recoverable here since scans re-run and the event store replays.
+		// It avoids the per-commit fsync that FULL pays on the write-heavy scan path.
+		"PRAGMA synchronous=NORMAL",
 		// Auto-vacuum in incremental mode - reclaims space automatically
 		"PRAGMA auto_vacuum=INCREMENTAL",
 		// Store temp tables in memory for performance
