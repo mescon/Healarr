@@ -550,19 +550,20 @@ func TestRepository_BackupIntegrityCheck(t *testing.T) {
 	}
 }
 
-func TestRepository_SynchronousFullMode(t *testing.T) {
+func TestRepository_SynchronousNormalMode(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	// Verify synchronous mode is FULL (value 2)
+	// Verify synchronous mode is NORMAL: corruption-safe under WAL, and avoids
+	// the per-commit fsync that FULL pays on the write-heavy scan path.
 	var synchronous int
 	err := repo.DB.QueryRow("PRAGMA synchronous").Scan(&synchronous)
 	if err != nil {
 		t.Fatalf("Failed to query synchronous mode: %v", err)
 	}
 	// FULL = 2, NORMAL = 1, OFF = 0
-	if synchronous != 2 {
-		t.Errorf("Expected synchronous=2 (FULL), got %d", synchronous)
+	if synchronous != 1 {
+		t.Errorf("Expected synchronous=1 (NORMAL), got %d", synchronous)
 	}
 }
 
