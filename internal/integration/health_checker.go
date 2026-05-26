@@ -437,11 +437,13 @@ func (hc *CmdHealthChecker) classifyOSError(err error, path string, isParent boo
 // This catches cases where files disappear between accessibility check and detector execution (race condition),
 // or where the detector sees different paths than Go's os.Stat (e.g., symlink resolution differences).
 //
-// Unlike classifyOSError, this MUST match on strings: the error here wraps a
-// subprocess's stderr text (ffprobe/mediainfo), not a Go syscall error, so there
-// is no errno to match. ffmpeg/ffprobe emit these messages in English regardless
-// of the host locale.
-func (hc *CmdHealthChecker) classifyDetectorError(err error, _ string) *HealthCheckError {
+// The known-infra cases are matched on strings: the error wraps a subprocess's
+// stderr text (ffprobe/mediainfo), not a Go syscall error, so there is no errno
+// to match. To stay locale-robust where it matters most, the fallthrough does
+// NOT blindly assume corruption (which would route to deletion) — it re-checks
+// accessibility first, so a mount that dropped mid-probe or any unrecognized
+// infra error is classified recoverable rather than as a corrupt file.
+func (hc *CmdHealthChecker) classifyDetectorError(err error, path string) *HealthCheckError {
 	errStr := err.Error()
 
 	// Check for path-related errors (file disappeared, wrong path, symlink issues)
@@ -482,7 +484,18 @@ func (hc *CmdHealthChecker) classifyDetectorError(err error, _ string) *HealthCh
 		}
 	}
 
-	// Default: treat as header/container corruption (the detector ran but found issues with the file content)
+	// Fallthrough: the detector exited non-zero but the message matched no known
+	// infra pattern. Before concluding the file is corrupt — which routes to the
+	// destructive remediation path — re-verify the file is actually accessible.
+	// If a mount dropped mid-probe (or the message was localized/unrecognized),
+	// accessibility now fails and we return that recoverable classification
+	// (errno-based, locale-independent) instead of deleting a healthy file.
+	if accessErr := hc.checkAccessibility(path); accessErr != nil {
+		return accessErr
+	}
+
+	// File is still accessible, so the detector's failure is about its content:
+	// treat as container/header corruption.
 	return &HealthCheckError{
 		Type:    ErrorTypeCorruptHeader,
 		Message: errStr,
