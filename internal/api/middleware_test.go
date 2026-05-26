@@ -304,3 +304,22 @@ func TestGetRequestID_EmptyContext(t *testing.T) {
 	id := GetRequestID(context.Background())
 	assert.Empty(t, id)
 }
+
+// securityHeadersMiddleware tests
+
+func TestSecurityHeadersMiddleware_SetsHeaders(t *testing.T) {
+	router := gin.New()
+	router.Use(securityHeadersMiddleware())
+	router.GET("/test", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req, _ := http.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
+	assert.Equal(t, "SAMEORIGIN", w.Header().Get("X-Frame-Options"))
+	assert.Equal(t, "no-referrer", w.Header().Get("Referrer-Policy"))
+}
