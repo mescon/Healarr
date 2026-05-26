@@ -32,6 +32,10 @@ func classifySyscallError(err error) (errorType string, message string) {
 		return ErrorTypeIOError, "I/O error"
 	case syscall.EHOSTDOWN, syscall.EHOSTUNREACH, syscall.ENETDOWN, syscall.ENETUNREACH:
 		return ErrorTypeMountLost, "network/host unreachable"
+	case syscall.ECONNREFUSED, syscall.ENOTCONN, syscall.ESHUTDOWN:
+		// "connection refused" / "transport endpoint is not connected" — a
+		// network filesystem (NFS/SMB/SSHFS) whose backing connection dropped.
+		return ErrorTypeMountLost, "connection lost (mount endpoint down)"
 	}
 
 	return "", ""
