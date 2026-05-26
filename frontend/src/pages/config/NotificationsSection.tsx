@@ -176,7 +176,9 @@ const NotificationsSection = () => {
                 enabled: true,
                 throttle_seconds: 0,
             });
-            setTestResult(result);
+            // The failure reason comes back in `error`; surface it as `message`
+            // so the result box (which renders message) isn't blank on failure.
+            setTestResult({ success: result.success, message: result.message || result.error });
             if (result.success) {
                 toast.success('Test notification sent successfully!');
             } else {

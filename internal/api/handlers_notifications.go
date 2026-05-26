@@ -130,10 +130,13 @@ func (s *RESTServer) testNotification(c *gin.Context) {
 	}
 
 	if err := s.notifier.SendTestNotification(&req); err != nil {
-		logger.Debugf("Test notification failed for provider %s: %v", req.ProviderType, err)
+		// Surface the real reason (e.g. "application token is invalid") so the
+		// admin can diagnose. This is an authenticated test of the user's own
+		// config; the shoutrrr error carries the provider's response, not secrets.
+		logger.Warnf("Test notification failed for provider %s: %v", req.ProviderType, err)
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"error":   "Test notification failed",
+			"error":   err.Error(),
 		})
 		return
 	}
