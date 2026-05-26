@@ -4295,3 +4295,81 @@ func TestScannerShutdownTimeout_NegativeFallsBackToDefault(t *testing.T) {
 		t.Errorf("scannerShutdownTimeout() with negative env = %v, want default %v", got, defaultShutdownTimeout)
 	}
 }
+
+// TestScannerService_ResumeScan_ClosesChannelForBroadcast verifies that resume
+// signals by CLOSING the channel rather than sending a single value. A close
+// wakes every current and future waiter at once and can't be missed — the
+// guarantee the parallel scan worker pool will depend on (the old send-based
+// signal woke only one waiter and could be silently dropped). It also checks
+// that each pause allocates a fresh, open channel so cycles work repeatedly.
+func TestScannerService_ResumeScan_ClosesChannelForBroadcast(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	scanner := &ScannerService{
+		db:              db,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+	}
+
+	progress := &ScanProgress{ID: "scan-bc", Path: "/media", Status: "scanning"}
+	scanner.mu.Lock()
+	scanner.activeScans["scan-bc"] = progress
+	scanner.mu.Unlock()
+
+	// First pause/resume cycle.
+	if err := scanner.PauseScan("scan-bc"); err != nil {
+		t.Fatalf("PauseScan: %v", err)
+	}
+	scanner.mu.Lock()
+	ch1 := progress.resumeChan
+	scanner.mu.Unlock()
+
+	if err := scanner.ResumeScan("scan-bc"); err != nil {
+		t.Fatalf("ResumeScan: %v", err)
+	}
+
+	// The channel must be CLOSED (broadcast), not merely sent-to: a receive
+	// returns immediately with ok=false. A send-based resume would yield ok=true
+	// once and then block any further waiter.
+	select {
+	case _, ok := <-ch1:
+		if ok {
+			t.Error("resume channel should be closed (broadcast), got a sent value")
+		}
+	default:
+		t.Error("resume channel was not closed by ResumeScan")
+	}
+
+	scanner.mu.Lock()
+	if progress.isPaused {
+		t.Error("isPaused should be false after resume")
+	}
+	if progress.Status != ScanStatusScanning {
+		t.Errorf("Status = %q, want scanning", progress.Status)
+	}
+	scanner.mu.Unlock()
+
+	// Second cycle: pause must allocate a FRESH, open channel (not reuse the
+	// closed one), otherwise a subsequent pause would never actually block.
+	if err := scanner.PauseScan("scan-bc"); err != nil {
+		t.Fatalf("second PauseScan: %v", err)
+	}
+	scanner.mu.Lock()
+	ch2 := progress.resumeChan
+	scanner.mu.Unlock()
+
+	if ch2 == ch1 {
+		t.Error("PauseScan reused the closed channel; expected a fresh one")
+	}
+	select {
+	case <-ch2:
+		t.Error("fresh resume channel should be open (block), but a receive succeeded")
+	default:
+		// Expected: open channel with no value yet.
+	}
+}

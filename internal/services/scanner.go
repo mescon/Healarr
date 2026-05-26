@@ -1064,6 +1064,7 @@ func (s *ScannerService) checkScanCancellation(ctx context.Context, progress *Sc
 func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProgress, localPath string, fileIndex int, scanDBID int64) scanLoopAction {
 	s.mu.Lock()
 	isPaused := progress.isPaused
+	resumeCh := progress.resumeChan
 	s.mu.Unlock()
 
 	if !isPaused {
@@ -1081,9 +1082,10 @@ func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProg
 		pauseCancel()
 	}
 
-	// Wait for resume or cancel
+	// Wait for resume or cancel. resumeCh was captured under the lock above;
+	// ResumeScan closes it to wake every waiter at once.
 	select {
-	case <-progress.resumeChan:
+	case <-resumeCh:
 		logger.Infof("Scan resumed: %s", localPath)
 		s.mu.Lock()
 		progress.Status = ScanStatusScanning
@@ -1626,6 +1628,12 @@ func (s *ScannerService) PauseScan(scanID string) error {
 		return fmt.Errorf("scan is not in scanning state: %s", scan.Status)
 	}
 
+	// Allocate a fresh resume channel for this pause. ResumeScan closes it to
+	// broadcast the wake-up; a previously-closed channel must not be reused (a
+	// closed channel would let handleScanPause fall straight through without
+	// pausing). A fresh channel per pause also lets multiple waiters (the future
+	// scan worker pool) all wake from one close.
+	scan.resumeChan = make(chan struct{})
 	scan.isPaused = true
 	scan.Status = "paused"
 	return nil
@@ -1645,13 +1653,16 @@ func (s *ScannerService) ResumeScan(scanID string) error {
 		return nil // Not paused
 	}
 
-	// Signal the scan goroutine to resume
-	select {
-	case scan.resumeChan <- struct{}{}:
-		// Successfully sent resume signal
-	default:
-		// Channel not ready, scan might already be resuming
-	}
+	// Clear paused state and broadcast resume by closing the channel. Closing
+	// (vs a non-blocking send) can't be "missed" if the scan goroutine has not
+	// yet reached handleScanPause — the old send-with-default could silently drop
+	// the signal and hang the scan paused — and it wakes every waiter at once.
+	// Setting isPaused here also makes a concurrent ResumeScan a no-op, so the
+	// channel is closed exactly once. Status is reset so a not-yet-blocked
+	// goroutine (which will skip handleScanPause) still reflects "scanning".
+	scan.isPaused = false
+	scan.Status = ScanStatusScanning
+	close(scan.resumeChan)
 
 	return nil
 }
