@@ -31,6 +31,8 @@ services:
       # - HEALARR_VERIFICATION_TIMEOUT=72h   # How long to wait for re-download
       # - HEALARR_DEFAULT_MAX_RETRIES=3      # Max remediation attempts
       # - HEALARR_TRUSTED_PROXIES=172.18.0.0/16  # Your reverse proxy subnet
+      # - HEALARR_SCANNER_WORKERS=4          # Files scanned in parallel (1-32)
+      # - HEALARR_SCANNER_SHUTDOWN_TIMEOUT=30s  # Grace period for in-flight scans on shutdown
 
       # Custom binary paths (optional - for newer ffmpeg/mediainfo/handbrake):
       # - HEALARR_FFPROBE_PATH=/config/tools/ffprobe
