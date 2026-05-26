@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -333,11 +334,43 @@ type ScannerService struct {
 	// set by NewScannerService) so tests — which construct &ScannerService{}
 	// directly and leave it at the 0 zero-value — don't pay 500ms per file.
 	sizeStabilityDelay time.Duration
+
+	// scanWorkers is the number of files whose detection (ffprobe / stat
+	// stability check) runs concurrently within a scan. Set by
+	// NewScannerService from HEALARR_SCANNER_WORKERS. The 0 zero-value left by
+	// &ScannerService{}-direct test fixtures means "sequential", so those tests
+	// keep the original single-file-at-a-time path.
+	scanWorkers int
 }
 
 // defaultSizeStabilityDelay is the production re-stat interval for
 // detecting files whose size is still changing (active download/copy).
 const defaultSizeStabilityDelay = 500 * time.Millisecond
+
+// defaultScanWorkers is the default detection concurrency. ffprobe is the
+// dominant per-file cost and is I/O/CPU bound on the media file, so a small
+// pool gives most of the speed-up without overwhelming storage or *arr.
+const defaultScanWorkers = 4
+
+// maxScanWorkers caps operator-configured concurrency to avoid thrashing
+// storage or spawning an unreasonable number of ffprobe processes.
+const maxScanWorkers = 32
+
+// scannerWorkers returns the operator-configured detection concurrency from
+// HEALARR_SCANNER_WORKERS (clamped to [1, maxScanWorkers]), or
+// defaultScanWorkers if unset/invalid.
+func scannerWorkers() int {
+	if v := os.Getenv("HEALARR_SCANNER_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			if n > maxScanWorkers {
+				return maxScanWorkers
+			}
+			return n
+		}
+		logger.Warnf("Invalid HEALARR_SCANNER_WORKERS %q; using default %d", v, defaultScanWorkers)
+	}
+	return defaultScanWorkers
+}
 
 // NewScannerService creates a new ScannerService with the given dependencies.
 func NewScannerService(db *sql.DB, eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper) *ScannerService {
@@ -350,6 +383,7 @@ func NewScannerService(db *sql.DB, eb *eventbus.EventBus, detector integration.H
 		filesInProgress:    make(map[string]bool),
 		shutdownCh:         make(chan struct{}),
 		sizeStabilityDelay: defaultSizeStabilityDelay,
+		scanWorkers:        scannerWorkers(),
 	}
 	s.initRepositories()
 	return s
@@ -1355,6 +1389,14 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 	// PERFORMANCE: Preload active corruptions in a single query to avoid N+1 problem
 	activeCorruptions := s.LoadActiveCorruptionsForPath(progress.Path)
 
+	// With a worker pool configured, run detection concurrently. The 0/1 case
+	// (default for &ScannerService{}-direct test fixtures) keeps the original
+	// single-file-at-a-time path untouched.
+	if s.scanWorkers > 1 {
+		s.scanFilesParallel(ctx, progress, cfg, activeCorruptions)
+		return
+	}
+
 	for i := cfg.StartIndex; i < len(cfg.Files); i++ {
 		action := s.processFileInScan(ctx, progress, cfg, i, activeCorruptions)
 		if action == scanReturn {
@@ -1363,6 +1405,143 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 	}
 
 	progress.Status = "completed"
+}
+
+// detectJobState is the outcome of a worker's attempt to detect one file.
+type detectJobState int
+
+const (
+	jobPending      detectJobState = iota // worker did not complete (e.g. panic)
+	jobDone                               // detection ran; result is populated
+	jobDedupSkipped                       // another scan already holds this file
+	jobStopped                            // scan was canceling/shutting down
+)
+
+// detectJob carries one file's detection work across the fan-out/fan-in boundary.
+type detectJob struct {
+	sfc    *scanFileContext
+	result detectionResult
+	state  detectJobState
+}
+
+// scanFilesParallel processes files in ordered batches of scanWorkers. Within a
+// batch, the read-only detection (detectFile: stat checks + ffprobe) runs
+// concurrently across workers (fan-out); results are then applied strictly in
+// index order by this single goroutine (fan-in: recording, corruption routing,
+// progress). Because the fan-in is sequential and in order, the periodic
+// progress checkpoint stays monotonic and resume-after-interruption keeps its
+// "everything before the saved index is done" guarantee. Cancellation and pause
+// are handled at batch boundaries (and workers bail before an expensive
+// detection if the scan is already stopping).
+func (s *ScannerService) scanFilesParallel(
+	ctx context.Context,
+	progress *ScanProgress,
+	cfg scanFilesConfig,
+	activeCorruptions map[string]bool,
+) {
+	files := cfg.Files
+	pathID := progress.PathID
+
+	for start := cfg.StartIndex; start < len(files); {
+		if s.checkScanCancellation(ctx, progress, progress.Path, start, len(files)) == scanReturn {
+			return
+		}
+		if s.handleScanPause(ctx, progress, progress.Path, start, cfg.ScanDBID) == scanReturn {
+			return
+		}
+
+		end := start + s.scanWorkers
+		if end > len(files) {
+			end = len(files)
+		}
+
+		// Fan-out: detect each file in the batch concurrently. detectFile is
+		// read-only; the only shared state a worker mutates is filesInProgress
+		// (mutex-guarded), and each worker writes only its own jobs[k] element.
+		jobs := make([]detectJob, end-start)
+		var wg sync.WaitGroup
+		for k := range jobs {
+			idx := start + k
+			wg.Add(1)
+			safego.Run("scan-detect-worker", func() {
+				defer wg.Done()
+				s.detectInWorker(ctx, &jobs[k], files[idx], pathID, cfg, activeCorruptions)
+			})
+		}
+		wg.Wait()
+
+		// Fan-in: apply outcomes in index order, single-threaded.
+		for k := range jobs {
+			idx := start + k
+			switch jobs[k].state {
+			case jobDedupSkipped:
+				logger.Debugf("Skipping file already being scanned: %s", files[idx])
+				s.markFileProcessed(progress, idx, cfg.ScanDBID)
+			case jobStopped:
+				// Scan is canceling/shutting down: record the terminal status and stop.
+				s.checkScanCancellation(ctx, progress, progress.Path, idx, len(files))
+				return
+			case jobDone:
+				progress.mu.Lock()
+				progress.CurrentFile = files[idx]
+				progress.mu.Unlock()
+				s.emitProgress(progress)
+				if s.handleDetection(ctx, progress, cfg, idx, jobs[k].sfc, jobs[k].result) == scanReturn {
+					return
+				}
+			default: // jobPending — worker panicked mid-file; count it and move on.
+				logger.Warnf("Scan worker did not complete for %s; skipping", files[idx])
+				s.markFileProcessed(progress, idx, cfg.ScanDBID)
+			}
+		}
+
+		start = end
+	}
+
+	progress.Status = "completed"
+}
+
+// detectInWorker runs the read-only detection for a single file inside a worker
+// goroutine, recording the outcome into job. It holds the file in
+// filesInProgress only for the duration of detection (the expensive part) so an
+// overlapping scan won't double-detect it; recording happens later in the fan-in.
+func (s *ScannerService) detectInWorker(
+	ctx context.Context,
+	job *detectJob,
+	filePath string,
+	pathID int64,
+	cfg scanFilesConfig,
+	activeCorruptions map[string]bool,
+) {
+	// Dedup against overlapping scans (e.g. a webhook scan and a bulk scan).
+	s.filesMu.Lock()
+	if s.filesInProgress[filePath] {
+		s.filesMu.Unlock()
+		job.state = jobDedupSkipped
+		return
+	}
+	s.filesInProgress[filePath] = true
+	s.filesMu.Unlock()
+	defer func() {
+		s.filesMu.Lock()
+		delete(s.filesInProgress, filePath)
+		s.filesMu.Unlock()
+	}()
+
+	// Don't start an expensive detection if the scan is already stopping.
+	select {
+	case <-ctx.Done():
+		job.state = jobStopped
+		return
+	case <-s.shutdownCh:
+		job.state = jobStopped
+		return
+	default:
+	}
+
+	job.sfc = s.buildScanFileContext(filePath, pathID, cfg, activeCorruptions)
+	job.result = s.detectFile(job.sfc, cfg)
+	job.state = jobDone
 }
 
 // processFileInScan handles all processing for a single file during a scan.
@@ -1504,8 +1683,22 @@ func (s *ScannerService) checkAndHandleFile(
 	fileIndex int,
 	sfc *scanFileContext,
 ) scanLoopAction {
-	result := s.detectFile(sfc, cfg)
+	return s.handleDetection(ctx, progress, cfg, fileIndex, sfc, s.detectFile(sfc, cfg))
+}
 
+// handleDetection applies a detection outcome: it records the scan_files row (or
+// routes corruption to remediation) and advances progress. It is the stateful,
+// sequential half of file processing — detectFile is the read-only half. Kept
+// separate so the worker pool can run detection concurrently and feed results
+// here in scan order, preserving the single-threaded semantics resume relies on.
+func (s *ScannerService) handleDetection(
+	ctx context.Context,
+	progress *ScanProgress,
+	cfg scanFilesConfig,
+	fileIndex int,
+	sfc *scanFileContext,
+	result detectionResult,
+) scanLoopAction {
 	switch result.outcome {
 	case outcomeSkippedRecentlyModified:
 		s.recordSkipped(sfc, "RecentlyModified", "File modified within last 2 minutes - likely still being written")

@@ -4431,3 +4431,107 @@ func TestScannerService_DetectFile(t *testing.T) {
 		}
 	})
 }
+
+// TestScannerService_ScanFilesParallel exercises the bounded worker-pool path
+// (scanWorkers > 1): it must record every file exactly once, in any order,
+// finish with an accurate FilesDone, and be free of data races. Run under
+// `go test -race` this guards the fan-out detection / ordered fan-in design.
+func TestScannerService_ScanFilesParallel(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckWithConfigFunc: func(string, integration.DetectionConfig) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+	}
+
+	scanner := &ScannerService{
+		db:              db,
+		eventBus:        eb,
+		detector:        mockHC,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+		scanWorkers:     4, // enable the parallel path
+	}
+
+	tmpDir := t.TempDir()
+	const n = 50
+	files := make([]string, n)
+	oldTime := time.Now().Add(-10 * time.Minute)
+	for i := 0; i < n; i++ {
+		f := filepath.Join(tmpDir, fmt.Sprintf("f%02d.mkv", i))
+		if err := os.WriteFile(f, []byte("content"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		if err := os.Chtimes(f, oldTime, oldTime); err != nil {
+			t.Fatalf("chtimes: %v", err)
+		}
+		files[i] = f
+	}
+
+	result, err := db.Exec(`
+		INSERT INTO scans (path, path_id, status, total_files, files_scanned)
+		VALUES (?, 1, 'running', ?, 0)
+	`, tmpDir, n)
+	if err != nil {
+		t.Fatalf("create scan: %v", err)
+	}
+	scanDBID, _ := result.LastInsertId()
+
+	progress := &ScanProgress{
+		ID:         "parallel-scan",
+		Type:       "path",
+		Path:       tmpDir,
+		PathID:     1,
+		TotalFiles: n,
+		ScanDBID:   scanDBID,
+		resumeChan: make(chan struct{}),
+	}
+
+	scanner.scanFiles(context.Background(), progress, scanFilesConfig{
+		Files:           files,
+		StartIndex:      0,
+		DetectionConfig: integration.DetectionConfig{Method: "ffprobe", Mode: "quick"},
+		ScanDBID:        scanDBID,
+	})
+
+	if progress.Status != "completed" {
+		t.Errorf("Status = %q, want completed", progress.Status)
+	}
+	if progress.FilesDone != n {
+		t.Errorf("FilesDone = %d, want %d", progress.FilesDone, n)
+	}
+
+	var healthy int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status = 'healthy'`, scanDBID).Scan(&healthy); err != nil {
+		t.Fatalf("count healthy: %v", err)
+	}
+	if healthy != n {
+		t.Errorf("healthy scan_files rows = %d, want %d", healthy, n)
+	}
+
+	// Each file recorded exactly once — no drops, no duplicates from the pool.
+	var distinct int
+	if err := db.QueryRow(`SELECT COUNT(DISTINCT file_path) FROM scan_files WHERE scan_id = ?`, scanDBID).Scan(&distinct); err != nil {
+		t.Fatalf("count distinct: %v", err)
+	}
+	if distinct != n {
+		t.Errorf("distinct files recorded = %d, want %d", distinct, n)
+	}
+
+	// filesInProgress must be fully drained after the scan.
+	scanner.filesMu.Lock()
+	leaked := len(scanner.filesInProgress)
+	scanner.filesMu.Unlock()
+	if leaked != 0 {
+		t.Errorf("filesInProgress leaked %d entries", leaked)
+	}
+}
