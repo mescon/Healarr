@@ -408,7 +408,11 @@ func (hc *CmdHealthChecker) classifyOSError(err error, path string, isParent boo
 		}
 	}
 
-	// Check for common mount-related error messages
+	// Last-resort string match. classifySyscallError above already covers these
+	// conditions by errno (locale-independent); this catches the rare case where
+	// the error isn't a *fs.PathError wrapping a syscall.Errno (e.g. an error
+	// that lost its syscall identity through wrapping). Substring matching is
+	// locale-fragile, so it must remain the fallback, not the primary path.
 	errStr := strings.ToLower(err.Error())
 	if strings.Contains(errStr, "transport endpoint") ||
 		strings.Contains(errStr, "stale") ||
@@ -432,6 +436,11 @@ func (hc *CmdHealthChecker) classifyOSError(err error, path string, isParent boo
 // classifyDetectorError analyzes errors from ffprobe/mediainfo and classifies them appropriately.
 // This catches cases where files disappear between accessibility check and detector execution (race condition),
 // or where the detector sees different paths than Go's os.Stat (e.g., symlink resolution differences).
+//
+// Unlike classifyOSError, this MUST match on strings: the error here wraps a
+// subprocess's stderr text (ffprobe/mediainfo), not a Go syscall error, so there
+// is no errno to match. ffmpeg/ffprobe emit these messages in English regardless
+// of the host locale.
 func (hc *CmdHealthChecker) classifyDetectorError(err error, _ string) *HealthCheckError {
 	errStr := err.Error()
 

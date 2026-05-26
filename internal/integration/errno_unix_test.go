@@ -118,6 +118,36 @@ func TestClassifySyscallError(t *testing.T) {
 			wantMessage: "network/host unreachable",
 		},
 		{
+			name: "ECONNREFUSED returns MountLost",
+			err: &fs.PathError{
+				Op:   "stat",
+				Path: "/test/path",
+				Err:  syscall.ECONNREFUSED,
+			},
+			wantType:    ErrorTypeMountLost,
+			wantMessage: "connection lost (mount endpoint down)",
+		},
+		{
+			name: "ENOTCONN returns MountLost",
+			err: &fs.PathError{
+				Op:   "read",
+				Path: "/test/path",
+				Err:  syscall.ENOTCONN,
+			},
+			wantType:    ErrorTypeMountLost,
+			wantMessage: "connection lost (mount endpoint down)",
+		},
+		{
+			name: "ESHUTDOWN returns MountLost",
+			err: &fs.PathError{
+				Op:   "read",
+				Path: "/test/path",
+				Err:  syscall.ESHUTDOWN,
+			},
+			wantType:    ErrorTypeMountLost,
+			wantMessage: "connection lost (mount endpoint down)",
+		},
+		{
 			name: "unknown syscall error returns empty",
 			err: &fs.PathError{
 				Op:   "stat",
