@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Defense-in-depth HTTP security headers on all responses (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`).
 - **Corrupt releases are now blocklisted instead of re-grabbed.** When a downloaded replacement is itself corrupt, Healarr deletes it, marks that specific release as failed in Sonarr/Radarr so the same release is not grabbed again, and lets the *arr fetch the next-best release. The original corruption still gets one grace re-search first (a single bad download is not always the release's fault); blocklisting kicks in only once a replacement comes back corrupt. Bounded by the path's retry limit, after which the item is flagged for attention.
 - **Stalled downloads are now blocklisted too.** When a replacement never finishes downloading and times out, Healarr removes it from the download client and blocklists that release, so the re-search grabs a different release instead of waiting on the same dead one. Honors per-path auto-remediate / dry-run and is bounded by the retry limit.
+- Modal dialogs now trap keyboard focus and expose proper ARIA roles, improving keyboard and screen-reader navigation.
 
 ### Changed
 - Faster database writes during scans: SQLite now uses `synchronous=NORMAL` under WAL (still corruption-safe), and per-file scan-progress updates no longer hit the durable event store.
