@@ -297,16 +297,26 @@ func (m *MonitorService) getCorruptionContextWithRetry(corruptionID string, maxR
 	return "", 0, lastErr
 }
 
+// getRetryCount returns the number of attempts so far and the path's retry
+// limit, used to decide when to give up (MaxRetriesReached) and to size the
+// backoff. The attempt count here intentionally includes DownloadTimeout as
+// well as the '%Failed' events that back the displayed retry_count: a download
+// that never completes (e.g. a dead release) emits only DownloadTimeout, so
+// counting those is what bounds an otherwise-infinite re-search loop and lets
+// the item escalate to NeedsAttention. The view's retry_count column (shown in
+// the UI / notifications) is deliberately left as failures-only.
 func (m *MonitorService) getRetryCount(corruptionID string) (int, int, error) {
 	var count int
 	var maxRetries sql.NullInt64
 	defaultMaxRetries := config.Get().DefaultMaxRetries
 
-	// Get retry count and max_retries from view and scan_paths
-	// We use a LEFT JOIN to handle cases where path_id is missing or scan path is deleted
+	// Count failures and timeouts directly from the event stream; join scan_paths
+	// (LEFT JOIN, so a missing/deleted path falls back to the default limit).
 	query := `
-		SELECT 
-			cs.retry_count,
+		SELECT
+			(SELECT COUNT(*) FROM events e
+			 WHERE e.aggregate_id = cs.corruption_id
+			   AND (e.event_type LIKE '%Failed' OR e.event_type = 'DownloadTimeout')),
 			sp.max_retries
 		FROM corruption_status cs
 		LEFT JOIN scan_paths sp ON sp.id = cs.path_id
