@@ -57,6 +57,7 @@ func (m *MonitorService) Start() {
 	// Events requiring manual intervention - emit NeedsAttention for UI visibility
 	m.eventBus.Subscribe(domain.ImportBlocked, m.handleNeedsAttention)
 	m.eventBus.Subscribe(domain.SearchExhausted, m.handleNeedsAttention)
+	m.eventBus.Subscribe(domain.RemediationPaused, m.handleNeedsAttention)
 	// Terminal states from VerifierService - user-initiated actions that ended the flow
 	m.eventBus.Subscribe(domain.DownloadIgnored, m.handleNeedsAttention)
 	m.eventBus.Subscribe(domain.ManuallyRemoved, m.handleNeedsAttention)

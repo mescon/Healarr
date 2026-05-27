@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Unmonitored items are now re-acquired during remediation.** If a corrupt file belongs to an item the *arr has unmonitored (for example a transcode pipeline like Tdarr unmonitored it to protect its output), Healarr now temporarily monitors it so the *arr can grab and import a healthy replacement, then restores the original monitored state. Previously such an item was deleted but never re-acquired, leaving you with nothing.
+- **Remediation loop-breaker.** If the same file keeps coming back corrupt even after being restored to health several times (the signature of a transcode pipeline or failing storage re-corrupting it, which re-downloading cannot fix), Healarr now pauses auto-remediation for that file and raises a needs-attention notification instead of repeatedly deleting and re-downloading it. It resets automatically once the file stays healthy.
+
 ## [1.3.1] - 2026-05-27
 
 ### Added
