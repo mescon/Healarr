@@ -6306,3 +6306,100 @@ func TestHTTPArrClient_MarkReleaseAsFailed_InstanceNotFound(t *testing.T) {
 		t.Fatal("expected an error when no instance owns the path")
 	}
 }
+
+func TestHTTPArrClient_SetMonitored_Movie(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	var gotMethod, gotPath string
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	encryptedKey, _ := crypto.Encrypt("key")
+	db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key, enabled) VALUES (1, 'Radarr', 'radarr', ?, ?, 1)`, server.URL, encryptedKey)
+	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/local/movies', '/movies', 1, 0, 0)`)
+
+	if err := client.SetMonitored("/movies/Some Movie/movie.mkv", 55, true); err != nil {
+		t.Fatalf("SetMonitored: %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Errorf("method = %q, want PUT", gotMethod)
+	}
+	if gotPath != "/api/v3/movie/editor" {
+		t.Errorf("path = %q, want /api/v3/movie/editor", gotPath)
+	}
+	if gotBody["monitored"] != true {
+		t.Errorf("monitored = %v, want true", gotBody["monitored"])
+	}
+	// movieIds should carry the id (JSON numbers decode to float64).
+	ids, _ := gotBody["movieIds"].([]interface{})
+	if len(ids) != 1 || ids[0] != float64(55) {
+		t.Errorf("movieIds = %v, want [55]", gotBody["movieIds"])
+	}
+}
+
+func TestHTTPArrClient_SetMonitored_Series(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	var gotPath string
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	encryptedKey, _ := crypto.Encrypt("key")
+	db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key, enabled) VALUES (1, 'Sonarr', 'sonarr', ?, ?, 1)`, server.URL, encryptedKey)
+	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/local/tv', '/tv', 1, 0, 0)`)
+
+	if err := client.SetMonitored("/tv/Show/episode.mkv", 7, false); err != nil {
+		t.Fatalf("SetMonitored: %v", err)
+	}
+	if gotPath != "/api/v3/series/editor" {
+		t.Errorf("path = %q, want /api/v3/series/editor", gotPath)
+	}
+	if gotBody["monitored"] != false {
+		t.Errorf("monitored = %v, want false", gotBody["monitored"])
+	}
+	if _, ok := gotBody["seriesIds"]; !ok {
+		t.Error("expected seriesIds in body")
+	}
+}
+
+func TestHTTPArrClient_IsMonitored(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	monitored := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/movie/55" {
+			json.NewEncoder(w).Encode(map[string]interface{}{"id": 55, "monitored": monitored})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	encryptedKey, _ := crypto.Encrypt("key")
+	db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key, enabled) VALUES (1, 'Radarr', 'radarr', ?, ?, 1)`, server.URL, encryptedKey)
+	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/local/movies', '/movies', 1, 0, 0)`)
+
+	got, err := client.IsMonitored("/movies/Some Movie/movie.mkv", 55)
+	if err != nil || !got {
+		t.Fatalf("IsMonitored = (%v, %v), want (true, nil)", got, err)
+	}
+
+	// A non-200 must surface as an error (not a silent false), so the remediator
+	// never overrides based on an unknown prior state.
+	if _, err := client.IsMonitored("/movies/Some Movie/movie.mkv", 999); err == nil {
+		t.Error("expected an error when the movie lookup fails")
+	}
+}

@@ -108,6 +108,14 @@ func (m *mockHealthArrClient) MarkReleaseAsFailed(_ string, _ int64) error {
 	return nil
 }
 
+func (m *mockHealthArrClient) IsMonitored(_ string, _ int64) (bool, error) {
+	return false, nil
+}
+
+func (m *mockHealthArrClient) SetMonitored(_ string, _ int64, _ bool) error {
+	return nil
+}
+
 func (m *mockHealthArrClient) RefreshMonitoredDownloadsByPath(_ string) error {
 	return nil
 }

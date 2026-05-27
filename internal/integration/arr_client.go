@@ -1648,6 +1648,62 @@ func (c *HTTPArrClient) MarkReleaseAsFailed(arrPath string, historyID int64) err
 	return c.markReleaseAsFailed(instance, historyID)
 }
 
+// IsMonitored reports whether the movie/series identified by mediaID is
+// monitored in the *arr that owns arrPath. Unlike getMovieDetails/
+// getSeriesDetails (which degrade to nil for display), this returns an error on
+// any failure, because the remediator must know the true prior state before it
+// overrides it.
+func (c *HTTPArrClient) IsMonitored(arrPath string, mediaID int64) (bool, error) {
+	instance, err := c.getInstanceForPath(arrPath)
+	if err != nil {
+		return false, err
+	}
+	endpoint := fmt.Sprintf("/api/v3/movie/%d", mediaID)
+	if isSeriesType(instance) {
+		endpoint = fmt.Sprintf("/api/v3/series/%d", mediaID)
+	}
+	resp, err := c.doRequest(instance, "GET", endpoint, nil)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("fetch monitored status for media %d: %s", mediaID, resp.Status)
+	}
+	var body struct {
+		Monitored bool `json:"monitored"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return false, fmt.Errorf("decode monitored status for media %d: %w", mediaID, err)
+	}
+	return body.Monitored, nil
+}
+
+// SetMonitored sets the monitored flag for a movie/series via the *arr bulk
+// editor endpoint. Used by remediation to temporarily monitor an item so the
+// *arr will grab a replacement; the original state is restored afterward.
+func (c *HTTPArrClient) SetMonitored(arrPath string, mediaID int64, monitored bool) error {
+	instance, err := c.getInstanceForPath(arrPath)
+	if err != nil {
+		return err
+	}
+	endpoint := "/api/v3/movie/editor"
+	payload := map[string]interface{}{"movieIds": []int{int(mediaID)}, "monitored": monitored}
+	if isSeriesType(instance) {
+		endpoint = "/api/v3/series/editor"
+		payload = map[string]interface{}{"seriesIds": []int{int(mediaID)}, "monitored": monitored}
+	}
+	resp, err := c.doRequest(instance, "PUT", endpoint, payload)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("set monitored=%t for media %d: %s", monitored, mediaID, resp.Status)
+	}
+	return nil
+}
+
 // RefreshMonitoredDownloadsByPath implements ArrClient interface
 func (c *HTTPArrClient) RefreshMonitoredDownloadsByPath(arrPath string) error {
 	instance, err := c.getInstanceForPath(arrPath)

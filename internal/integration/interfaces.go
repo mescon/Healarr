@@ -64,6 +64,11 @@ type ArrClient interface {
 	// re-grab it. historyID is the *arr "grabbed" history record's ID.
 	MarkReleaseAsFailed(arrPath string, historyID int64) error
 
+	// Monitored state - read and set, so remediation can temporarily monitor an
+	// unmonitored item to let the *arr grab a replacement, then restore it.
+	IsMonitored(arrPath string, mediaID int64) (bool, error)
+	SetMonitored(arrPath string, mediaID int64, monitored bool) error
+
 	// Media details - fetch friendly titles for display
 	// Returns nil (not error) if media not found, to allow graceful degradation
 	GetMediaDetails(mediaID int64, arrPath string) (*MediaDetails, error)

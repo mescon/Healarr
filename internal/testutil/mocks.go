@@ -215,6 +215,8 @@ type MockArrClient struct {
 	GetRecentHistoryForMediaByPathFunc  func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error)
 	RemoveFromQueueByPathFunc           func(arrPath string, queueID int64, removeFromClient, blocklist bool) error
 	MarkReleaseAsFailedFunc             func(arrPath string, historyID int64) error
+	IsMonitoredFunc                     func(arrPath string, mediaID int64) (bool, error)
+	SetMonitoredFunc                    func(arrPath string, mediaID int64, monitored bool) error
 	RefreshMonitoredDownloadsByPathFunc func(arrPath string) error
 	GetMediaDetailsFunc                 func(mediaID int64, arrPath string) (*integration.MediaDetails, error)
 
@@ -403,6 +405,24 @@ func (m *MockArrClient) MarkReleaseAsFailed(arrPath string, historyID int64) err
 		return m.MarkReleaseAsFailedFunc(arrPath, historyID)
 	}
 	m.unconfigured("MarkReleaseAsFailed")
+	return nil
+}
+
+func (m *MockArrClient) IsMonitored(arrPath string, mediaID int64) (bool, error) {
+	m.recordCall("IsMonitored", arrPath, mediaID)
+	if m.IsMonitoredFunc != nil {
+		return m.IsMonitoredFunc(arrPath, mediaID)
+	}
+	m.unconfigured("IsMonitored")
+	return false, nil
+}
+
+func (m *MockArrClient) SetMonitored(arrPath string, mediaID int64, monitored bool) error {
+	m.recordCall("SetMonitored", arrPath, mediaID, monitored)
+	if m.SetMonitoredFunc != nil {
+		return m.SetMonitoredFunc(arrPath, mediaID, monitored)
+	}
+	m.unconfigured("SetMonitored")
 	return nil
 }
 
