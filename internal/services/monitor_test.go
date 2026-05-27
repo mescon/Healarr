@@ -319,6 +319,74 @@ func TestMonitorService_EmitsMaxRetriesReached(t *testing.T) {
 	mu.Unlock()
 }
 
+// TestMonitorService_DownloadTimeoutsCountTowardMaxRetries verifies that
+// repeated DownloadTimeout events (with no '%Failed' events at all) eventually
+// trip MaxRetriesReached, so a download that never completes escalates to
+// NeedsAttention instead of re-searching forever.
+func TestMonitorService_DownloadTimeoutsCountTowardMaxRetries(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	testutil.SeedScanPath(db, 1, "/media/movies", "/movies", true, false)
+	_, _ = db.Exec(`UPDATE scan_paths SET max_retries = 2 WHERE id = 1`)
+
+	corruptionID := "test-timeout-budget"
+	testutil.SeedEvent(db, domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   corruptionID,
+		EventType:     domain.CorruptionDetected,
+		EventData:     map[string]interface{}{"file_path": "/movies/Test/movie.mkv", "path_id": int64(1)},
+	})
+	// Two DownloadTimeout events (and zero '%Failed' events) reach the limit.
+	for i := 0; i < 2; i++ {
+		testutil.SeedEvent(db, domain.Event{
+			AggregateType: "corruption",
+			AggregateID:   corruptionID,
+			EventType:     domain.DownloadTimeout,
+			EventData:     map[string]interface{}{"reason": "elapsed"},
+		})
+	}
+
+	mockClock := testutil.NewMockClock()
+	monitor := NewMonitorService(eb, db, mockClock)
+	monitor.Start()
+
+	var mu sync.Mutex
+	var maxRetriesEvents []domain.Event
+	eb.Subscribe(domain.MaxRetriesReached, func(e domain.Event) {
+		mu.Lock()
+		maxRetriesEvents = append(maxRetriesEvents, e)
+		mu.Unlock()
+	})
+
+	// A third timeout must trip MaxRetriesReached, not schedule another retry.
+	eb.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DownloadTimeout,
+		EventData:     map[string]interface{}{"reason": "elapsed"},
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	if mockClock.PendingCount() != 0 {
+		t.Errorf("Expected no pending retry timer once timeouts exhaust the budget, got %d", mockClock.PendingCount())
+	}
+	mu.Lock()
+	if len(maxRetriesEvents) != 1 {
+		t.Errorf("Expected 1 MaxRetriesReached event from repeated timeouts, got %d", len(maxRetriesEvents))
+	}
+	mu.Unlock()
+}
+
 func TestMonitorService_HandlesMultipleFailureTypes(t *testing.T) {
 	config.SetForTesting(config.NewTestConfig())
 

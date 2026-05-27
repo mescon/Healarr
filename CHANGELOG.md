@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Re-search now refuses to fall back to a whole-series search.** When the specific episode cannot be identified, Healarr no longer issues a series-wide search that could re-download every missing episode; the attempt is surfaced instead.
 - **Active-corruption lookups no longer collide across sibling library roots.** A path like `/media/TV` previously matched `/media/TV-Archive`; lookups now require a path boundary.
 - **A verified-corrupt replacement is now actually re-remediated.** Previously, a retry after a failed verification only re-searched without removing the corrupt file; because the *arr will not replace a file that is still present, the item could stall. The retry now deletes the corrupt replacement before re-searching.
+- **A replacement that never finishes downloading no longer retries forever.** Repeated download timeouts now count toward the path's retry limit, so an item that can never be satisfied escalates to a needs-attention state instead of re-searching indefinitely. (The retry count shown in the UI still reflects corruption failures only.)
 - Live log and scan-progress updates no longer drop messages under load (WebSocket delivery rework).
 - A paused scan could fail to resume if the resume signal raced with the scan loop; resume is now reliable.
 
