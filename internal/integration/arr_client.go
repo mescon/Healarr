@@ -1353,6 +1353,25 @@ func (c *HTTPArrClient) RemoveFromQueue(instance *ArrInstance, queueID int64, re
 	return nil
 }
 
+// markReleaseAsFailed marks a grabbed history record as failed. The *arr then
+// blocklists that specific release (so its decision engine will not re-grab it)
+// and, when autoRedownloadFailed is enabled, automatically searches for the
+// next-best release. historyID is the ID of a "grabbed" history record.
+func (c *HTTPArrClient) markReleaseAsFailed(instance *ArrInstance, historyID int64) error {
+	endpoint := fmt.Sprintf("/api/v3/history/failed/%d", historyID)
+
+	resp, err := c.doRequest(instance, "POST", endpoint, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("failed to mark release as failed (history %d): %s", historyID, resp.Status)
+	}
+	return nil
+}
+
 // RefreshMonitoredDownloads triggers a refresh of monitored downloads
 func (c *HTTPArrClient) RefreshMonitoredDownloads(instance *ArrInstance) error {
 	payload := map[string]interface{}{
@@ -1618,6 +1637,15 @@ func (c *HTTPArrClient) RemoveFromQueueByPath(arrPath string, queueID int64, rem
 		return err
 	}
 	return c.RemoveFromQueue(instance, queueID, removeFromClient, blocklist)
+}
+
+// MarkReleaseAsFailed implements ArrClient interface
+func (c *HTTPArrClient) MarkReleaseAsFailed(arrPath string, historyID int64) error {
+	instance, err := c.getInstanceForPath(arrPath)
+	if err != nil {
+		return err
+	}
+	return c.markReleaseAsFailed(instance, historyID)
 }
 
 // RefreshMonitoredDownloadsByPath implements ArrClient interface

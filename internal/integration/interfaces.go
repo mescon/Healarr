@@ -60,6 +60,10 @@ type ArrClient interface {
 	RemoveFromQueueByPath(arrPath string, queueID int64, removeFromClient, blocklist bool) error
 	RefreshMonitoredDownloadsByPath(arrPath string) error
 
+	// Blocklist - mark a specific grabbed release as failed so the *arr won't
+	// re-grab it. historyID is the *arr "grabbed" history record's ID.
+	MarkReleaseAsFailed(arrPath string, historyID int64) error
+
 	// Media details - fetch friendly titles for display
 	// Returns nil (not error) if media not found, to allow graceful degradation
 	GetMediaDetails(mediaID int64, arrPath string) (*MediaDetails, error)

@@ -29,7 +29,8 @@ const (
 	DownloadIgnored      EventType = "DownloadIgnored" // *arr marked download as ignored by user
 	RetryScheduled       EventType = "RetryScheduled"
 	MaxRetriesReached    EventType = "MaxRetriesReached"
-	SearchExhausted      EventType = "SearchExhausted" // No replacement found - arr search returned 0 results or item vanished
+	SearchExhausted      EventType = "SearchExhausted"    // No replacement found - arr search returned 0 results or item vanished
+	ReleaseBlocklisted   EventType = "ReleaseBlocklisted" // A specific corrupt release was marked-as-failed (blocklisted) in the *arr
 	ScanStarted          EventType = "ScanStarted"
 	ScanCompleted        EventType = "ScanCompleted"
 	ScanFailed           EventType = "ScanFailed"
