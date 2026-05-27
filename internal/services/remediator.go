@@ -62,6 +62,15 @@ func NewRemediatorService(eb eventbus.Publisher, arr integration.ArrClient, pm i
 // remediatorQueryTimeout bounds the scan-path config lookup done before remediating.
 const remediatorQueryTimeout = 10 * time.Second
 
+// Loop-breaker: once a file has been successfully remediated this many times
+// within remediationLoopWindowDays and is corrupt again, re-downloading clearly
+// is not fixing it (a transcode pipeline or failing storage keeps re-corrupting
+// it), so auto-remediation pauses and surfaces the item instead of thrashing.
+const (
+	maxRemediationsBeforePause = 3
+	remediationLoopWindowDays  = 30
+)
+
 // resolveRemediationPolicy returns the AUTHORITATIVE auto-remediate and dry-run
 // settings for a corruption, read from the scan path's current config rather than
 // the triggering event. The event payload is not trustworthy for this decision:
@@ -89,6 +98,11 @@ func (r *RemediatorService) resolveRemediationPolicy(pathID int64, evtAuto, evtD
 func (r *RemediatorService) Start() {
 	r.eventBus.Subscribe(domain.CorruptionDetected, r.handleCorruptionDetected)
 	r.eventBus.Subscribe(domain.RetryScheduled, r.handleRetry)
+	// Restore an overridden monitored flag once remediation reaches a terminal
+	// state (success or give-up), so we leave the library as we found it.
+	r.eventBus.Subscribe(domain.VerificationSuccess, r.handleRemediationTerminal)
+	r.eventBus.Subscribe(domain.MaxRetriesReached, r.handleRemediationTerminal)
+	r.eventBus.Subscribe(domain.SearchExhausted, r.handleRemediationTerminal)
 }
 
 // Stop gracefully shuts down the RemediatorService.
@@ -487,6 +501,95 @@ func (r *RemediatorService) handleStalledDownloadBeforeSearch(corruptionID strin
 	return blocklistedAny
 }
 
+// shouldPauseForRecurringCorruption reports whether this file has been
+// successfully remediated too many times within the loop window to keep trying.
+// On a query error it returns false - a transient DB issue must not change
+// remediation behavior.
+func (r *RemediatorService) shouldPauseForRecurringCorruption(filePath string) bool {
+	if r.corruptions == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remediatorQueryTimeout)
+	defer cancel()
+	n, err := r.corruptions.CountSuccessfulRemediationsForPath(ctx, filePath, remediationLoopWindowDays)
+	if err != nil {
+		logger.Warnf("Loop-breaker: cannot count prior remediations for %s; proceeding: %v", filePath, err)
+		return false
+	}
+	return n >= maxRemediationsBeforePause
+}
+
+// ensureMonitoredForRemediation temporarily monitors an unmonitored item so the
+// *arr will grab a replacement, recording the original state (a MonitorOverridden
+// event) so handleRemediationTerminal can restore it later. Failing to read or
+// set the flag is non-fatal: we log and proceed (the search may simply no-op,
+// which is no worse than before this feature).
+func (r *RemediatorService) ensureMonitoredForRemediation(corruptionID, arrPath string, mediaID int64) {
+	monitored, err := r.arrClient.IsMonitored(arrPath, mediaID)
+	if err != nil {
+		logger.Warnf("Could not read monitored status for %s (media %d); proceeding without override: %v", corruptionID, mediaID, err)
+		return
+	}
+	if monitored {
+		return
+	}
+	if err := r.arrClient.SetMonitored(arrPath, mediaID, true); err != nil {
+		logger.Warnf("Could not monitor %s (media %d) for remediation; proceeding anyway: %v", corruptionID, mediaID, err)
+		return
+	}
+	if err := r.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.MonitorOverridden,
+		EventData: map[string]interface{}{
+			"media_id":           mediaID,
+			"arr_path":           arrPath,
+			"original_monitored": false,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish MonitorOverridden event for %s: %v", corruptionID, err)
+	}
+	logger.Infof("Temporarily monitored media %d for %s so the *arr can grab a replacement (was unmonitored)", mediaID, corruptionID)
+}
+
+// monitorOverrideOriginal returns the arr path, media id, and original monitored
+// flag recorded by a prior MonitorOverridden event for this aggregate, if any.
+func (r *RemediatorService) monitorOverrideOriginal(corruptionID string) (arrPath string, mediaID int64, original, found bool) {
+	if r.corruptions == nil {
+		return "", 0, false, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remediatorQueryTimeout)
+	defer cancel()
+	raw, err := r.corruptions.LatestEventData(ctx, corruptionID, string(domain.MonitorOverridden), "DESC")
+	if err != nil {
+		return "", 0, false, false
+	}
+	var d struct {
+		ArrPath  string  `json:"arr_path"`
+		MediaID  float64 `json:"media_id"`
+		Original bool    `json:"original_monitored"`
+	}
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		return "", 0, false, false
+	}
+	return d.ArrPath, int64(d.MediaID), d.Original, true
+}
+
+// handleRemediationTerminal restores a monitored flag that remediation overrode,
+// once the journey reaches a terminal state. No-op for items we never overrode.
+// Restoring is idempotent (sets the flag back to its original value).
+func (r *RemediatorService) handleRemediationTerminal(event domain.Event) {
+	arrPath, mediaID, original, found := r.monitorOverrideOriginal(event.AggregateID)
+	if !found {
+		return
+	}
+	if err := r.arrClient.SetMonitored(arrPath, mediaID, original); err != nil {
+		logger.Warnf("Failed to restore monitored=%t for %s after remediation: %v", original, event.AggregateID, err)
+		return
+	}
+	logger.Infof("Restored monitored=%t for %s after remediation reached a terminal state", original, event.AggregateID)
+}
+
 func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
 	corruptionID := event.AggregateID
 
@@ -622,6 +725,27 @@ func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath s
 		return
 	}
 
+	// Loop-breaker: if this file keeps coming back corrupt even though we have
+	// already restored it to health several times, re-downloading will not fix it
+	// (a transcode pipeline or failing storage is re-corrupting it). Pause and
+	// surface it rather than thrash - and crucially do NOT delete, since deleting
+	// would just lose the file with no way to re-acquire a good one.
+	if r.shouldPauseForRecurringCorruption(filePath) {
+		logger.Warnf("Remediation paused for %s: still corrupt after %d successful restores in %d days", filePath, maxRemediationsBeforePause, remediationLoopWindowDays)
+		if err := r.eventBus.Publish(domain.Event{
+			AggregateID:   corruptionID,
+			AggregateType: "corruption",
+			EventType:     domain.RemediationPaused,
+			EventData: map[string]interface{}{
+				"file_path": filePath,
+				"reason":    "recurring_corruption",
+			},
+		}); err != nil {
+			logger.Errorf("Failed to publish RemediationPaused event: %v", err)
+		}
+		return
+	}
+
 	// Find media first - validates we can proceed before publishing DeletionStarted
 	mediaID, err := r.arrClient.FindMediaByPath(arrPath)
 	if err != nil {
@@ -629,6 +753,11 @@ func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath s
 		r.publishError(corruptionID, domain.DeletionFailed, err.Error())
 		return
 	}
+
+	// If the item is unmonitored (e.g. a transcode pipeline like Tdarr unmonitored
+	// it to protect its output), temporarily monitor it so the *arr will grab a
+	// replacement. The original state is recorded and restored at a terminal state.
+	r.ensureMonitoredForRemediation(corruptionID, arrPath, mediaID)
 
 	// Publish deletion started - now that we've validated we can proceed
 	if err := r.eventBus.Publish(domain.Event{

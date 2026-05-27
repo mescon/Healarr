@@ -86,6 +86,7 @@ var messageFormatters = map[string]messageFormatter{
 	string(domain.RetryScheduled):       fmtRetryScheduled,
 	string(domain.MaxRetriesReached):    fmtMaxRetriesReached,
 	string(domain.SearchExhausted):      fmtSearchExhausted,
+	string(domain.RemediationPaused):    fmtRemediationPaused,
 	string(domain.DownloadFailed):       fmtDownloadFailed,
 	string(domain.SystemHealthDegraded): fmtSystemHealthDegraded,
 	string(domain.InstanceUnhealthy):    fmtInstanceUnhealthy,
@@ -187,6 +188,13 @@ func fmtSearchExhausted(ctx messageContext) string {
 		msg += fmt.Sprintf(msgFmtReason, ctx.Reason)
 	}
 	msg += "\n👉 Check your indexers or manually search in Sonarr/Radarr"
+	return msg
+}
+
+func fmtRemediationPaused(ctx messageContext) string {
+	msg := fmt.Sprintf("⏸️ Remediation paused: %s", ctx.FileName)
+	msg += "\n♻️ This file keeps coming back corrupt after being restored, so re-downloading can't fix it."
+	msg += "\n👉 Likely a transcode pipeline (e.g. Tdarr) or failing storage. Auto-remediation is paused for this file; please investigate."
 	return msg
 }
 

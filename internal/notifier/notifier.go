@@ -338,6 +338,7 @@ func GetEventGroups() []EventGroup {
 				{string(domain.ManuallyRemoved), "Manually Removed", "When user removes item from *arr queue"},
 				{string(domain.DownloadIgnored), "Download Ignored", "When download was skipped or ignored by *arr"},
 				{string(domain.SearchExhausted), "No Replacement Found", "When indexers have no candidates after retries"},
+				{string(domain.RemediationPaused), "Remediation Paused", "When a file keeps returning corrupt after restores (e.g. a transcode pipeline keeps re-corrupting it)"},
 			},
 		},
 		{
@@ -917,6 +918,7 @@ var eventTitles = map[string]string{
 	string(domain.RetryScheduled):       "🔄 Retry Scheduled",
 	string(domain.MaxRetriesReached):    "⚠️ Max Retries Reached",
 	string(domain.SearchExhausted):      "🔍 No Replacement Found",
+	string(domain.RemediationPaused):    "⏸️ Remediation Paused - Manual Action Required",
 	string(domain.DownloadFailed):       "❌ Download Failed",
 	string(domain.SystemHealthDegraded): "⚠️ System Health Degraded",
 	string(domain.InstanceUnhealthy):    "🔴 Arr Instance Unreachable",

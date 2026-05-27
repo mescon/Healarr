@@ -2194,3 +2194,169 @@ func TestRemediator_HandleStalledDownloadBeforeSearch(t *testing.T) {
 		}
 	})
 }
+
+// seedSuccessfulRemediation appends a CorruptionDetected(file_path) + a
+// VerificationSuccess for one aggregate, i.e. one completed remediation cycle.
+func seedSuccessfulRemediation(t *testing.T, db *sql.DB, aggregateID, filePath string) {
+	t.Helper()
+	cd, _ := json.Marshal(map[string]interface{}{"file_path": filePath})
+	if _, err := db.Exec(`INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES ('corruption', ?, 'CorruptionDetected', ?, 1, datetime('now'))`, aggregateID, string(cd)); err != nil {
+		t.Fatalf("seed CorruptionDetected: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES ('corruption', ?, 'VerificationSuccess', '{}', 1, datetime('now'))`, aggregateID); err != nil {
+		t.Fatalf("seed VerificationSuccess: %v", err)
+	}
+}
+
+func TestRemediator_ShouldPauseForRecurringCorruption(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	r := NewRemediatorService(testutil.NewMockEventBus(), &testutil.MockArrClient{}, &testutil.MockPathMapper{}, db)
+	const p = "/movies/x.mkv"
+
+	seedSuccessfulRemediation(t, db, "a1", p)
+	seedSuccessfulRemediation(t, db, "a2", p)
+	if r.shouldPauseForRecurringCorruption(p) {
+		t.Fatal("2 prior successes (< 3) must not pause")
+	}
+	seedSuccessfulRemediation(t, db, "a3", p)
+	if !r.shouldPauseForRecurringCorruption(p) {
+		t.Fatal("3 prior successes (>= 3) must pause")
+	}
+	if r.shouldPauseForRecurringCorruption("/movies/other.mkv") {
+		t.Fatal("a different path must not be affected")
+	}
+}
+
+func TestRemediator_EnsureMonitoredForRemediation(t *testing.T) {
+	t.Run("unmonitored item is monitored and recorded", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		eb := testutil.NewMockEventBus()
+		var setCalls int
+		var setTo bool
+		arr := &testutil.MockArrClient{
+			IsMonitoredFunc:  func(string, int64) (bool, error) { return false, nil },
+			SetMonitoredFunc: func(_ string, _ int64, m bool) error { setCalls++; setTo = m; return nil },
+		}
+		r := NewRemediatorService(eb, arr, &testutil.MockPathMapper{}, db)
+
+		r.ensureMonitoredForRemediation("agg1", "/data/movies/x.mkv", 55)
+		if setCalls != 1 || !setTo {
+			t.Errorf("SetMonitored calls=%d setTo=%v, want 1/true", setCalls, setTo)
+		}
+		if eb.EventCount(domain.MonitorOverridden) != 1 {
+			t.Errorf("MonitorOverridden events = %d, want 1", eb.EventCount(domain.MonitorOverridden))
+		}
+	})
+
+	t.Run("already monitored: no-op", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		eb := testutil.NewMockEventBus()
+		arr := &testutil.MockArrClient{IsMonitoredFunc: func(string, int64) (bool, error) { return true, nil }}
+		r := NewRemediatorService(eb, arr, &testutil.MockPathMapper{}, db)
+
+		r.ensureMonitoredForRemediation("agg1", "/data/movies/x.mkv", 55)
+		if arr.CallCount("SetMonitored") != 0 {
+			t.Error("must not change monitored when already monitored")
+		}
+		if eb.EventCount(domain.MonitorOverridden) != 0 {
+			t.Error("must not record an override when already monitored")
+		}
+	})
+
+	t.Run("IsMonitored error: no override", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		eb := testutil.NewMockEventBus()
+		arr := &testutil.MockArrClient{IsMonitoredFunc: func(string, int64) (bool, error) { return false, errors.New("api down") }}
+		r := NewRemediatorService(eb, arr, &testutil.MockPathMapper{}, db)
+
+		r.ensureMonitoredForRemediation("agg1", "/data/movies/x.mkv", 55)
+		if arr.CallCount("SetMonitored") != 0 {
+			t.Error("must not override when the prior state is unknown")
+		}
+		if eb.EventCount(domain.MonitorOverridden) != 0 {
+			t.Error("must not record an override on read error")
+		}
+	})
+}
+
+func TestRemediator_HandleRemediationTerminal_RestoresMonitored(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ov, _ := json.Marshal(map[string]interface{}{"media_id": 55, "arr_path": "/data/movies/x.mkv", "original_monitored": false})
+	if _, err := db.Exec(`INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES ('corruption', 'agg1', 'MonitorOverridden', ?, 1, datetime('now'))`, string(ov)); err != nil {
+		t.Fatalf("seed MonitorOverridden: %v", err)
+	}
+
+	var restoredTo bool
+	var calls int
+	arr := &testutil.MockArrClient{SetMonitoredFunc: func(_ string, _ int64, m bool) error { calls++; restoredTo = m; return nil }}
+	r := NewRemediatorService(testutil.NewMockEventBus(), arr, &testutil.MockPathMapper{}, db)
+
+	r.handleRemediationTerminal(domain.Event{AggregateID: "agg1"})
+	if calls != 1 || restoredTo {
+		t.Errorf("restore SetMonitored calls=%d to=%v, want 1/false", calls, restoredTo)
+	}
+
+	// An aggregate we never overrode must be a no-op.
+	arr2 := &testutil.MockArrClient{}
+	r2 := NewRemediatorService(testutil.NewMockEventBus(), arr2, &testutil.MockPathMapper{}, db)
+	r2.handleRemediationTerminal(domain.Event{AggregateID: "never-overridden"})
+	if arr2.CallCount("SetMonitored") != 0 {
+		t.Error("must not restore for an aggregate that was never overridden")
+	}
+}
+
+func TestRemediator_LoopBreaker_PausesAndDoesNotDelete(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const fp = "/local/movies/loop.mkv"
+	for _, agg := range []string{"a1", "a2", "a3"} {
+		seedSuccessfulRemediation(t, db, agg, fp)
+	}
+
+	eb := testutil.NewMockEventBus()
+	arr := &testutil.MockArrClient{
+		FindMediaByPathFunc: func(string) (int64, error) { return 55, nil },
+		DeleteFileFunc:      func(int64, string) (map[string]interface{}, error) { return map[string]interface{}{}, nil },
+	}
+	pm := &testutil.MockPathMapper{ToArrPathFunc: func(p string) (string, error) { return p, nil }}
+	r := NewRemediatorService(eb, arr, pm, db)
+
+	event := testutil.NewCorruptionEventWithType(fp, integration.ErrorTypeCorruptHeader, testutil.WithAutoRemediate(true))
+	r.handleCorruptionDetected(event)
+	time.Sleep(200 * time.Millisecond)
+
+	if eb.EventCount(domain.RemediationPaused) != 1 {
+		t.Errorf("RemediationPaused events = %d, want 1", eb.EventCount(domain.RemediationPaused))
+	}
+	if arr.CallCount("DeleteFile") != 0 {
+		t.Error("a paused remediation must not delete the file")
+	}
+}
