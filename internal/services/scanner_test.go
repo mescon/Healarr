@@ -4535,3 +4535,56 @@ func TestScannerService_ScanFilesParallel(t *testing.T) {
 		t.Errorf("filesInProgress leaked %d entries", leaked)
 	}
 }
+
+// TestWorkersForMemory covers the memory-aware default worker count derivation.
+func TestWorkersForMemory(t *testing.T) {
+	const mb = 1024 * 1024
+	const gb = 1024 * mb
+	tests := []struct {
+		name string
+		mem  uint64
+		cpus int
+		want int
+	}{
+		{"unknown memory falls back (capped by cpu)", 0, 8, fallbackScanWorkers},
+		{"unknown memory capped by low cpu", 0, 2, 2},
+		{"512MB -> 1 worker", 512 * mb, 8, 1},
+		{"under one budget floors at 1", 256 * mb, 8, 1},
+		{"1GB -> 2 workers", 1 * gb, 8, 2},
+		{"2GB -> 4 workers", 2 * gb, 8, 4},
+		{"cpu count caps it", 64 * gb, 4, 4},
+		{"max caps very large boxes", 1024 * gb, 128, maxScanWorkers},
+		{"zero cpus treated as one", 8 * gb, 0, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := workersForMemory(tt.mem, tt.cpus); got != tt.want {
+				t.Errorf("workersForMemory(%d, %d) = %d, want %d", tt.mem, tt.cpus, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestScannerWorkers_EnvOverride verifies the env var wins over the memory-aware
+// default and is clamped, while invalid/unset values use the memory-aware path.
+func TestScannerWorkers_EnvOverride(t *testing.T) {
+	t.Setenv("HEALARR_SCANNER_WORKERS", "8")
+	if got := scannerWorkers(); got != 8 {
+		t.Errorf("explicit 8 = %d, want 8", got)
+	}
+
+	t.Setenv("HEALARR_SCANNER_WORKERS", "100")
+	if got := scannerWorkers(); got != maxScanWorkers {
+		t.Errorf("over-max = %d, want %d (clamped)", got, maxScanWorkers)
+	}
+
+	t.Setenv("HEALARR_SCANNER_WORKERS", "garbage")
+	if got := scannerWorkers(); got < 1 || got > maxScanWorkers {
+		t.Errorf("invalid value should fall back to a sane memory-aware default, got %d", got)
+	}
+
+	os.Unsetenv("HEALARR_SCANNER_WORKERS")
+	if got := scannerWorkers(); got < 1 || got > maxScanWorkers {
+		t.Errorf("unset should yield a sane memory-aware default, got %d", got)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -347,18 +348,24 @@ type ScannerService struct {
 // detecting files whose size is still changing (active download/copy).
 const defaultSizeStabilityDelay = 500 * time.Millisecond
 
-// defaultScanWorkers is the default detection concurrency. ffprobe is the
-// dominant per-file cost and is I/O/CPU bound on the media file, so a small
-// pool gives most of the speed-up without overwhelming storage or *arr.
-const defaultScanWorkers = 4
+// fallbackScanWorkers is used only when available memory can't be determined.
+const fallbackScanWorkers = 4
 
 // maxScanWorkers caps operator-configured concurrency to avoid thrashing
 // storage or spawning an unreasonable number of ffprobe processes.
 const maxScanWorkers = 32
 
-// scannerWorkers returns the operator-configured detection concurrency from
-// HEALARR_SCANNER_WORKERS (clamped to [1, maxScanWorkers]), or
-// defaultScanWorkers if unset/invalid.
+// perWorkerMemoryBudget is the RAM we assume each concurrent detection worker may
+// need. ffprobe (quick mode) is light, but a thorough-mode ffmpeg decode of a
+// large file can use a few hundred MB. Budgeting generously means a small
+// container won't be pushed into an OOM kill by the default concurrency — each
+// extra worker is an extra subprocess counted against the container's cgroup limit.
+const perWorkerMemoryBudget = 512 * 1024 * 1024 // 512 MB
+
+// scannerWorkers returns the detection concurrency. HEALARR_SCANNER_WORKERS wins
+// if set (clamped to [1, maxScanWorkers]); otherwise the default is tuned to the
+// memory available to the process so a memory-constrained container doesn't OOM
+// from running several ffmpeg/ffprobe subprocesses at once.
 func scannerWorkers() int {
 	if v := os.Getenv("HEALARR_SCANNER_WORKERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
@@ -367,9 +374,73 @@ func scannerWorkers() int {
 			}
 			return n
 		}
-		logger.Warnf("Invalid HEALARR_SCANNER_WORKERS %q; using default %d", v, defaultScanWorkers)
+		logger.Warnf("Invalid HEALARR_SCANNER_WORKERS %q; using a memory-aware default", v)
 	}
-	return defaultScanWorkers
+	return workersForMemory(availableMemoryBytes(), runtime.NumCPU())
+}
+
+// workersForMemory derives the worker count from a memory budget and CPU count.
+// Roughly memBytes/perWorkerMemoryBudget, capped by CPU count and maxScanWorkers,
+// floored at 1. If memBytes is 0 (unknown) it returns fallbackScanWorkers. Pure
+// function for testability.
+func workersForMemory(memBytes uint64, cpus int) int {
+	if cpus < 1 {
+		cpus = 1
+	}
+	if memBytes == 0 {
+		n := fallbackScanWorkers
+		if n > cpus {
+			n = cpus
+		}
+		return n
+	}
+	n := int(memBytes / perWorkerMemoryBudget)
+	if n > cpus {
+		n = cpus
+	}
+	if n > maxScanWorkers {
+		n = maxScanWorkers
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// availableMemoryBytes best-effort reports the memory ceiling the process runs
+// under: the container's cgroup memory limit when present, else total system
+// memory. Returns 0 when it can't be determined (e.g. non-Linux), so callers
+// fall back to a fixed default. Linux-specific paths simply don't exist
+// elsewhere, so this stays portable without build tags.
+func availableMemoryBytes() uint64 {
+	// cgroup v2: a single limit file, "max" means unlimited.
+	if b, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
+		if s := strings.TrimSpace(string(b)); s != "max" {
+			if v, err := strconv.ParseUint(s, 10, 64); err == nil && v > 0 {
+				return v
+			}
+		}
+	}
+	// cgroup v1: "unlimited" is a near-max sentinel, so ignore implausibly large values.
+	if b, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
+		if v, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64); err == nil && v > 0 && v < (1<<62) {
+			return v
+		}
+	}
+	// Fallback: total system memory from /proc/meminfo (kB).
+	if b, err := os.ReadFile("/proc/meminfo"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if kb, ok := strings.CutPrefix(line, "MemTotal:"); ok {
+				fields := strings.Fields(kb)
+				if len(fields) >= 1 {
+					if v, err := strconv.ParseUint(fields[0], 10, 64); err == nil {
+						return v * 1024
+					}
+				}
+			}
+		}
+	}
+	return 0
 }
 
 // NewScannerService creates a new ScannerService with the given dependencies.
