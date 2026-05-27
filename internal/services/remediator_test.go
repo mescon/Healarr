@@ -2053,3 +2053,144 @@ func TestRemediator_LatestGrabbedRelease_PicksNewest(t *testing.T) {
 		t.Errorf("got (%d, %q), want (2, New-GRP)", id, title)
 	}
 }
+
+// insertEventAt appends a minimal event with an explicit created_at so tests can
+// control which failure is the most recent.
+func insertEventAt(t *testing.T, db *sql.DB, aggregateID, eventType, createdAt string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES ('corruption', ?, ?, '{}', 1, ?)`, aggregateID, eventType, createdAt)
+	if err != nil {
+		t.Fatalf("insert %s: %v", eventType, err)
+	}
+}
+
+func stalledQueueFunc() func(string, int64) ([]integration.QueueItemInfo, error) {
+	return func(string, int64) ([]integration.QueueItemInfo, error) {
+		return []integration.QueueItemInfo{{ID: 7, Title: "Show.S01E01.STALLED-GRP"}}, nil
+	}
+}
+
+func TestRemediator_HandleStalledDownloadBeforeSearch(t *testing.T) {
+	t.Run("stalled timeout removes and blocklists the queue item", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		insertEventAt(t, db, "agg1", "DownloadTimeout", "2026-05-27 10:00:00")
+		pathID := makeScanPath(t, db, "/media/tv", "/data/tv", true, false)
+
+		eb := testutil.NewMockEventBus()
+		removed := 0
+		arr := &testutil.MockArrClient{
+			FindQueueItemsByMediaIDForPathFunc: stalledQueueFunc(),
+			RemoveFromQueueByPathFunc: func(_ string, qid int64, removeFromClient, blocklist bool) error {
+				if qid == 7 && removeFromClient && blocklist {
+					removed++
+				}
+				return nil
+			},
+		}
+		r := NewRemediatorService(eb, arr, &testutil.MockPathMapper{}, db)
+
+		if !r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv") {
+			t.Fatal("expected blocklisted=true")
+		}
+		if removed != 1 {
+			t.Errorf("RemoveFromQueueByPath(remove+blocklist) calls = %d, want 1", removed)
+		}
+		if eb.EventCount(domain.ReleaseBlocklisted) != 1 {
+			t.Errorf("ReleaseBlocklisted events = %d, want 1", eb.EventCount(domain.ReleaseBlocklisted))
+		}
+	})
+
+	t.Run("non-timeout retry does nothing", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		// Latest failure is a VerificationFailed, not a DownloadTimeout.
+		insertEventAt(t, db, "agg1", "DownloadTimeout", "2026-05-27 10:00:00")
+		insertEventAt(t, db, "agg1", "VerificationFailed", "2026-05-27 11:00:00")
+		pathID := makeScanPath(t, db, "/media/tv", "/data/tv", true, false)
+
+		arr := &testutil.MockArrClient{FindQueueItemsByMediaIDForPathFunc: stalledQueueFunc()}
+		r := NewRemediatorService(testutil.NewMockEventBus(), arr, &testutil.MockPathMapper{}, db)
+
+		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv") {
+			t.Fatal("expected false when the latest failure is not a download timeout")
+		}
+		if arr.CallCount("RemoveFromQueueByPath") != 0 {
+			t.Error("must not touch the queue when the retry is not from a timeout")
+		}
+	})
+
+	t.Run("no queue item falls through", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		insertEventAt(t, db, "agg1", "DownloadTimeout", "2026-05-27 10:00:00")
+		pathID := makeScanPath(t, db, "/media/tv", "/data/tv", true, false)
+
+		// No FindQueueItemsByMediaIDForPathFunc -> empty queue.
+		arr := &testutil.MockArrClient{}
+		r := NewRemediatorService(testutil.NewMockEventBus(), arr, &testutil.MockPathMapper{}, db)
+
+		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv") {
+			t.Fatal("expected false when nothing is queued")
+		}
+		if arr.CallCount("RemoveFromQueueByPath") != 0 {
+			t.Error("must not remove anything when the queue is empty")
+		}
+	})
+
+	t.Run("dry-run does not remove or blocklist", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		insertEventAt(t, db, "agg1", "DownloadTimeout", "2026-05-27 10:00:00")
+		pathID := makeScanPath(t, db, "/media/tv", "/data/tv", true, true) // dry-run
+
+		eb := testutil.NewMockEventBus()
+		arr := &testutil.MockArrClient{FindQueueItemsByMediaIDForPathFunc: stalledQueueFunc()}
+		r := NewRemediatorService(eb, arr, &testutil.MockPathMapper{}, db)
+
+		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv") {
+			t.Fatal("expected false in dry-run")
+		}
+		if arr.CallCount("RemoveFromQueueByPath") != 0 || eb.EventCount(domain.ReleaseBlocklisted) != 0 {
+			t.Error("dry-run must not remove from queue or blocklist")
+		}
+	})
+
+	t.Run("non-auto path does nothing", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		insertEventAt(t, db, "agg1", "DownloadTimeout", "2026-05-27 10:00:00")
+		pathID := makeScanPath(t, db, "/media/tv", "/data/tv", false, false) // auto off
+
+		arr := &testutil.MockArrClient{FindQueueItemsByMediaIDForPathFunc: stalledQueueFunc()}
+		r := NewRemediatorService(testutil.NewMockEventBus(), arr, &testutil.MockPathMapper{}, db)
+
+		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv") {
+			t.Fatal("expected false on non-auto path")
+		}
+		if arr.CallCount("RemoveFromQueueByPath") != 0 {
+			t.Error("non-auto path must not remove from queue")
+		}
+	})
+}

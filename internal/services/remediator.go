@@ -223,6 +223,12 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 		// is blocklisted the *arr triggers its own re-download
 		// (autoRedownloadFailed), so the explicit search below is skipped.
 		blocklisted := r.handleCorruptReplacementBeforeSearch(corruptionID, pathID, mediaID, metadata)
+		// Otherwise, if a download stalled in the *arr queue (timed out, never
+		// imported), remove and blocklist it so the re-search grabs a different
+		// release rather than waiting on the same dead one.
+		if !blocklisted {
+			blocklisted = r.handleStalledDownloadBeforeSearch(corruptionID, pathID, mediaID, arrPath)
+		}
 
 		// Extract episode IDs from metadata first - validates data before announcing search
 		episodeIDs := extractEpisodeIDs(metadata)
@@ -400,6 +406,85 @@ func (r *RemediatorService) handleCorruptReplacementBeforeSearch(corruptionID st
 	}
 	logger.Infof("Blocklisted corrupt release %q (history %d) for %s; the *arr will grab the next-best release", sourceTitle, grabbedID, corruptionID)
 	return true
+}
+
+// lastFailureWasDownloadTimeout reports whether the most recent failure-class
+// event for an aggregate is a DownloadTimeout. This identifies a retry that
+// was triggered because a download never completed (as opposed to a corrupt
+// replacement or a search failure), so we only act on a genuinely stalled
+// download and never disturb an in-progress one.
+func (r *RemediatorService) lastFailureWasDownloadTimeout(corruptionID string) bool {
+	if r.db == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remediatorQueryTimeout)
+	defer cancel()
+	var eventType string
+	err := r.db.QueryRowContext(ctx, `
+		SELECT event_type FROM events
+		WHERE aggregate_id = ?
+		  AND event_type IN ('DownloadTimeout', 'VerificationFailed', 'SearchFailed', 'DeletionFailed', 'DownloadFailed')
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, corruptionID).Scan(&eventType)
+	if err != nil {
+		return false
+	}
+	return eventType == string(domain.DownloadTimeout)
+}
+
+// handleStalledDownloadBeforeSearch removes and blocklists a download that
+// stalled in the *arr queue (a DownloadTimeout fired and the item is still
+// queued, not imported), so the re-search grabs a different release instead of
+// waiting on the same dead one. It returns true only when it blocklisted at
+// least one queue item - the *arr then re-downloads the next-best release, so
+// the caller must NOT issue a duplicate search. On any inability to proceed
+// (not a timeout retry, nothing queued, non-auto path, dry-run, API error) it
+// returns false so the caller performs a normal search.
+func (r *RemediatorService) handleStalledDownloadBeforeSearch(corruptionID string, pathID, mediaID int64, arrPath string) bool {
+	if !r.lastFailureWasDownloadTimeout(corruptionID) {
+		return false
+	}
+
+	queueItems, err := r.arrClient.FindQueueItemsByMediaIDForPath(arrPath, mediaID)
+	if err != nil || len(queueItems) == 0 {
+		return false
+	}
+
+	autoRemediate, dryRun := r.resolveRemediationPolicy(pathID, true, false)
+	if !autoRemediate {
+		logger.Infof("Stalled download for %s but path is not auto-remediate; leaving for manual handling", corruptionID)
+		return false
+	}
+	if dryRun {
+		logger.Infof("[DRY-RUN] Would remove and blocklist %d stalled queue item(s) for %s", len(queueItems), corruptionID)
+		return false
+	}
+
+	blocklistedAny := false
+	for _, qi := range queueItems {
+		if err := r.arrClient.RemoveFromQueueByPath(arrPath, qi.ID, true, true); err != nil {
+			logger.Warnf("Stalled download for %s: failed to remove+blocklist queue item %d (%q): %v", corruptionID, qi.ID, qi.Title, err)
+			continue
+		}
+		blocklistedAny = true
+		if err := r.eventBus.Publish(domain.Event{
+			AggregateID:   corruptionID,
+			AggregateType: "corruption",
+			EventType:     domain.ReleaseBlocklisted,
+			EventData: map[string]interface{}{
+				"media_id":     mediaID,
+				"arr_path":     arrPath,
+				"queue_id":     qi.ID,
+				"source_title": qi.Title,
+				"reason":       "download_timeout",
+			},
+		}); err != nil {
+			logger.Errorf("Failed to publish ReleaseBlocklisted event for %s: %v", corruptionID, err)
+		}
+		logger.Infof("Removed and blocklisted stalled download %q (queue %d) for %s; the *arr will grab the next-best release", qi.Title, qi.ID, corruptionID)
+	}
+	return blocklistedAny
 }
 
 func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
