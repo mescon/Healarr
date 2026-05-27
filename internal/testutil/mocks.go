@@ -214,6 +214,7 @@ type MockArrClient struct {
 	GetDownloadStatusForPathFunc        func(arrPath, downloadID string) (status string, progress float64, errMsg string, err error)
 	GetRecentHistoryForMediaByPathFunc  func(arrPath string, mediaID int64, limit int) ([]integration.HistoryItemInfo, error)
 	RemoveFromQueueByPathFunc           func(arrPath string, queueID int64, removeFromClient, blocklist bool) error
+	MarkReleaseAsFailedFunc             func(arrPath string, historyID int64) error
 	RefreshMonitoredDownloadsByPathFunc func(arrPath string) error
 	GetMediaDetailsFunc                 func(mediaID int64, arrPath string) (*integration.MediaDetails, error)
 
@@ -393,6 +394,15 @@ func (m *MockArrClient) RemoveFromQueueByPath(arrPath string, queueID int64, rem
 		return m.RemoveFromQueueByPathFunc(arrPath, queueID, removeFromClient, blocklist)
 	}
 	m.unconfigured("RemoveFromQueueByPath")
+	return nil
+}
+
+func (m *MockArrClient) MarkReleaseAsFailed(arrPath string, historyID int64) error {
+	m.recordCall("MarkReleaseAsFailed", arrPath, historyID)
+	if m.MarkReleaseAsFailedFunc != nil {
+		return m.MarkReleaseAsFailedFunc(arrPath, historyID)
+	}
+	m.unconfigured("MarkReleaseAsFailed")
 	return nil
 }
 

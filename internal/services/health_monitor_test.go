@@ -104,6 +104,10 @@ func (m *mockHealthArrClient) RemoveFromQueueByPath(_ string, _ int64, _, _ bool
 	return nil
 }
 
+func (m *mockHealthArrClient) MarkReleaseAsFailed(_ string, _ int64) error {
+	return nil
+}
+
 func (m *mockHealthArrClient) RefreshMonitoredDownloadsByPath(_ string) error {
 	return nil
 }

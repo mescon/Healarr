@@ -6252,3 +6252,57 @@ func TestFindFileID(t *testing.T) {
 		}
 	})
 }
+
+func TestHTTPArrClient_MarkReleaseAsFailed_Success(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	var gotMethod, gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	encryptedKey, _ := crypto.Encrypt("key")
+	db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key, enabled) VALUES (1, 'Sonarr', 'sonarr', ?, ?, 1)`, server.URL, encryptedKey)
+	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/local/tv', '/tv', 1, 0, 0)`)
+
+	if err := client.MarkReleaseAsFailed("/tv/Show/episode.mkv", 42); err != nil {
+		t.Fatalf("MarkReleaseAsFailed: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/api/v3/history/failed/42" {
+		t.Errorf("path = %q, want /api/v3/history/failed/42", gotPath)
+	}
+}
+
+func TestHTTPArrClient_MarkReleaseAsFailed_HTTPError(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	encryptedKey, _ := crypto.Encrypt("key")
+	db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key, enabled) VALUES (1, 'Sonarr', 'sonarr', ?, ?, 1)`, server.URL, encryptedKey)
+	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/local/tv', '/tv', 1, 0, 0)`)
+
+	if err := client.MarkReleaseAsFailed("/tv/Show/episode.mkv", 42); err == nil {
+		t.Fatal("expected an error when the *arr returns a non-2xx status")
+	}
+}
+
+func TestHTTPArrClient_MarkReleaseAsFailed_InstanceNotFound(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	// No instance/scan_path configured for this path, so routing must fail.
+	if err := client.MarkReleaseAsFailed("/unknown/path/file.mkv", 42); err == nil {
+		t.Fatal("expected an error when no instance owns the path")
+	}
+}
