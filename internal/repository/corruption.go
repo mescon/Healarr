@@ -223,6 +223,35 @@ func (r *CorruptionRepository) CorruptionDetectedFileInfo(ctx context.Context, a
 	return fp.String, pathID, nil
 }
 
+// CountSuccessfulRemediationsForPath counts how many times the file at filePath
+// has been successfully remediated (reached VerificationSuccess) within the last
+// windowDays days, across all corruption aggregates for that path. The
+// remediation loop-breaker uses this: a file that keeps coming back corrupt even
+// though we have already restored it to health several times is being
+// re-corrupted by something we cannot fix by re-downloading (a transcode
+// pipeline or failing storage), so auto-remediation should pause rather than
+// thrash. The window lets a file that was healthy for a long time and then
+// breaks again start fresh.
+func (r *CorruptionRepository) CountSuccessfulRemediationsForPath(ctx context.Context, filePath string, windowDays int) (int, error) {
+	var n int
+	// windowDays is bound as a datetime modifier parameter, not interpolated.
+	modifier := fmt.Sprintf("-%d days", windowDays)
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM events vs
+		WHERE vs.event_type = 'VerificationSuccess'
+		  AND vs.created_at > datetime('now', ?)
+		  AND vs.aggregate_id IN (
+		      SELECT cd.aggregate_id FROM events cd
+		      WHERE cd.event_type = 'CorruptionDetected'
+		        AND json_extract(cd.event_data, '$.file_path') = ?
+		  )
+	`, modifier, filePath).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count successful remediations for path: %w", err)
+	}
+	return n, nil
+}
+
 // DeleteEvents removes all events for an aggregate and returns the row count.
 func (r *CorruptionRepository) DeleteEvents(ctx context.Context, aggregateID string) (int64, error) {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM events WHERE aggregate_id = ?`, aggregateID)

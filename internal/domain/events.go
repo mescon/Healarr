@@ -31,6 +31,8 @@ const (
 	MaxRetriesReached    EventType = "MaxRetriesReached"
 	SearchExhausted      EventType = "SearchExhausted"    // No replacement found - arr search returned 0 results or item vanished
 	ReleaseBlocklisted   EventType = "ReleaseBlocklisted" // A specific corrupt release was marked-as-failed (blocklisted) in the *arr
+	MonitorOverridden    EventType = "MonitorOverridden"  // Remediation temporarily changed the *arr monitored flag (records the original state to restore)
+	RemediationPaused    EventType = "RemediationPaused"  // Auto-remediation halted for a file that keeps recurring corrupt despite successful restores (likely a transcode pipeline or failing storage)
 	ScanStarted          EventType = "ScanStarted"
 	ScanCompleted        EventType = "ScanCompleted"
 	ScanFailed           EventType = "ScanFailed"
