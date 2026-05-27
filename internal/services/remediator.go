@@ -32,6 +32,7 @@ type RemediatorService struct {
 	pathMapper  integration.PathMapper
 	db          *sql.DB
 	corruptions *repository.CorruptionRepository
+	scanPaths   *repository.ScanPathRepository
 	semaphore   chan struct{} // limits concurrent remediations
 	// Lifecycle management
 	wg         sync.WaitGroup
@@ -52,8 +53,35 @@ func NewRemediatorService(eb eventbus.Publisher, arr integration.ArrClient, pm i
 	}
 	if db != nil {
 		r.corruptions = repository.NewCorruptionRepository(db)
+		r.scanPaths = repository.NewScanPathRepository(db)
 	}
 	return r
+}
+
+// remediatorQueryTimeout bounds the scan-path config lookup done before remediating.
+const remediatorQueryTimeout = 10 * time.Second
+
+// resolveRemediationPolicy returns the AUTHORITATIVE auto-remediate and dry-run
+// settings for a corruption, read from the scan path's current config rather than
+// the triggering event. The event payload is not trustworthy for this decision:
+// recovery and monitor retries hardcode auto_remediate=true (and omit dry_run),
+// and an operator may have flipped a path to manual or dry-run since the scan was
+// queued. On any doubt (no path id, path deleted, lookup error) it refuses to
+// auto-remediate, so we never delete a file without a clear, current opt-in.
+func (r *RemediatorService) resolveRemediationPolicy(pathID int64, evtAuto, evtDry bool) (autoRemediate, dryRun bool) {
+	if pathID <= 0 || r.scanPaths == nil {
+		// Legacy/edge events without a path id: honor only what the event itself
+		// claimed (never invent consent), and keep dry-run if it asked for it.
+		return evtAuto, evtDry
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remediatorQueryTimeout)
+	defer cancel()
+	sp, err := r.scanPaths.GetByID(ctx, pathID)
+	if err != nil {
+		logger.Warnf("Remediation: cannot load scan path %d; refusing to auto-remediate (safe default): %v", pathID, err)
+		return false, evtDry
+	}
+	return sp.AutoRemediate, sp.DryRun
 }
 
 // Start subscribes to corruption and retry events to begin remediation handling.
@@ -267,13 +295,20 @@ func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
 		logger.Errorf("Failed to publish RemediationQueued event: %v", err)
 	}
 
+	// Re-read the path's CURRENT auto-remediate / dry-run from the database. The
+	// event payload is not authoritative (recovery/monitor retries hardcode
+	// auto_remediate=true and drop dry_run, and the operator may have changed the
+	// setting), so deciding deletion from it could delete files on a manual-mode
+	// or dry-run path. This is the single enforcement point for both.
+	autoRemediate, dryRun := r.resolveRemediationPolicy(data.PathID, data.AutoRemediate, data.DryRun)
+
 	// Check for auto-remediation
-	if !data.AutoRemediate {
+	if !autoRemediate {
 		return
 	}
 
 	// Check for global dry-run mode override
-	dryRun := data.DryRun || config.Get().DryRunMode
+	dryRun = dryRun || config.Get().DryRunMode
 
 	if dryRun {
 		logger.Infof("Auto-remediation enabled for %s, but DRY-RUN mode is set for this path", data.FilePath)

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"errors"
 	"os"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/integration"
+	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/testutil"
 )
 
@@ -1758,5 +1760,57 @@ func TestRemediatorService_ExecuteDryRun_PublishesQueuedEvent(t *testing.T) {
 		if !ok || !dryRun {
 			t.Error("Expected dry_run=true in event data")
 		}
+	}
+}
+
+// TestRemediator_ResolveRemediationPolicy_RespectsCurrentPathConfig verifies the
+// consent/dry-run fix: the remediator decides auto-remediate and dry-run from the
+// scan path's CURRENT config, not the event payload. This is what prevents a
+// recovery/monitor retry (which hardcodes auto_remediate=true and drops dry_run)
+// from deleting a file on a manual-mode or dry-run path.
+func TestRemediator_ResolveRemediationPolicy_RespectsCurrentPathConfig(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test DB: %v", err)
+	}
+	defer db.Close()
+
+	repo := repository.NewScanPathRepository(db)
+	ctx := context.Background()
+	manualID, err := repo.Create(ctx, repository.ScanPathFields{
+		LocalPath: "/media/manual", ArrPath: "/data/manual", Enabled: true,
+		AutoRemediate: false, DryRun: false,
+		DetectionMethod: "ffprobe", DetectionMode: "quick", MaxRetries: 3,
+	})
+	if err != nil {
+		t.Fatalf("create manual path: %v", err)
+	}
+	dryID, err := repo.Create(ctx, repository.ScanPathFields{
+		LocalPath: "/media/dry", ArrPath: "/data/dry", Enabled: true,
+		AutoRemediate: true, DryRun: true,
+		DetectionMethod: "ffprobe", DetectionMode: "quick", MaxRetries: 3,
+	})
+	if err != nil {
+		t.Fatalf("create dry path: %v", err)
+	}
+
+	r := NewRemediatorService(testutil.NewMockEventBus(), &testutil.MockArrClient{}, &testutil.MockPathMapper{}, db)
+
+	// Manual path: event claims auto_remediate=true (as recovery hardcodes), but the
+	// live config says false, so we must NOT auto-remediate.
+	if auto, _ := r.resolveRemediationPolicy(manualID, true, false); auto {
+		t.Error("manual-mode path must not auto-remediate even when the event claims true")
+	}
+	// Dry-run path: live dry_run=true wins even though the (retry) event omits it.
+	if auto, dry := r.resolveRemediationPolicy(dryID, true, false); !auto || !dry {
+		t.Errorf("dry-run path: got auto=%v dry=%v, want auto=true dry=true", auto, dry)
+	}
+	// Unknown/deleted path: refuse to auto-remediate (safe default).
+	if auto, _ := r.resolveRemediationPolicy(999999, true, false); auto {
+		t.Error("unknown path must not auto-remediate")
+	}
+	// Legacy event without a path id: fall back to what the event claimed.
+	if auto, dry := r.resolveRemediationPolicy(0, true, true); !auto || !dry {
+		t.Errorf("pathID=0 fallback: got auto=%v dry=%v, want true/true", auto, dry)
 	}
 }

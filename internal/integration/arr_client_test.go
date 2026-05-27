@@ -4805,20 +4805,19 @@ func TestHTTPArrClient_GetFilePath_UnsupportedType(t *testing.T) {
 	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/local/other', '/other', 1, 0, 0)`)
 
 	_, err := client.GetFilePath(0, nil, "/other/file.mkv")
-	// With ArrType being a validated typed enum, the DB row with type='unknown'
-	// is now rejected at row-scan time by ArrType.Scan (visible in the Errorf
-	// log line we added). The row is skipped, so the caller sees "no instance
-	// found" rather than reaching the unsupported-type switch downstream.
-	// This is a stronger guarantee: invalid types never reach business logic.
+	// The scan path maps to instance 1, whose type is invalid. getInstanceForPath
+	// now selects the longest-prefix-matching instance and validates it, so an
+	// invalid owning instance surfaces as a "misconfigured" error (wrapping the
+	// "unknown ArrType" reason) rather than silently being skipped and routed
+	// elsewhere or reported as "no instance found". Invalid types never reach
+	// business logic, and we never act on a different instance.
 	if err == nil {
 		t.Error("Expected error for unknown arr type")
 	} else {
 		msg := err.Error()
-		// Accept either the new "no instance found" (post-scan-rejection) or
-		// the historical "unsupported" message if the path is ever refactored
-		// to validate type later instead of at scan.
-		if !strings.Contains(msg, "unsupported") && !strings.Contains(msg, "no instance found") {
-			t.Errorf("expected error indicating unknown ArrType (either pre-scan reject or post-switch), got: %v", err)
+		if !strings.Contains(msg, "misconfigured") && !strings.Contains(msg, "unknown ArrType") &&
+			!strings.Contains(msg, "unsupported") && !strings.Contains(msg, "no instance found") {
+			t.Errorf("expected error indicating the unknown/misconfigured ArrType, got: %v", err)
 		}
 	}
 }
@@ -6278,4 +6277,54 @@ func TestHTTPArrClient_GetSeriesDetails_InvalidJSON(t *testing.T) {
 	if details != nil {
 		t.Error("Expected nil details for invalid JSON")
 	}
+}
+
+// TestFindFileID covers the deletion-safety matching: it must never resolve to a
+// file ambiguously, since a wrong match deletes a healthy file.
+func TestFindFileID(t *testing.T) {
+	files := []genericFile{
+		{ID: 1, Path: "/data/tv/Show/Season 01/ep01.mkv"},
+		{ID: 2, Path: "/data/tv/Show/Season 01/ep02.mkv"},
+		{ID: 3, Path: "/data/tv/Show/Season 02/ep01.mkv"}, // basename collides with ID 1
+	}
+
+	t.Run("exact full-path match", func(t *testing.T) {
+		id, err := findFileID(files, "/data/tv/Show/Season 01/ep02.mkv")
+		if err != nil || id != 2 {
+			t.Fatalf("got (%d, %v), want (2, nil)", id, err)
+		}
+	})
+
+	t.Run("unique basename match across a different mount prefix", func(t *testing.T) {
+		// Healarr's path differs from the *arr's by mount prefix; ep02.mkv is unique.
+		id, err := findFileID(files, "/mnt/media/tv/Show/Season 01/ep02.mkv")
+		if err != nil || id != 2 {
+			t.Fatalf("got (%d, %v), want (2, nil)", id, err)
+		}
+	})
+
+	t.Run("ambiguous basename refuses (no exact match)", func(t *testing.T) {
+		// ep01.mkv exists in two seasons; with no exact path match this must refuse.
+		id, err := findFileID(files, "/mnt/media/tv/Show/Season 01/ep01.mkv")
+		if !errors.Is(err, errAmbiguousFileMatch) {
+			t.Fatalf("got (%d, %v), want errAmbiguousFileMatch", id, err)
+		}
+		if id != 0 {
+			t.Errorf("ambiguous match must return id 0 (no deletion), got %d", id)
+		}
+	})
+
+	t.Run("exact match wins over a colliding basename", func(t *testing.T) {
+		id, err := findFileID(files, "/data/tv/Show/Season 02/ep01.mkv")
+		if err != nil || id != 3 {
+			t.Fatalf("got (%d, %v), want (3, nil)", id, err)
+		}
+	})
+
+	t.Run("no match returns zero, no error", func(t *testing.T) {
+		id, err := findFileID(files, "/data/tv/Other/ep99.mkv")
+		if err != nil || id != 0 {
+			t.Fatalf("got (%d, %v), want (0, nil)", id, err)
+		}
+	})
 }

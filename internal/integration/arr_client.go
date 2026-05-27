@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -336,36 +337,35 @@ func (c *HTTPArrClient) getInstanceForPath(arrPath string) (*ArrInstance, error)
 		return nil, fmt.Errorf("failed to query instances: %w", err)
 	}
 
-	var bestMatch *ArrInstance
-	var longestPrefixLen int
-
-	for _, row := range rows {
+	// Pick the row with the longest matching path prefix: that instance is the
+	// rightful owner of this file. Validity is checked AFTER selecting, so an
+	// invalid best match errors out instead of silently routing the delete to a
+	// different (shorter-prefix) instance that does not own the file.
+	bestIdx := -1
+	longestPrefixLen := -1
+	for i, row := range rows {
 		if !isValidPathMatch(row.ArrPath, arrPath) {
 			continue
 		}
-
-		instance, err := arrInstanceFromRepo(row.ArrInstance)
-		if err != nil {
-			// Surfaces a bad row (typically a manual SQL insert with a
-			// typo'd type, or an undecryptable key) rather than silently
-			// producing "no instance found" downstream.
-			logger.Errorf("getInstanceForPath: skipping invalid instance: %v", err)
-			continue
-		}
-
-		pathLen := normalizedPathLength(row.ArrPath)
-		if pathLen > longestPrefixLen {
-			longestPrefixLen = pathLen
-			matched := instance
-			bestMatch = &matched
+		if l := normalizedPathLength(row.ArrPath); l > longestPrefixLen {
+			longestPrefixLen = l
+			bestIdx = i
 		}
 	}
 
-	if bestMatch == nil {
+	if bestIdx == -1 {
 		return nil, fmt.Errorf("no instance found for path: %s", arrPath)
 	}
 
-	return bestMatch, nil
+	instance, err := arrInstanceFromRepo(rows[bestIdx].ArrInstance)
+	if err != nil {
+		// The owning instance is misconfigured (e.g. undecryptable key). Refuse
+		// rather than route to a different instance, which could act on the
+		// wrong file.
+		return nil, fmt.Errorf("scan path for %s maps to a misconfigured *arr instance: %w", arrPath, err)
+	}
+
+	return &instance, nil
 }
 
 // isRetryableError checks if an error is a transient network error worth retrying
@@ -689,15 +689,46 @@ func (c *HTTPArrClient) getFilesForMedia(instance *ArrInstance, mediaID int64) (
 	return files, nil
 }
 
-// findFileIDByBasename finds a file ID by matching the basename of the path
-func findFileIDByBasename(files []genericFile, path string) int64 {
-	targetBase := filepath.Base(path)
+// errAmbiguousFileMatch is returned when more than one of an *arr media's files
+// share the target basename, so the correct file can't be identified with
+// confidence. The caller must NOT delete in that case.
+var errAmbiguousFileMatch = errors.New("ambiguous file match in *arr media; refusing to delete to avoid removing a healthy file")
+
+// findFileID resolves which of an *arr media's files corresponds to path. It is
+// deliberately conservative because a wrong answer deletes a healthy file:
+//   - First it requires an exact full-path match (unambiguous).
+//   - Failing that it accepts a UNIQUE basename match, which covers container
+//     path-mapping (Healarr's mount prefix differs from the *arr's) where the
+//     full paths differ but the filename is the same.
+//   - If multiple files share the basename it returns errAmbiguousFileMatch so
+//     the caller refuses to delete rather than guess.
+//
+// Returns (0, nil) when nothing matches (the file isn't tracked in this media).
+func findFileID(files []genericFile, path string) (int64, error) {
+	// 1. Exact full-path match.
 	for _, f := range files {
-		if filepath.Base(f.Path) == targetBase {
-			return f.ID
+		if f.Path == path {
+			return f.ID, nil
 		}
 	}
-	return 0
+	// 2. Unique basename match.
+	targetBase := filepath.Base(path)
+	var id int64
+	matches := 0
+	for _, f := range files {
+		if filepath.Base(f.Path) == targetBase {
+			id = f.ID
+			matches++
+		}
+	}
+	switch {
+	case matches == 1:
+		return id, nil
+	case matches > 1:
+		return 0, fmt.Errorf("%w: %d files share basename %q", errAmbiguousFileMatch, matches, targetBase)
+	default:
+		return 0, nil
+	}
 }
 
 // collectEpisodeMetadata fetches episode IDs for a given file ID in Sonarr/Whisparr
@@ -808,8 +839,12 @@ func (c *HTTPArrClient) DeleteFile(mediaID int64, path string) (map[string]inter
 		return nil, err
 	}
 
-	// Find file ID by basename
-	fileID := findFileIDByBasename(files, path)
+	// Resolve which file to delete. Refuse on an ambiguous match: deleting the
+	// wrong file would remove a healthy one and leave the corrupt file in place.
+	fileID, err := findFileID(files, path)
+	if err != nil {
+		return nil, err
+	}
 	if fileID == 0 {
 		return c.handleFileNotInArr(instance, mediaID, path)
 	}
