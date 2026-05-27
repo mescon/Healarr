@@ -2,8 +2,11 @@ package services
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -1812,5 +1815,241 @@ func TestRemediator_ResolveRemediationPolicy_RespectsCurrentPathConfig(t *testin
 	// Legacy event without a path id: fall back to what the event claimed.
 	if auto, dry := r.resolveRemediationPolicy(0, true, true); !auto || !dry {
 		t.Errorf("pathID=0 fallback: got auto=%v dry=%v, want true/true", auto, dry)
+	}
+}
+
+// insertVerificationFailed appends a VerificationFailed event carrying failed_paths.
+func insertVerificationFailed(t *testing.T, db *sql.DB, aggregateID string, failedPaths []string) {
+	t.Helper()
+	data, _ := json.Marshal(map[string]interface{}{
+		"failed_paths": failedPaths,
+		"failed_count": len(failedPaths),
+	})
+	_, err := db.Exec(`INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES ('corruption', ?, 'VerificationFailed', ?, 1, datetime('now'))`, aggregateID, string(data))
+	if err != nil {
+		t.Fatalf("insert VerificationFailed: %v", err)
+	}
+}
+
+func newReplacementFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "replacement.mkv")
+	if err := os.WriteFile(p, []byte("data"), 0o600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	return p
+}
+
+func grabbedHistoryFunc(id int64, title string) func(string, int64, int) ([]integration.HistoryItemInfo, error) {
+	return func(string, int64, int) ([]integration.HistoryItemInfo, error) {
+		return []integration.HistoryItemInfo{
+			{ID: id, EventType: "grabbed", Date: "2026-05-27T10:00:00Z", SourceTitle: title},
+		}, nil
+	}
+}
+
+func makeScanPath(t *testing.T, db *sql.DB, local, arr string, auto, dry bool) int64 {
+	t.Helper()
+	id, err := repository.NewScanPathRepository(db).Create(context.Background(), repository.ScanPathFields{
+		LocalPath: local, ArrPath: arr, Enabled: true,
+		AutoRemediate: auto, DryRun: dry,
+		DetectionMethod: "ffprobe", DetectionMode: "quick", MaxRetries: 3,
+	})
+	if err != nil {
+		t.Fatalf("create scan path: %v", err)
+	}
+	return id
+}
+
+func TestRemediator_HandleCorruptReplacementBeforeSearch(t *testing.T) {
+	t.Run("same-release corrupt replacement is deleted and blocklisted", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		replPath := newReplacementFile(t)
+		insertVerificationFailed(t, db, "agg1", []string{replPath})
+		pathID := makeScanPath(t, db, "/media/tv", "/data/tv", true, false)
+
+		eb := testutil.NewMockEventBus()
+		arr := &testutil.MockArrClient{
+			GetRecentHistoryForMediaByPathFunc: grabbedHistoryFunc(42, "Show.S01E01-GRP"),
+			DeleteFileFunc: func(int64, string) (map[string]interface{}, error) {
+				return map[string]interface{}{}, nil
+			},
+			MarkReleaseAsFailedFunc: func(string, int64) error { return nil },
+		}
+		pm := &testutil.MockPathMapper{ToArrPathFunc: func(string) (string, error) { return "/data/tv/repl.mkv", nil }}
+		r := NewRemediatorService(eb, arr, pm, db)
+
+		if !r.handleCorruptReplacementBeforeSearch("agg1", pathID, 123, nil) {
+			t.Fatal("expected blocklisted=true")
+		}
+		if arr.CallCount("DeleteFile") != 1 {
+			t.Errorf("DeleteFile calls = %d, want 1", arr.CallCount("DeleteFile"))
+		}
+		if arr.CallCount("MarkReleaseAsFailed") != 1 {
+			t.Errorf("MarkReleaseAsFailed calls = %d, want 1", arr.CallCount("MarkReleaseAsFailed"))
+		}
+		if eb.EventCount(domain.ReleaseBlocklisted) != 1 {
+			t.Errorf("ReleaseBlocklisted events = %d, want 1", eb.EventCount(domain.ReleaseBlocklisted))
+		}
+	})
+
+	t.Run("dry-run logs but does not delete or blocklist", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		replPath := newReplacementFile(t)
+		insertVerificationFailed(t, db, "agg1", []string{replPath})
+		pathID := makeScanPath(t, db, "/media/tv", "/data/tv", true, true) // dry-run
+
+		eb := testutil.NewMockEventBus()
+		arr := &testutil.MockArrClient{
+			GetRecentHistoryForMediaByPathFunc: grabbedHistoryFunc(42, "Show.S01E01-GRP"),
+		}
+		pm := &testutil.MockPathMapper{ToArrPathFunc: func(string) (string, error) { return "/data/tv/repl.mkv", nil }}
+		r := NewRemediatorService(eb, arr, pm, db)
+
+		if r.handleCorruptReplacementBeforeSearch("agg1", pathID, 123, nil) {
+			t.Fatal("expected false in dry-run")
+		}
+		if arr.CallCount("DeleteFile") != 0 || arr.CallCount("MarkReleaseAsFailed") != 0 {
+			t.Error("dry-run must not delete or blocklist")
+		}
+		if eb.EventCount(domain.ReleaseBlocklisted) != 0 {
+			t.Error("dry-run must not publish ReleaseBlocklisted")
+		}
+	})
+
+	t.Run("non-auto path does nothing", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		replPath := newReplacementFile(t)
+		insertVerificationFailed(t, db, "agg1", []string{replPath})
+		pathID := makeScanPath(t, db, "/media/tv", "/data/tv", false, false) // auto off
+
+		arr := &testutil.MockArrClient{}
+		r := NewRemediatorService(testutil.NewMockEventBus(), arr, &testutil.MockPathMapper{}, db)
+
+		if r.handleCorruptReplacementBeforeSearch("agg1", pathID, 123, nil) {
+			t.Fatal("expected false on non-auto path")
+		}
+		if arr.CallCount("DeleteFile") != 0 {
+			t.Error("non-auto path must not delete")
+		}
+	})
+
+	t.Run("no corrupt replacement on disk falls through", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		// VerificationFailed references a file that does not exist.
+		insertVerificationFailed(t, db, "agg1", []string{"/nonexistent/x.mkv"})
+		pathID := makeScanPath(t, db, "/media/tv", "/data/tv", true, false)
+
+		arr := &testutil.MockArrClient{}
+		r := NewRemediatorService(testutil.NewMockEventBus(), arr, &testutil.MockPathMapper{}, db)
+
+		if r.handleCorruptReplacementBeforeSearch("agg1", pathID, 123, nil) {
+			t.Fatal("expected false when no corrupt replacement is on disk")
+		}
+		if arr.CallCount("DeleteFile") != 0 {
+			t.Error("must not delete when no corrupt replacement is present")
+		}
+	})
+
+	t.Run("unresolved grabbed release falls back without deleting", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		replPath := newReplacementFile(t)
+		insertVerificationFailed(t, db, "agg1", []string{replPath})
+		pathID := makeScanPath(t, db, "/media/tv", "/data/tv", true, false)
+
+		// No GetRecentHistoryForMediaByPathFunc -> empty history -> grab id 0.
+		arr := &testutil.MockArrClient{}
+		pm := &testutil.MockPathMapper{ToArrPathFunc: func(string) (string, error) { return "/data/tv/repl.mkv", nil }}
+		r := NewRemediatorService(testutil.NewMockEventBus(), arr, pm, db)
+
+		if r.handleCorruptReplacementBeforeSearch("agg1", pathID, 123, nil) {
+			t.Fatal("expected false when the grabbed release cannot be resolved")
+		}
+		if arr.CallCount("DeleteFile") != 0 || arr.CallCount("MarkReleaseAsFailed") != 0 {
+			t.Error("must not delete or blocklist when the release is unknown")
+		}
+	})
+
+	t.Run("blocklist failure deletes but does not mark blocklisted", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		replPath := newReplacementFile(t)
+		insertVerificationFailed(t, db, "agg1", []string{replPath})
+		pathID := makeScanPath(t, db, "/media/tv", "/data/tv", true, false)
+
+		eb := testutil.NewMockEventBus()
+		arr := &testutil.MockArrClient{
+			GetRecentHistoryForMediaByPathFunc: grabbedHistoryFunc(42, "Show.S01E01-GRP"),
+			DeleteFileFunc: func(int64, string) (map[string]interface{}, error) {
+				return map[string]interface{}{}, nil
+			},
+			MarkReleaseAsFailedFunc: func(string, int64) error { return errors.New("arr 500") },
+		}
+		pm := &testutil.MockPathMapper{ToArrPathFunc: func(string) (string, error) { return "/data/tv/repl.mkv", nil }}
+		r := NewRemediatorService(eb, arr, pm, db)
+
+		if r.handleCorruptReplacementBeforeSearch("agg1", pathID, 123, nil) {
+			t.Fatal("expected false when blocklist fails (fall back to plain search)")
+		}
+		if arr.CallCount("DeleteFile") != 1 {
+			t.Errorf("DeleteFile calls = %d, want 1", arr.CallCount("DeleteFile"))
+		}
+		if eb.EventCount(domain.ReleaseBlocklisted) != 0 {
+			t.Error("must not publish ReleaseBlocklisted when blocklist fails")
+		}
+	})
+}
+
+func TestRemediator_LatestGrabbedRelease_PicksNewest(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	arr := &testutil.MockArrClient{
+		GetRecentHistoryForMediaByPathFunc: func(string, int64, int) ([]integration.HistoryItemInfo, error) {
+			return []integration.HistoryItemInfo{
+				{ID: 1, EventType: "grabbed", Date: "2026-05-20T10:00:00Z", SourceTitle: "Old-GRP"},
+				{ID: 2, EventType: "grabbed", Date: "2026-05-27T10:00:00Z", SourceTitle: "New-GRP"},
+				{ID: 3, EventType: "grabbed", Date: "2026-05-25T10:00:00Z", SourceTitle: "Mid-GRP"},
+			}, nil
+		},
+	}
+	r := NewRemediatorService(testutil.NewMockEventBus(), arr, &testutil.MockPathMapper{}, db)
+
+	id, title := r.latestGrabbedRelease("/data/tv/x.mkv", 123)
+	if id != 2 || title != "New-GRP" {
+		t.Errorf("got (%d, %q), want (2, New-GRP)", id, title)
 	}
 }

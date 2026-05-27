@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Parallel scanning**: file detection now runs across a worker pool, so large libraries scan substantially faster. The default worker count is tuned to the memory available to the container so a constrained host won't be pushed into an out-of-memory kill; override with `HEALARR_SCANNER_WORKERS` (1 to 32).
 - Configurable shutdown grace period for in-flight scans via `HEALARR_SCANNER_SHUTDOWN_TIMEOUT` (default 30s).
 - Defense-in-depth HTTP security headers on all responses (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`).
+- **Corrupt releases are now blocklisted instead of re-grabbed.** When a downloaded replacement is itself corrupt, Healarr deletes it, marks that specific release as failed in Sonarr/Radarr so the same release is not grabbed again, and lets the *arr fetch the next-best release. The original corruption still gets one grace re-search first (a single bad download is not always the release's fault); blocklisting kicks in only once a replacement comes back corrupt. Bounded by the path's retry limit, after which the item is flagged for attention.
 
 ### Changed
 - Faster database writes during scans: SQLite now uses `synchronous=NORMAL` under WAL (still corruption-safe), and per-file scan-progress updates no longer hit the durable event store.
@@ -23,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Startup recovery of an interrupted deletion now uses a thorough (stream-level) health check** instead of a quick header-only check, so a file with stream corruption is no longer prematurely marked resolved.
 - **Re-search now refuses to fall back to a whole-series search.** When the specific episode cannot be identified, Healarr no longer issues a series-wide search that could re-download every missing episode; the attempt is surfaced instead.
 - **Active-corruption lookups no longer collide across sibling library roots.** A path like `/media/TV` previously matched `/media/TV-Archive`; lookups now require a path boundary.
+- **A verified-corrupt replacement is now actually re-remediated.** Previously, a retry after a failed verification only re-searched without removing the corrupt file; because the *arr will not replace a file that is still present, the item could stall. The retry now deletes the corrupt replacement before re-searching.
 - Live log and scan-progress updates no longer drop messages under load (WebSocket delivery rework).
 - A paused scan could fail to resume if the resume signal raced with the scan loop; resume is now reliable.
 

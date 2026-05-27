@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"os"
 	"sync"
 	"time"
 
@@ -216,6 +217,13 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 			return
 		}
 
+		// If a verified-corrupt replacement is still on disk, delete it and
+		// blocklist the release that produced it before re-searching, so the
+		// *arr does not simply re-grab the same corrupt release. When a release
+		// is blocklisted the *arr triggers its own re-download
+		// (autoRedownloadFailed), so the explicit search below is skipped.
+		blocklisted := r.handleCorruptReplacementBeforeSearch(corruptionID, pathID, mediaID, metadata)
+
 		// Extract episode IDs from metadata first - validates data before announcing search
 		episodeIDs := extractEpisodeIDs(metadata)
 
@@ -234,14 +242,14 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 			logger.Errorf("Failed to publish SearchStarted event: %v", err)
 		}
 
-		err := r.arrClient.TriggerSearch(mediaID, arrPath, episodeIDs)
-		if err != nil {
-			logger.Errorf("Retry search failed for media %d: %v", mediaID, err)
-			r.publishError(corruptionID, domain.SearchFailed, err.Error())
-			return
+		if !blocklisted {
+			if err := r.arrClient.TriggerSearch(mediaID, arrPath, episodeIDs); err != nil {
+				logger.Errorf("Retry search failed for media %d: %v", mediaID, err)
+				r.publishError(corruptionID, domain.SearchFailed, err.Error())
+				return
+			}
+			logger.Infof("Retry search triggered successfully for %s (media ID: %d)", filePath, mediaID)
 		}
-
-		logger.Infof("Retry search triggered successfully for %s (media ID: %d)", filePath, mediaID)
 
 		// Publish search completed with enriched event data - critical event, use retry
 		eventData := r.buildSearchEventData(filePath, arrPath, mediaID, pathID, metadata, true)
@@ -254,6 +262,144 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 			logger.Errorf("Failed to publish SearchCompleted event after retries: %v", err)
 		}
 	})
+}
+
+// corruptReplacementPaths returns the local paths of a verified-corrupt
+// replacement that is still on disk for this corruption, or nil. A corrupt
+// replacement exists when the latest VerificationFailed event lists failed
+// paths that still exist on disk. This distinguishes a corrupt re-download
+// (which we must delete and blocklist) from a search or download failure where
+// no replacement file is present (a plain search retry is correct there).
+func (r *RemediatorService) corruptReplacementPaths(corruptionID string) []string {
+	if r.corruptions == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remediatorQueryTimeout)
+	defer cancel()
+	raw, err := r.corruptions.LatestEventData(ctx, corruptionID, string(domain.VerificationFailed), "DESC")
+	if err != nil {
+		return nil
+	}
+	var data struct {
+		FailedPaths []string `json:"failed_paths"`
+	}
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return nil
+	}
+	var present []string
+	for _, p := range data.FailedPaths {
+		if p == "" {
+			continue
+		}
+		if _, statErr := os.Stat(p); statErr == nil {
+			present = append(present, p)
+		}
+	}
+	return present
+}
+
+// latestGrabbedRelease returns the *arr history record ID and source title of
+// the most recent grabbed release for a media item - the release that produced
+// the file currently on disk. GetRecentHistoryForMediaByPath already filters to
+// "grabbed" events; we pick the newest by date. Returns (0, "") if it cannot be
+// resolved, which callers treat as "cannot blocklist, fall back to a search".
+func (r *RemediatorService) latestGrabbedRelease(arrPath string, mediaID int64) (int64, string) {
+	items, err := r.arrClient.GetRecentHistoryForMediaByPath(arrPath, mediaID, 10)
+	if err != nil || len(items) == 0 {
+		return 0, ""
+	}
+	newest := items[0]
+	newestTime, _ := time.Parse(time.RFC3339, newest.Date)
+	for _, item := range items[1:] {
+		if t, perr := time.Parse(time.RFC3339, item.Date); perr == nil && t.After(newestTime) {
+			newest, newestTime = item, t
+		}
+	}
+	return newest.ID, newest.SourceTitle
+}
+
+// handleCorruptReplacementBeforeSearch deletes a verified-corrupt replacement
+// that is still on disk and blocklists the *arr release that produced it, so the
+// re-search does not grab the same corrupt release again. It returns true only
+// when it blocklisted a release - in that case the *arr triggers its own
+// re-download (autoRedownloadFailed) and the caller must NOT issue a duplicate
+// search. On any inability to proceed (no corrupt replacement, non-auto path,
+// dry-run, unresolvable release, delete/blocklist error) it returns false so the
+// caller performs a normal search, never leaving a destructive half-state.
+func (r *RemediatorService) handleCorruptReplacementBeforeSearch(corruptionID string, pathID, mediaID int64, _ map[string]interface{}) bool {
+	paths := r.corruptReplacementPaths(corruptionID)
+	if len(paths) == 0 {
+		return false
+	}
+
+	// Re-read the authoritative auto-remediate / dry-run policy for this path.
+	autoRemediate, dryRun := r.resolveRemediationPolicy(pathID, true, false)
+	if !autoRemediate {
+		logger.Infof("Corrupt replacement present for %s but path is not auto-remediate; leaving for manual handling", corruptionID)
+		return false
+	}
+
+	localPath := paths[0]
+	arrPath, err := r.pathMapper.ToArrPath(localPath)
+	if err != nil {
+		logger.Errorf("Corrupt replacement for %s: cannot map path %s: %v", corruptionID, localPath, err)
+		return false
+	}
+
+	grabbedID, sourceTitle := r.latestGrabbedRelease(arrPath, mediaID)
+	if grabbedID <= 0 {
+		logger.Warnf("Corrupt replacement for %s: could not resolve grabbed release for %s; falling back to a plain search", corruptionID, arrPath)
+		return false
+	}
+
+	if dryRun {
+		logger.Infof("[DRY-RUN] Would delete corrupt replacement %s and blocklist release %q (history %d) for %s", localPath, sourceTitle, grabbedID, corruptionID)
+		return false
+	}
+
+	// Delete the corrupt replacement via the *arr API.
+	if _, err := r.arrClient.DeleteFile(mediaID, arrPath); err != nil {
+		logger.Errorf("Corrupt replacement for %s: failed to delete %s: %v", corruptionID, arrPath, err)
+		r.publishError(corruptionID, domain.DeletionFailed, err.Error())
+		return false
+	}
+	if err := r.eventBus.PublishWithRetry(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.DeletionCompleted,
+		EventData: map[string]interface{}{
+			"media_id":            mediaID,
+			"file_path":           localPath,
+			"source_title":        sourceTitle,
+			"grabbed_history_id":  grabbedID,
+			"corrupt_replacement": true,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish DeletionCompleted for corrupt replacement %s: %v", corruptionID, err)
+	}
+
+	// Blocklist the release so the *arr grabs a different one. markAsFailed also
+	// triggers the *arr's own re-download when autoRedownloadFailed is enabled.
+	if err := r.arrClient.MarkReleaseAsFailed(arrPath, grabbedID); err != nil {
+		logger.Warnf("Corrupt replacement for %s: blocklist of release %q (history %d) failed: %v; falling back to a plain search", corruptionID, sourceTitle, grabbedID, err)
+		return false
+	}
+	if err := r.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.ReleaseBlocklisted,
+		EventData: map[string]interface{}{
+			"media_id":     mediaID,
+			"file_path":    localPath,
+			"arr_path":     arrPath,
+			"source_title": sourceTitle,
+			"history_id":   grabbedID,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish ReleaseBlocklisted event for %s: %v", corruptionID, err)
+	}
+	logger.Infof("Blocklisted corrupt release %q (history %d) for %s; the *arr will grab the next-best release", sourceTitle, grabbedID, corruptionID)
+	return true
 }
 
 func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
