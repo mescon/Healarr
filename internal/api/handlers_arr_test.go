@@ -88,6 +88,14 @@ func (m *mockArrClient) MarkReleaseAsFailed(_ string, _ int64) error {
 	return nil
 }
 
+func (m *mockArrClient) IsMonitored(_ string, _ int64) (bool, error) {
+	return false, nil
+}
+
+func (m *mockArrClient) SetMonitored(_ string, _ int64, _ bool) error {
+	return nil
+}
+
 func (m *mockArrClient) RefreshMonitoredDownloadsByPath(_ string) error {
 	return nil
 }
