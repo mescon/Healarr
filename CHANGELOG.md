@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Files on a temporarily-unavailable mount or network share are no longer mistaken for corruption**, preventing deletion of healthy files when a mount drops mid-scan. Mount/network errors are now classified by OS error code, so this also holds on non-English systems.
+- **Deletion now refuses to act on an ambiguous match.** If the corrupt file can't be identified unambiguously in the *arr media (for example two files share a name), or the owning *arr instance is misconfigured, the remediation fails and is retried instead of risking deletion of a healthy file. An exact path match is preferred, with a unique-basename match as the only fallback.
+- **Per-path `auto_remediate` and dry-run settings are now honored on retries and on startup recovery.** Previously a corruption re-triggered after a restart could delete a file on a path configured as manual or dry-run; the remediator now re-reads the path's current settings before acting.
 - Live log and scan-progress updates no longer drop messages under load (WebSocket delivery rework).
 - A paused scan could fail to resume if the resume signal raced with the scan loop; resume is now reliable.
 
