@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.2] - 2026-05-28
 
 ### Added
 - **Unmonitored items are now re-acquired during remediation.** If a corrupt file belongs to an item the *arr has unmonitored (for example a transcode pipeline like Tdarr unmonitored it to protect its output), Healarr now temporarily monitors it so the *arr can grab and import a healthy replacement, then restores the original monitored state. Previously such an item was deleted but never re-acquired, leaving you with nothing.
