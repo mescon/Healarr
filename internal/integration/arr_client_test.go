@@ -749,15 +749,16 @@ func TestHTTPArrClient_TriggerSearch_Sonarr_NoEpisodes(t *testing.T) {
 	db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key, enabled) VALUES (1, 'Sonarr', 'sonarr', ?, ?, 1)`, server.URL, encryptedKey)
 	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/local/tv', '/tv', 1, 0, 0)`)
 
-	// No episode IDs - should fallback to MissingEpisodeSearch
+	// No episode IDs: TriggerSearch must refuse a whole-series search rather than
+	// re-download every missing episode in the series.
 	err := client.TriggerSearch(456, "/tv/Test Show/Season 01/episode.mkv", nil)
-	if err != nil {
-		t.Fatalf("TriggerSearch failed: %v", err)
+	if err == nil {
+		t.Fatal("TriggerSearch should refuse a whole-series search when no episode IDs are provided")
 	}
 
-	// Verify fallback to MissingEpisodeSearch
-	if receivedPayload["name"] != "MissingEpisodeSearch" {
-		t.Errorf("Expected MissingEpisodeSearch command, got %v", receivedPayload["name"])
+	// And it must not have sent any search command.
+	if receivedPayload["name"] != nil {
+		t.Errorf("Expected no search command to be sent, got %v", receivedPayload["name"])
 	}
 }
 
@@ -1011,14 +1012,13 @@ func TestHTTPArrClient_DeleteFile_NotFoundInArr(t *testing.T) {
 	db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key, enabled) VALUES (1, 'Radarr', 'radarr', ?, ?, 1)`, server.URL, encryptedKey)
 	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/local/movies', '/movies', 1, 0, 0)`)
 
-	// Since the file doesn't exist on disk either (no file created), should get "already_deleted"
-	metadata, err := client.DeleteFile(123, "/movies/Nonexistent Movie/movie.mkv")
-	if err != nil {
-		t.Fatalf("DeleteFile should succeed when file not found: %v", err)
-	}
-
-	if metadata["already_deleted"] != true {
-		t.Error("Expected already_deleted=true")
+	// A file that isn't tracked in the arr cannot be remediated via the API.
+	// DeleteFile must return an error rather than fabricate an "already deleted"
+	// success, which would let the remediator trigger a search while a corrupt
+	// file may still be on disk.
+	_, err := client.DeleteFile(123, "/movies/Nonexistent Movie/movie.mkv")
+	if err == nil {
+		t.Fatal("DeleteFile should return an error when the file is not tracked in the arr")
 	}
 }
 
@@ -4716,7 +4716,7 @@ func TestHTTPArrClient_TriggerSearch_Series(t *testing.T) {
 	db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key, enabled) VALUES (1, 'Sonarr', 'sonarr', ?, ?, 1)`, server.URL, encryptedKey)
 	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/local/tv', '/tv', 1, 0, 0)`)
 
-	err := client.TriggerSearch(99, "/tv/Show/episode.mkv", nil)
+	err := client.TriggerSearch(99, "/tv/Show/episode.mkv", []int64{42})
 	if err != nil {
 		t.Fatalf("TriggerSearch failed: %v", err)
 	}
@@ -5963,111 +5963,35 @@ func TestHTTPArrClient_GetEpisodeDetails_NonSonarrInstance(t *testing.T) {
 // HandleFileNotInArr tests
 // =============================================================================
 
-func TestHTTPArrClient_HandleFileNotInArr_FileExistsOnDisk(t *testing.T) {
+// handleFileNotInArr must always return an error. A file not tracked in the arr
+// cannot be remediated via its API, and Healarr never deletes from disk itself,
+// so fabricating an "already deleted" success would let the remediator publish
+// DeletionCompleted and trigger a search while a corrupt file may still remain.
+func TestHTTPArrClient_HandleFileNotInArr_AlwaysErrors(t *testing.T) {
 	client, db := setupTestClient(t)
 	defer db.Close()
 
-	// Create a temporary file that exists
-	tmpFile, err := os.CreateTemp("", "test-file-*.mkv")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
+	cases := []struct {
+		name     string
+		instance *ArrInstance
+		path     string
+	}{
+		{"radarr", &ArrInstance{Type: "radarr"}, "/movies/Some Movie/movie.mkv"},
+		{"sonarr", &ArrInstance{Type: "sonarr"}, "/tv/Show/Season 01/episode.mkv"},
 	}
-	tmpPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(tmpPath)
-
-	instance := &ArrInstance{
-		Type: "radarr",
-	}
-
-	// Should return error because file exists on disk but not in arr
-	_, err = client.handleFileNotInArr(instance, 123, tmpPath)
-	if err == nil {
-		t.Error("Expected error when file exists on disk but not in arr")
-	}
-	if !strings.Contains(err.Error(), "file not found in radarr but exists on disk") {
-		t.Errorf("Expected error message about file existing on disk, got: %v", err)
-	}
-}
-
-func TestHTTPArrClient_HandleFileNotInArr_MovieAlreadyDeleted(t *testing.T) {
-	client, db := setupTestClient(t)
-	defer db.Close()
-
-	// Use a temp dir path that doesn't exist - this ensures os.Stat returns os.ErrNotExist
-	tmpDir := t.TempDir()
-	nonExistentPath := filepath.Join(tmpDir, "does_not_exist.mkv")
-
-	instance := &ArrInstance{
-		Type: "radarr",
-	}
-
-	metadata, err := client.handleFileNotInArr(instance, 456, nonExistentPath)
-	if err != nil {
-		t.Fatalf("handleFileNotInArr() unexpected error: %v", err)
-	}
-
-	if metadata == nil {
-		t.Fatal("Expected non-nil metadata")
-	}
-	if metadata["already_deleted"] != true {
-		t.Error("Expected already_deleted to be true")
-	}
-	if metadata["deleted_path"] != nonExistentPath {
-		t.Errorf("Expected deleted_path %q, got %v", nonExistentPath, metadata["deleted_path"])
-	}
-	if metadata["movie_id"] != int64(456) {
-		t.Errorf("Expected movie_id 456, got %v", metadata["movie_id"])
-	}
-}
-
-func TestHTTPArrClient_HandleFileNotInArr_SeriesAlreadyDeleted(t *testing.T) {
-	client, db := setupTestClient(t)
-	defer db.Close()
-
-	// Create mock server for Sonarr
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return empty episode list when querying for episodes
-		if strings.Contains(r.URL.Path, "/episode") {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("[]"))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	// Insert Sonarr instance
-	_, err := db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key) VALUES (1, 'TestSonarr', 'sonarr', ?, 'test-key')`, server.URL)
-	if err != nil {
-		t.Fatalf("Failed to insert test instance: %v", err)
-	}
-
-	// Use a temp dir path that doesn't exist - this ensures os.Stat returns os.ErrNotExist
-	tmpDir := t.TempDir()
-	nonExistentPath := filepath.Join(tmpDir, "show", "episode.mkv")
-
-	instance := &ArrInstance{
-		ID:     1,
-		Type:   "sonarr",
-		URL:    server.URL,
-		APIKey: "test-key",
-	}
-
-	metadata, err := client.handleFileNotInArr(instance, 789, nonExistentPath)
-	if err != nil {
-		t.Fatalf("handleFileNotInArr() unexpected error: %v", err)
-	}
-
-	if metadata == nil {
-		t.Fatal("Expected non-nil metadata")
-	}
-	if metadata["already_deleted"] != true {
-		t.Error("Expected already_deleted to be true")
-	}
-	// For series, should have search_all_missing since no episodes found
-	if metadata["search_all_missing"] != true {
-		t.Error("Expected search_all_missing to be true when episodes not found")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			metadata, err := client.handleFileNotInArr(tc.instance, 123, tc.path)
+			if err == nil {
+				t.Fatal("Expected an error when the file is not tracked in the arr")
+			}
+			if metadata != nil {
+				t.Errorf("Expected nil metadata on error, got %v", metadata)
+			}
+			if !strings.Contains(err.Error(), "cannot remediate via API") {
+				t.Errorf("Unexpected error message: %v", err)
+			}
+		})
 	}
 }
 
