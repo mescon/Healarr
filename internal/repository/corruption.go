@@ -223,6 +223,38 @@ func (r *CorruptionRepository) CorruptionDetectedFileInfo(ctx context.Context, a
 	return fp.String, pathID, nil
 }
 
+// LatestDeletionGrabInfo extracts the source_title and grabbed_history_id that
+// the remediator records on the most recent DeletionCompleted event for an
+// aggregate. These identify the release that produced the file just deleted, so
+// a later retry can tell whether the *arr re-grabbed the same release (and
+// should blocklist it). Returns ErrNotFound if there is no such event or it has
+// no source_title (e.g. events written before this field existed, or when the
+// grab record could not be resolved at deletion time). The history ID may be 0
+// even when a source_title is present; callers must guard before using it.
+func (r *CorruptionRepository) LatestDeletionGrabInfo(ctx context.Context, aggregateID string) (sourceTitle string, historyID int64, err error) {
+	var st sql.NullString
+	var hid sql.NullInt64
+	err = r.db.QueryRowContext(ctx, `
+		SELECT
+			json_extract(event_data, '$.source_title'),
+			json_extract(event_data, '$.grabbed_history_id')
+		FROM events
+		WHERE aggregate_id = ? AND event_type = 'DeletionCompleted'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, aggregateID).Scan(&st, &hid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, ErrNotFound
+	}
+	if err != nil {
+		return "", 0, fmt.Errorf("query latest deletion grab info: %w", err)
+	}
+	if !st.Valid || st.String == "" {
+		return "", 0, ErrNotFound
+	}
+	return st.String, hid.Int64, nil
+}
+
 // DeleteEvents removes all events for an aggregate and returns the row count.
 func (r *CorruptionRepository) DeleteEvents(ctx context.Context, aggregateID string) (int64, error) {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM events WHERE aggregate_id = ?`, aggregateID)

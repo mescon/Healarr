@@ -358,6 +358,42 @@ func TestCorruptionRepository_ListActiveFilePathsUnderRoot(t *testing.T) {
 	}
 }
 
+func TestCorruptionRepository_LatestDeletionGrabInfo(t *testing.T) {
+	t.Parallel()
+	db := newCorruptionTestDB(t)
+	repo := NewCorruptionRepository(db)
+	now := time.Now().UTC()
+
+	// Two DeletionCompleted events: the latest (by created_at) must win.
+	appendEvent(t, db, "agg1", "DeletionCompleted", `{"source_title":"Old.Release-GRP","grabbed_history_id":11}`, now)
+	appendEvent(t, db, "agg1", "DeletionCompleted", `{"source_title":"New.Release-GRP","grabbed_history_id":42}`, now.Add(time.Minute))
+
+	st, hid, err := repo.LatestDeletionGrabInfo(context.Background(), "agg1")
+	if err != nil {
+		t.Fatalf("LatestDeletionGrabInfo: %v", err)
+	}
+	if st != "New.Release-GRP" || hid != 42 {
+		t.Errorf("got (%q, %d), want (New.Release-GRP, 42)", st, hid)
+	}
+
+	// A source_title present but history_id absent: still returns the title, id 0.
+	appendEvent(t, db, "agg-noid", "DeletionCompleted", `{"source_title":"Only.Title-GRP"}`, now)
+	if st, hid, err := repo.LatestDeletionGrabInfo(context.Background(), "agg-noid"); err != nil || st != "Only.Title-GRP" || hid != 0 {
+		t.Errorf("no-id case: got (%q, %d, %v), want (Only.Title-GRP, 0, nil)", st, hid, err)
+	}
+
+	// DeletionCompleted without source_title (old-format event) -> ErrNotFound.
+	appendEvent(t, db, "agg2", "DeletionCompleted", `{"deleted_path":"/x.mkv"}`, now)
+	if _, _, err := repo.LatestDeletionGrabInfo(context.Background(), "agg2"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing source_title: got %v, want ErrNotFound", err)
+	}
+
+	// No DeletionCompleted event at all -> ErrNotFound.
+	if _, _, err := repo.LatestDeletionGrabInfo(context.Background(), "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("no event: got %v, want ErrNotFound", err)
+	}
+}
+
 func TestCorruptionRepository_CountDetectedByDay(t *testing.T) {
 	t.Parallel()
 	db := newCorruptionTestDB(t)
