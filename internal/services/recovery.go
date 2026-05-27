@@ -317,7 +317,10 @@ func (r *RecoveryService) recoverEarlyRemediationState(item staleItem) string {
 		// Check if file still exists on disk
 		localPath := r.getLocalPath(item)
 		if r.detector != nil {
-			healthy, _ := r.detector.Check(localPath, "quick")
+			// Use a thorough check here: this decision can mark the corruption
+			// resolved, so a quick (header-only) check could pass a file whose
+			// stream is still corrupt and prematurely stop remediation.
+			healthy, _ := r.detector.Check(localPath, "thorough")
 			if healthy {
 				// File still exists and is healthy - corruption may have been a false positive
 				logger.Infof("Recovery: %s in DeletionStarted but file is healthy, marking resolved", item.FilePath)

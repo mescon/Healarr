@@ -780,34 +780,15 @@ func (c *HTTPArrClient) deleteFileByID(instance *ArrInstance, fileID int64) erro
 	return nil
 }
 
-// handleFileNotInArr handles the case where a file is not found in the arr instance
-func (c *HTTPArrClient) handleFileNotInArr(instance *ArrInstance, mediaID int64, path string) (map[string]interface{}, error) {
-	// Check if file exists on disk
-	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		return nil, fmt.Errorf("file not found in %s but exists on disk: %s", instance.Type, path)
-	}
-
-	// File is gone from both arr and disk - treat as already deleted
-	logger.Infof("File already deleted (not in %s and not on disk): %s", instance.Type, path)
-
-	metadata := map[string]interface{}{
-		"deleted_path":    path,
-		"already_deleted": true,
-	}
-
-	if isSeriesType(instance) {
-		episodeIDs, err := c.findMissingEpisodesForPath(instance, mediaID, path)
-		if err == nil && len(episodeIDs) > 0 {
-			metadata["episode_ids"] = episodeIDs
-		} else {
-			logger.Infof("Could not determine specific episodes, will search all missing for series %d", mediaID)
-			metadata["search_all_missing"] = true
-		}
-	} else {
-		metadata["movie_id"] = mediaID
-	}
-
-	return metadata, nil
+// handleFileNotInArr handles the case where a file is not tracked in the arr
+// instance. We deliberately do NOT fabricate an "already deleted" success here.
+// On path-mapped setups the path Healarr sees is not the path on the arr's
+// filesystem, so checking the local disk is unreliable, and reporting a fake
+// success would make the remediator publish DeletionCompleted and trigger a
+// search while a corrupt file may still be present. Returning an error lets the
+// remediation fail honestly, retry, and surface to the operator instead.
+func (c *HTTPArrClient) handleFileNotInArr(instance *ArrInstance, _ int64, path string) (map[string]interface{}, error) {
+	return nil, fmt.Errorf("file not tracked in %s; cannot remediate via API: %s", instance.Type, path)
 }
 
 // buildDeleteMetadata builds metadata for a file deletion operation
@@ -1116,24 +1097,24 @@ func buildMovieSearchPayload(mediaID int64) map[string]interface{} {
 	}
 }
 
-// buildSeriesSearchPayload creates an EpisodeSearch or MissingEpisodeSearch payload.
-func buildSeriesSearchPayload(mediaID int64, episodeIDs []int64) map[string]interface{} {
-	if len(episodeIDs) > 0 {
-		intEpisodeIDs := make([]int, len(episodeIDs))
-		for i, id := range episodeIDs {
-			intEpisodeIDs[i] = int(id)
-		}
-		logger.Infof("Using EpisodeSearch for specific episode IDs: %v", intEpisodeIDs)
-		return map[string]interface{}{
-			"name":       "EpisodeSearch",
-			"episodeIds": intEpisodeIDs,
-		}
+// buildSeriesSearchPayload creates a targeted EpisodeSearch payload. It refuses
+// to fall back to a whole-series MissingEpisodeSearch: without specific episode
+// IDs that search would re-download every missing episode in the series, far
+// more than the single corrupt file we removed. Callers must surface the error
+// so the remediation retries or is flagged, rather than silently mass-searching.
+func buildSeriesSearchPayload(mediaID int64, episodeIDs []int64) (map[string]interface{}, error) {
+	if len(episodeIDs) == 0 {
+		return nil, fmt.Errorf("no episode IDs to search for series %d; refusing whole-series search to avoid re-downloading the entire series", mediaID)
 	}
-	logger.Errorf("WARNING: No episode IDs provided, falling back to MissingEpisodeSearch for series %d - this may trigger more downloads than expected", mediaID)
+	intEpisodeIDs := make([]int, len(episodeIDs))
+	for i, id := range episodeIDs {
+		intEpisodeIDs[i] = int(id)
+	}
+	logger.Infof("Using EpisodeSearch for specific episode IDs: %v", intEpisodeIDs)
 	return map[string]interface{}{
-		"name":     "MissingEpisodeSearch",
-		"seriesId": int(mediaID),
-	}
+		"name":       "EpisodeSearch",
+		"episodeIds": intEpisodeIDs,
+	}, nil
 }
 
 func (c *HTTPArrClient) TriggerSearch(mediaID int64, path string, episodeIDs []int64) error {
@@ -1147,7 +1128,10 @@ func (c *HTTPArrClient) TriggerSearch(mediaID int64, path string, episodeIDs []i
 	if isMovieType(instance) {
 		payload = buildMovieSearchPayload(mediaID)
 	} else {
-		payload = buildSeriesSearchPayload(mediaID, episodeIDs)
+		payload, err = buildSeriesSearchPayload(mediaID, episodeIDs)
+		if err != nil {
+			return err
+		}
 	}
 
 	resp, err := c.doRequest(instance, "POST", "/api/v3/command", payload)

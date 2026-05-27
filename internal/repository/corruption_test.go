@@ -340,16 +340,21 @@ func TestCorruptionRepository_ListActiveFilePathsUnderRoot(t *testing.T) {
 	appendEvent(t, db, "b", "CorruptionDetected", `{"file_path":"/movies/sub/b.mkv"}`, now)
 	// Under a different root → excluded.
 	appendEvent(t, db, "c", "CorruptionDetected", `{"file_path":"/tv/c.mkv"}`, now)
+	// Sibling root that shares the prefix → must be excluded (no path boundary).
+	appendEvent(t, db, "e", "CorruptionDetected", `{"file_path":"/movies-archive/e.mkv"}`, now)
 	// Resolved → excluded.
 	appendEvent(t, db, "d", "CorruptionDetected", `{"file_path":"/movies/d.mkv"}`, now)
 	appendEvent(t, db, "d", "VerificationSuccess", `{}`, now.Add(time.Minute))
 
-	set, err := repo.ListActiveFilePathsUnderRoot(context.Background(), "/movies")
-	if err != nil {
-		t.Fatalf("ListActiveFilePathsUnderRoot: %v", err)
-	}
-	if len(set) != 2 || !set["/movies/a.mkv"] || !set["/movies/sub/b.mkv"] {
-		t.Errorf("active set = %v, want /movies/a.mkv and /movies/sub/b.mkv", set)
+	// A trailing slash on the root must behave identically to no trailing slash.
+	for _, root := range []string{"/movies", "/movies/"} {
+		set, err := repo.ListActiveFilePathsUnderRoot(context.Background(), root)
+		if err != nil {
+			t.Fatalf("ListActiveFilePathsUnderRoot(%q): %v", root, err)
+		}
+		if len(set) != 2 || !set["/movies/a.mkv"] || !set["/movies/sub/b.mkv"] {
+			t.Errorf("active set for %q = %v, want /movies/a.mkv and /movies/sub/b.mkv", root, set)
+		}
 	}
 }
 

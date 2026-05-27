@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // CorruptionStatus is a row from the corruption_status view — the
@@ -416,11 +417,16 @@ func (r *CorruptionRepository) HasActive(ctx context.Context, filePath string) (
 // a set so the scanner can do O(1) lookups while walking a path — avoids the
 // N+1 HasActive query per file.
 func (r *CorruptionRepository) ListActiveFilePathsUnderRoot(ctx context.Context, rootPath string) (map[string]bool, error) {
+	// Match only files genuinely under rootPath by requiring a path-separator
+	// boundary ("rootPath/..."). A bare "rootPath%" prefix would also match
+	// sibling roots (e.g. "/media/TV" matching "/media/TV-Archive/..."). Trim a
+	// trailing slash first so "/media/TV/" and "/media/TV" behave identically.
+	rootPath = strings.TrimRight(rootPath, "/")
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT DISTINCT json_extract(e1.event_data, '$.file_path') as file_path
 		FROM events e1
 		WHERE e1.event_type = 'CorruptionDetected'
-		AND json_extract(e1.event_data, '$.file_path') LIKE ? || '%'
+		AND json_extract(e1.event_data, '$.file_path') LIKE ? || '/%'
 		AND e1.created_at > datetime('now', '-7 days')
 		AND NOT EXISTS (
 			SELECT 1 FROM events e2
