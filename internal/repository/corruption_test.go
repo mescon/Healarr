@@ -358,6 +358,40 @@ func TestCorruptionRepository_ListActiveFilePathsUnderRoot(t *testing.T) {
 	}
 }
 
+func TestCorruptionRepository_CountSuccessfulRemediationsForPath(t *testing.T) {
+	t.Parallel()
+	db := newCorruptionTestDB(t)
+	repo := NewCorruptionRepository(db)
+	now := time.Now().UTC()
+	const target = "/movies/x.mkv"
+
+	// Two successful remediations of the target within the window.
+	appendEvent(t, db, "a1", "CorruptionDetected", `{"file_path":"/movies/x.mkv"}`, now.Add(-2*time.Hour))
+	appendEvent(t, db, "a1", "VerificationSuccess", `{}`, now.Add(-2*time.Hour+time.Minute))
+	appendEvent(t, db, "a2", "CorruptionDetected", `{"file_path":"/movies/x.mkv"}`, now.Add(-time.Hour))
+	appendEvent(t, db, "a2", "VerificationSuccess", `{}`, now.Add(-time.Hour+time.Minute))
+	// Old success for the target, outside a 30-day window.
+	appendEvent(t, db, "a3", "CorruptionDetected", `{"file_path":"/movies/x.mkv"}`, now.Add(-60*24*time.Hour))
+	appendEvent(t, db, "a3", "VerificationSuccess", `{}`, now.Add(-60*24*time.Hour))
+	// Success for a different path -> excluded.
+	appendEvent(t, db, "a4", "CorruptionDetected", `{"file_path":"/movies/other.mkv"}`, now)
+	appendEvent(t, db, "a4", "VerificationSuccess", `{}`, now)
+	// Target corruption still in progress (no success) -> not counted.
+	appendEvent(t, db, "a5", "CorruptionDetected", `{"file_path":"/movies/x.mkv"}`, now)
+
+	if n, err := repo.CountSuccessfulRemediationsForPath(context.Background(), target, 30); err != nil || n != 2 {
+		t.Errorf("within 30d: got (%d, %v), want (2, nil)", n, err)
+	}
+	// Widening the window to 90 days pulls in the old success too.
+	if n, err := repo.CountSuccessfulRemediationsForPath(context.Background(), target, 90); err != nil || n != 3 {
+		t.Errorf("within 90d: got (%d, %v), want (3, nil)", n, err)
+	}
+	// A path with no successful remediations.
+	if n, err := repo.CountSuccessfulRemediationsForPath(context.Background(), "/movies/none.mkv", 30); err != nil || n != 0 {
+		t.Errorf("unknown path: got (%d, %v), want (0, nil)", n, err)
+	}
+}
+
 func TestCorruptionRepository_CountDetectedByDay(t *testing.T) {
 	t.Parallel()
 	db := newCorruptionTestDB(t)
