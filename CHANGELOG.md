@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Thorough health checks are now tunable for slow codecs (AV1) and large files.** Three new env vars:
+  - `HEALARR_HEALTH_CHECK_THOROUGH_TIMEOUT` (default `10m`) - raise this if scans repeatedly time out and end up parked in the rescan queue.
+  - `HEALARR_HEALTH_CHECK_THOROUGH_DURATION` (default `0`, no limit) - when set (e.g. `60s`), the thorough decode walks only the first N seconds via ffmpeg `-t`. Catches header errors, codec-init errors, decode errors at the start, and files that will not open at all; trades completeness for speed.
+  - `HEALARR_HEALTH_CHECK_HWACCEL` (default `auto`) - opportunistic ffmpeg hardware acceleration. Probes `ffmpeg -hwaccels` once and adds `-hwaccel auto` if any accelerator is reported; falls back silently to software on hosts without one. `off` to disable, `<name>` (e.g. `cuda`, `vaapi`, `videotoolbox`) to force a specific one.
+
+### Fixed
+- **`/corruptions` with the "All" filter no longer crashes with a database scan error.** The notifier was publishing every `NotificationSent`/`NotificationFailed` with a hardcoded `aggregate_type="corruption"`, so notifications fired for non-corruption events (e.g. a Pushover alert for `SystemHealthDegraded`) leaked into `corruption_summary` as stray rows with `NULL file_path`. Loading the corruptions page with no filter included them and tripped a `converting NULL to string` scan error. The notifier now propagates the source event's aggregate type, defaults defensively to `"notification"` if missing (never `"corruption"`), and a migration cleans up any rows already polluted while tightening the `corruption_status` view as belt-and-braces.
+
 ## [1.3.2] - 2026-05-28
 
 ### Added

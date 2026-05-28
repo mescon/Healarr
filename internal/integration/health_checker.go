@@ -11,8 +11,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/safego"
 )
@@ -219,6 +221,68 @@ type CmdHealthChecker struct {
 	FFmpegPath    string
 	MediaInfoPath string
 	HandBrakePath string
+
+	// Hardware-acceleration args for ffmpeg thorough/content checks, resolved
+	// once at first use from HEALARR_HEALTH_CHECK_HWACCEL. Empty when "off" or
+	// when no accelerator is available on this host (opportunistic).
+	hwAccelArgs []string
+	hwAccelOnce sync.Once
+}
+
+// hwAccelArgsResolved returns the cached "-hwaccel ..." args, probing ffmpeg
+// the first time if needed. Returns an empty slice when hardware acceleration
+// is unavailable or disabled - callers can safely append it to any args list.
+func (hc *CmdHealthChecker) hwAccelArgsResolved() []string {
+	hc.hwAccelOnce.Do(func() {
+		hc.hwAccelArgs = resolveHwAccelArgs(hc.FFmpegPath, config.Get().HealthCheckHwAccel)
+	})
+	return hc.hwAccelArgs
+}
+
+// resolveHwAccelArgs translates HEALARR_HEALTH_CHECK_HWACCEL into the actual
+// ffmpeg args to use. Split out so it can be tested without a real ffmpeg.
+//   - "off"    -> []
+//   - "auto"   -> probe ffmpeg -hwaccels; ["-hwaccel","auto"] iff any GPU
+//     accelerator is reported (anything other than "none"); else []
+//   - "<name>" -> ["-hwaccel","<name>"] (operator opted in to a specific one)
+func resolveHwAccelArgs(ffmpegPath, setting string) []string {
+	switch setting {
+	case "", "off":
+		return nil
+	case "auto":
+		if probeHwAccelAvailable(ffmpegPath) {
+			logger.Infof("Health check: ffmpeg hardware acceleration detected, enabling -hwaccel auto")
+			return []string{"-hwaccel", "auto"}
+		}
+		logger.Debugf("Health check: no ffmpeg hardware acceleration available, scans will use software decode")
+		return nil
+	default:
+		logger.Infof("Health check: ffmpeg hardware acceleration forced via config: -hwaccel %s", setting)
+		return []string{"-hwaccel", setting}
+	}
+}
+
+// probeHwAccelAvailable runs "ffmpeg -hide_banner -hwaccels" and reports
+// whether any GPU accelerator is listed (anything other than "none"). Any
+// failure (binary missing, exec error) is treated as "no accel available" so
+// the caller silently falls back to software decode.
+func probeHwAccelAvailable(ffmpegPath string) bool {
+	cmd := exec.Command(ffmpegPath, "-hide_banner", "-hwaccels")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" || strings.Contains(strings.ToLower(name), "hardware acceleration methods") {
+			continue
+		}
+		if strings.ToLower(name) == "none" {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // NewHealthChecker creates a health checker with default binary paths (uses PATH lookup).
@@ -736,8 +800,15 @@ func (hc *CmdHealthChecker) AnalyzeContent(path string) (bool, *HealthCheckError
 		return true, nil
 	}
 
-	// Build ffmpeg command with appropriate filters
-	ffmpegArgs := []string{"-nostats", "-v", "info", "-i", path}
+	// Build ffmpeg command with appropriate filters. Hardware-accel args go
+	// FIRST (they are input options); the optional duration limit "-t N" is
+	// also an input option and must precede "-i".
+	cfg := config.Get()
+	ffmpegArgs := append([]string{"-nostats", "-v", "info"}, hc.hwAccelArgsResolved()...)
+	if cfg.HealthCheckThoroughDuration > 0 {
+		ffmpegArgs = append(ffmpegArgs, "-t", strconv.FormatFloat(cfg.HealthCheckThoroughDuration.Seconds(), 'f', -1, 64))
+	}
+	ffmpegArgs = append(ffmpegArgs, "-i", path)
 
 	var vf []string
 	if info.HasVideo {
@@ -758,7 +829,7 @@ func (hc *CmdHealthChecker) AnalyzeContent(path string) (bool, *HealthCheckError
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	timeout := 10 * time.Minute
+	timeout := cfg.HealthCheckThoroughTimeout
 	done := make(chan error, 1)
 	safego.Run("content-analysis-cmd", func() {
 		done <- cmd.Run()
