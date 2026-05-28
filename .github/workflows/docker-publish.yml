@@ -42,12 +42,18 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # :latest is set by the TAG run (only when the new tag is the highest
+          # semver), not the main-branch run, so the binary embedded in :latest
+          # always has the matching VERSION string (e.g. v1.3.2). Pre-releases
+          # like v1.4.0-beta1, and hotfix tags for older versions, correctly do
+          # not move :latest. Users tracking trunk can still use :main / :<sha>.
+          flavor: |
+            latest=auto
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Get version for build
         id: version
