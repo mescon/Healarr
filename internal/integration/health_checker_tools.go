@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/safego"
 )
@@ -22,21 +24,23 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 	var cmdName string
 
 	if mode == ModeThorough {
-		// Thorough mode: Use ffmpeg to decode the entire file and check for stream corruption
-		// This catches issues that header-only checks miss (mid-file corruption, bad frames, etc.)
-		// -xerror makes ffmpeg exit on first decode error
-		// -f null - outputs to null device (no output file needed)
+		// Thorough mode: Use ffmpeg to decode the file and check for stream
+		// corruption. Catches issues that header-only checks miss (mid-file
+		// corruption, bad frames, etc.). -xerror exits on first decode error.
+		// "-f null -" discards output. Hardware-accel args go first (they are
+		// input options). When HEALARR_HEALTH_CHECK_THOROUGH_DURATION > 0 we
+		// also inject "-t <seconds>" so the decode walks only the prefix - far
+		// faster on slow codecs like AV1, at the cost of not catching mid/late
+		// corruption (a trade the operator opts into).
 		cmdPath = hc.FFmpegPath
 		cmdName = "ffmpeg"
-		args = []string{"-v", "error", argXError, "-i", path, "-f", "null", "-"}
-
-		// Insert custom args before -i (if any)
-		if len(customArgs) > 0 {
-			newArgs := []string{"-v", "error", argXError}
-			newArgs = append(newArgs, customArgs...)
-			newArgs = append(newArgs, "-i", path, "-f", "null", "-")
-			args = newArgs
+		cfg := config.Get()
+		args = append([]string{"-v", "error", argXError}, hc.hwAccelArgsResolved()...)
+		if cfg.HealthCheckThoroughDuration > 0 {
+			args = append(args, "-t", strconv.FormatFloat(cfg.HealthCheckThoroughDuration.Seconds(), 'f', -1, 64))
 		}
+		args = append(args, customArgs...)
+		args = append(args, "-i", path, "-f", "null", "-")
 	} else {
 		// Quick mode (default): Use ffprobe to check container structure and stream headers
 		// Fast and reliable for detecting obvious corruption
@@ -57,10 +61,13 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	// Thorough mode needs much longer timeout since it decodes entire file
+	// Thorough mode needs a much longer timeout since it decodes (some or all
+	// of) the file. The thorough cap is configurable via
+	// HEALARR_HEALTH_CHECK_THOROUGH_TIMEOUT (raise it for slow codecs / large
+	// files, or shrink it once you have set THOROUGH_DURATION to a short prefix).
 	timeout := 30 * time.Second
 	if mode == ModeThorough {
-		timeout = 10 * time.Minute // Large files can take a while to fully decode
+		timeout = config.Get().HealthCheckThoroughTimeout
 	}
 
 	done := make(chan error, 1)
@@ -102,7 +109,7 @@ func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []strin
 		// Thorough mode: Full scan with preview analysis
 		// --previews 10:0 generates 10 previews at different points to verify stream integrity
 		args = []string{argScan, argPreviews, "10:0", "-i", path}
-		timeout = 10 * time.Minute
+		timeout = config.Get().HealthCheckThoroughTimeout
 	} else {
 		// Quick mode: Basic container scan
 		args = []string{argScan, "-i", path}

@@ -54,6 +54,29 @@ type Config struct {
 	// VerificationInterval is the polling interval when checking for file replacement (default: 30s)
 	VerificationInterval time.Duration
 
+	// HealthCheckThoroughTimeout bounds a single thorough-mode ffmpeg/ffprobe/HandBrake
+	// run and the post-pass AnalyzeContent ffmpeg run. A full-file decode of a long
+	// AV1 movie can easily exceed the default; raise this if scans repeatedly time
+	// out and end up parked in the rescan queue (default: 10m).
+	HealthCheckThoroughTimeout time.Duration
+
+	// HealthCheckThoroughDuration, when > 0, limits ffmpeg thorough/content checks
+	// to the first N of the input via "-t". A short prefix decode catches header
+	// errors, decode errors at the start, and files that will not open at all;
+	// it does NOT catch mid- or late-file corruption. Use this to trade
+	// completeness for scan speed (default: 0, no limit = decode whole file).
+	HealthCheckThoroughDuration time.Duration
+
+	// HealthCheckHwAccel controls ffmpeg hardware acceleration for thorough +
+	// content checks:
+	//   "auto"   - probe ffmpeg -hwaccels once; if any GPU accelerator is
+	//              present, pass "-hwaccel auto" (default).
+	//   "off"    - never pass -hwaccel.
+	//   "<name>" - pass "-hwaccel <name>" explicitly (e.g. "cuda", "vaapi").
+	// Opportunistic: a system without any accelerator silently falls back to
+	// software, scans still work.
+	HealthCheckHwAccel string
+
 	// StaleThreshold is how long an item must be in an active state with no updates
 	// before it's considered stale and eligible for recovery (default: 24h)
 	// This accounts for downloads that may wait for unpacking, seeding, or queue delays
@@ -249,26 +272,29 @@ func Load() *Config {
 	}
 
 	cfg = &Config{
-		Port:                 getEnvOrDefault("HEALARR_PORT", "3090"),
-		BasePath:             basePath,
-		BasePathSource:       basePathSource,
-		LogLevel:             strings.ToLower(getEnvOrDefault("HEALARR_LOG_LEVEL", "info")),
-		VerificationTimeout:  getEnvDurationOrDefault("HEALARR_VERIFICATION_TIMEOUT", 72*time.Hour),
-		VerificationInterval: getEnvDurationOrDefault("HEALARR_VERIFICATION_INTERVAL", 30*time.Second),
-		StaleThreshold:       getEnvDurationOrDefault("HEALARR_STALE_THRESHOLD", 24*time.Hour),
-		DefaultMaxRetries:    getEnvIntOrDefault("HEALARR_DEFAULT_MAX_RETRIES", 3),
-		DryRunMode:           getEnvBoolOrDefault("HEALARR_DRY_RUN", false),
-		ArrRateLimitRPS:      getEnvFloatOrDefault("HEALARR_ARR_RATE_LIMIT_RPS", 5.0),
-		ArrRateLimitBurst:    getEnvIntOrDefault("HEALARR_ARR_RATE_LIMIT_BURST", 10),
-		RetentionDays:        getEnvIntOrDefault("HEALARR_RETENTION_DAYS", 90),
-		DataDir:              dataDir,
-		DatabasePath:         dbPath,
-		LogDir:               logDir,
-		WebDir:               webDir,
-		FFprobePath:          getEnvOrDefault("HEALARR_FFPROBE_PATH", "ffprobe"),
-		FFmpegPath:           getEnvOrDefault("HEALARR_FFMPEG_PATH", "ffmpeg"),
-		MediaInfoPath:        getEnvOrDefault("HEALARR_MEDIAINFO_PATH", "mediainfo"),
-		HandBrakePath:        getEnvOrDefault("HEALARR_HANDBRAKE_PATH", "HandBrakeCLI"),
+		Port:                        getEnvOrDefault("HEALARR_PORT", "3090"),
+		BasePath:                    basePath,
+		BasePathSource:              basePathSource,
+		LogLevel:                    strings.ToLower(getEnvOrDefault("HEALARR_LOG_LEVEL", "info")),
+		VerificationTimeout:         getEnvDurationOrDefault("HEALARR_VERIFICATION_TIMEOUT", 72*time.Hour),
+		VerificationInterval:        getEnvDurationOrDefault("HEALARR_VERIFICATION_INTERVAL", 30*time.Second),
+		StaleThreshold:              getEnvDurationOrDefault("HEALARR_STALE_THRESHOLD", 24*time.Hour),
+		HealthCheckThoroughTimeout:  getEnvDurationOrDefault("HEALARR_HEALTH_CHECK_THOROUGH_TIMEOUT", 10*time.Minute),
+		HealthCheckThoroughDuration: getEnvDurationOrDefault("HEALARR_HEALTH_CHECK_THOROUGH_DURATION", 0),
+		HealthCheckHwAccel:          strings.ToLower(getEnvOrDefault("HEALARR_HEALTH_CHECK_HWACCEL", "auto")),
+		DefaultMaxRetries:           getEnvIntOrDefault("HEALARR_DEFAULT_MAX_RETRIES", 3),
+		DryRunMode:                  getEnvBoolOrDefault("HEALARR_DRY_RUN", false),
+		ArrRateLimitRPS:             getEnvFloatOrDefault("HEALARR_ARR_RATE_LIMIT_RPS", 5.0),
+		ArrRateLimitBurst:           getEnvIntOrDefault("HEALARR_ARR_RATE_LIMIT_BURST", 10),
+		RetentionDays:               getEnvIntOrDefault("HEALARR_RETENTION_DAYS", 90),
+		DataDir:                     dataDir,
+		DatabasePath:                dbPath,
+		LogDir:                      logDir,
+		WebDir:                      webDir,
+		FFprobePath:                 getEnvOrDefault("HEALARR_FFPROBE_PATH", "ffprobe"),
+		FFmpegPath:                  getEnvOrDefault("HEALARR_FFMPEG_PATH", "ffmpeg"),
+		MediaInfoPath:               getEnvOrDefault("HEALARR_MEDIAINFO_PATH", "mediainfo"),
+		HandBrakePath:               getEnvOrDefault("HEALARR_HANDBRAKE_PATH", "HandBrakeCLI"),
 	}
 
 	// Validate log level
@@ -329,26 +355,29 @@ func SetForTesting(c *Config) {
 // NewTestConfig returns a minimal Config suitable for unit tests.
 func NewTestConfig() *Config {
 	return &Config{
-		Port:                 "8080",
-		BasePath:             "/",
-		BasePathSource:       "test",
-		LogLevel:             "debug",
-		VerificationTimeout:  72 * time.Hour,
-		VerificationInterval: 30 * time.Second,
-		StaleThreshold:       24 * time.Hour,
-		DefaultMaxRetries:    3,
-		DryRunMode:           false,
-		ArrRateLimitRPS:      5,
-		ArrRateLimitBurst:    10,
-		RetentionDays:        90,
-		DataDir:              "/tmp/healarr-test",
-		DatabasePath:         "/tmp/healarr-test/healarr.db",
-		LogDir:               "/tmp/healarr-test/logs",
-		WebDir:               "",
-		FFprobePath:          "ffprobe",
-		FFmpegPath:           "ffmpeg",
-		MediaInfoPath:        "mediainfo",
-		HandBrakePath:        "HandBrakeCLI",
+		Port:                        "8080",
+		BasePath:                    "/",
+		BasePathSource:              "test",
+		LogLevel:                    "debug",
+		VerificationTimeout:         72 * time.Hour,
+		VerificationInterval:        30 * time.Second,
+		StaleThreshold:              24 * time.Hour,
+		HealthCheckThoroughTimeout:  10 * time.Minute,
+		HealthCheckThoroughDuration: 0,
+		HealthCheckHwAccel:          "off",
+		DefaultMaxRetries:           3,
+		DryRunMode:                  false,
+		ArrRateLimitRPS:             5,
+		ArrRateLimitBurst:           10,
+		RetentionDays:               90,
+		DataDir:                     "/tmp/healarr-test",
+		DatabasePath:                "/tmp/healarr-test/healarr.db",
+		LogDir:                      "/tmp/healarr-test/logs",
+		WebDir:                      "",
+		FFprobePath:                 "ffprobe",
+		FFmpegPath:                  "ffmpeg",
+		MediaInfoPath:               "mediainfo",
+		HandBrakePath:               "HandBrakeCLI",
 	}
 }
 

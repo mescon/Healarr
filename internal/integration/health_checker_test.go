@@ -1629,3 +1629,43 @@ func TestParseDurations_SilenceDetect(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveHwAccelArgs(t *testing.T) {
+	// A non-existent ffmpeg path makes probeHwAccelAvailable return false,
+	// which is what we need to test the "auto + no accelerator" branch
+	// without depending on the host's ffmpeg.
+	const missingFfmpeg = "/nonexistent/ffmpeg-for-test"
+
+	tests := []struct {
+		name    string
+		setting string
+		ffmpeg  string
+		want    []string
+	}{
+		{"off disables hwaccel", "off", missingFfmpeg, nil},
+		{"empty disables hwaccel", "", missingFfmpeg, nil},
+		{"auto with no probe success falls back to nil", "auto", missingFfmpeg, nil},
+		{"explicit cuda is honored", "cuda", missingFfmpeg, []string{"-hwaccel", "cuda"}},
+		{"explicit vaapi is honored", "vaapi", missingFfmpeg, []string{"-hwaccel", "vaapi"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveHwAccelArgs(tt.ffmpeg, tt.setting)
+			if !hwAccelSlicesEqual(got, tt.want) {
+				t.Errorf("resolveHwAccelArgs(%q, %q) = %v, want %v", tt.ffmpeg, tt.setting, got, tt.want)
+			}
+		})
+	}
+}
+
+func hwAccelSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
