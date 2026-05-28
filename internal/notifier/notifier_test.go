@@ -16,6 +16,7 @@ import (
 
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
+	"github.com/mescon/Healarr/internal/testutil"
 )
 
 // =============================================================================
@@ -2696,25 +2697,65 @@ func TestNotifier_PublishNotificationEvent(t *testing.T) {
 
 	t.Run("does nothing with empty aggregateID", func(t *testing.T) {
 		// Should not panic or insert anything
-		n.publishNotificationEvent("", domain.NotificationSent, "Discord", "CorruptionDetected", "")
+		n.publishNotificationEvent("", "corruption", domain.NotificationSent, "Discord", "CorruptionDetected", "")
 		// Success = no panic (early return when aggregateID is empty)
 	})
 
 	t.Run("calls publish with NotificationSent event", func(t *testing.T) {
 		// Verifies the function doesn't error/panic when called with valid data
 		// The actual persistence is tested in eventbus tests
-		n.publishNotificationEvent("corruption-789", domain.NotificationSent, "Discord", "CorruptionDetected", "")
+		n.publishNotificationEvent("corruption-789", "corruption", domain.NotificationSent, "Discord", "CorruptionDetected", "")
 		// Success = no panic
 	})
 
 	t.Run("calls publish with NotificationFailed event", func(t *testing.T) {
-		n.publishNotificationEvent("corruption-456", domain.NotificationFailed, "Telegram", "VerificationSuccess", "connection refused")
+		n.publishNotificationEvent("corruption-456", "corruption", domain.NotificationFailed, "Telegram", "VerificationSuccess", "connection refused")
 		// Success = no panic
 	})
 
 	t.Run("handles empty error message", func(t *testing.T) {
-		n.publishNotificationEvent("corruption-111", domain.NotificationFailed, "Slack", "DownloadStarted", "")
+		n.publishNotificationEvent("corruption-111", "corruption", domain.NotificationFailed, "Slack", "DownloadStarted", "")
 		// Success = no panic
+	})
+
+}
+
+// TestNotifier_PublishNotificationEvent_AggregateTypePropagation is the
+// regression test for the corruption_summary pollution bug: notifications for
+// non-corruption events (e.g. a SystemHealthDegraded on the "health"
+// aggregate) used to be published with AggregateType hardcoded to "corruption",
+// which the corruption_summary trigger then dutifully inserted as stray rows
+// with NULL file_path - making the /corruptions "All" filter crash on the
+// scan. Uses MockEventBus to avoid the real eventbus's events-table persistence
+// in this test fixture.
+func TestNotifier_PublishNotificationEvent_AggregateTypePropagation(t *testing.T) {
+	t.Run("non-corruption aggregateType propagates", func(t *testing.T) {
+		eb := testutil.NewMockEventBus()
+		n := &Notifier{eb: eb}
+		n.publishNotificationEvent("database_pool", "health", domain.NotificationSent, "Pushover", "SystemHealthDegraded", "")
+		evs := eb.GetEvents(domain.NotificationSent)
+		if len(evs) != 1 {
+			t.Fatalf("got %d NotificationSent events, want 1", len(evs))
+		}
+		if evs[0].AggregateType != "health" {
+			t.Errorf("AggregateType = %q, want %q (must NOT be hardcoded 'corruption')", evs[0].AggregateType, "health")
+		}
+	})
+
+	t.Run("missing aggregateType falls back to 'notification', never 'corruption'", func(t *testing.T) {
+		eb := testutil.NewMockEventBus()
+		n := &Notifier{eb: eb}
+		n.publishNotificationEvent("agg-x", "", domain.NotificationFailed, "Telegram", "SomeEvent", "boom")
+		evs := eb.GetEvents(domain.NotificationFailed)
+		if len(evs) != 1 {
+			t.Fatalf("got %d NotificationFailed events, want 1", len(evs))
+		}
+		if evs[0].AggregateType == "corruption" {
+			t.Error("AggregateType defaulted to 'corruption'; must default to 'notification' to avoid corruption_summary pollution")
+		}
+		if evs[0].AggregateType != "notification" {
+			t.Errorf("AggregateType = %q, want %q", evs[0].AggregateType, "notification")
+		}
 	})
 }
 
