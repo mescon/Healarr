@@ -285,6 +285,49 @@ func (r *ScanRepository) MarkAborted(ctx context.Context, scanID int64, errorMes
 	return nil
 }
 
+// MarkCancelled records a user-initiated cancellation. The "AND completed_at IS
+// NULL" guard makes this a no-op for a scan that has already finished (benign
+// race between cancel and completion) so we never clobber a real terminal
+// state. Returns true iff a row was updated, so callers can distinguish "no
+// such scan" from "scan was already done" for error reporting.
+func (r *ScanRepository) MarkCancelled(ctx context.Context, scanID int64, reason string) (bool, error) {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE scans SET status = 'cancelled', completed_at = datetime('now'), error_message = ?
+		WHERE id = ? AND completed_at IS NULL
+	`, reason, scanID)
+	if err != nil {
+		return false, fmt.Errorf("mark scan cancelled: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("mark scan cancelled rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
+// MarkOrphansCancelled is the startup reconciliation: any row left in an
+// active state ("running"/"enumerating"/"scanning") that does not belong to
+// this process's in-memory activeScans is the residue of a hard restart
+// (SIGKILL/OOM/crash) that prevented MarkInterrupted from running. Mark them
+// cancelled so they disappear from /scans and Dashboard instead of looking
+// like live work forever. "paused" and "interrupted" are deliberately spared:
+// those are legitimate resumable states the user (or graceful shutdown) put
+// the scan into. Returns the number of rows updated.
+func (r *ScanRepository) MarkOrphansCancelled(ctx context.Context) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE scans
+		SET status = 'cancelled',
+		    completed_at = datetime('now'),
+		    error_message = 'abandoned on Healarr restart'
+		WHERE completed_at IS NULL
+		  AND status IN ('running', 'enumerating', 'scanning')
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("mark orphan scans cancelled: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // UpdateProgress updates the live current_file_index and files_scanned
 // counters during a running scan.
 func (r *ScanRepository) UpdateProgress(ctx context.Context, scanID int64, currentFileIndex, filesScanned int) error {
