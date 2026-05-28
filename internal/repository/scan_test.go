@@ -355,3 +355,94 @@ func mustExecScan(t *testing.T, db *sql.DB, query string, args ...interface{}) {
 		t.Fatalf("exec %q: %v", query, err)
 	}
 }
+
+func TestScanRepository_MarkCancelled(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	// Active row gets cancelled.
+	id, _ := repo.Create(ctx, CreateScanParams{Path: "/a", PathID: 1, TotalFiles: 10, FileListJSON: "[]"})
+	ok, err := repo.MarkCancelled(ctx, id, "user cancel")
+	if err != nil || !ok {
+		t.Fatalf("MarkCancelled active: got (%v, %v), want (true, nil)", ok, err)
+	}
+	var status, errMsg string
+	var completedAt sql.NullString
+	_ = db.QueryRow(`SELECT status, error_message, completed_at FROM scans WHERE id = ?`, id).Scan(&status, &errMsg, &completedAt)
+	if status != "cancelled" || errMsg != "user cancel" || !completedAt.Valid {
+		t.Errorf("active row: status/msg/completed = %q/%q/%v, want cancelled/user cancel/non-null", status, errMsg, completedAt)
+	}
+
+	// Already-terminal row is a no-op (guard prevents clobbering completion).
+	done, _ := repo.Create(ctx, CreateScanParams{Path: "/b", PathID: 1, TotalFiles: 5, FileListJSON: "[]"})
+	if err := repo.Finalize(ctx, done, "completed", 5); err != nil {
+		t.Fatalf("Finalize setup: %v", err)
+	}
+	ok, err = repo.MarkCancelled(ctx, done, "should not apply")
+	if err != nil || ok {
+		t.Errorf("MarkCancelled terminal: got (%v, %v), want (false, nil)", ok, err)
+	}
+	var doneStatus string
+	_ = db.QueryRow(`SELECT status FROM scans WHERE id = ?`, done).Scan(&doneStatus)
+	if doneStatus != "completed" {
+		t.Errorf("terminal row was clobbered: status = %q, want completed", doneStatus)
+	}
+
+	// Nonexistent id is a no-op (false, no error).
+	ok, err = repo.MarkCancelled(ctx, 999999, "nope")
+	if err != nil || ok {
+		t.Errorf("MarkCancelled nonexistent: got (%v, %v), want (false, nil)", ok, err)
+	}
+}
+
+func TestScanRepository_MarkOrphansCancelled(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	// Two orphans in active statuses, plus one each in paused / interrupted /
+	// completed - only the two orphans must be touched.
+	running, _ := repo.Create(ctx, CreateScanParams{Path: "/run", PathID: 1, TotalFiles: 10, FileListJSON: "[]"})
+	mustExecScan(t, db, `UPDATE scans SET status='running' WHERE id = ?`, running)
+	enumerating, _ := repo.Create(ctx, CreateScanParams{Path: "/enum", PathID: 1, TotalFiles: 10, FileListJSON: "[]"})
+	mustExecScan(t, db, `UPDATE scans SET status='enumerating' WHERE id = ?`, enumerating)
+	paused, _ := repo.Create(ctx, CreateScanParams{Path: "/pause", PathID: 1, TotalFiles: 10, FileListJSON: "[]"})
+	if err := repo.MarkPaused(ctx, paused, 3); err != nil {
+		t.Fatalf("MarkPaused setup: %v", err)
+	}
+	interrupted, _ := repo.Create(ctx, CreateScanParams{Path: "/intr", PathID: 1, TotalFiles: 10, FileListJSON: "[]"})
+	if err := repo.MarkInterrupted(ctx, interrupted, 5); err != nil {
+		t.Fatalf("MarkInterrupted setup: %v", err)
+	}
+	completed, _ := repo.Create(ctx, CreateScanParams{Path: "/done", PathID: 1, TotalFiles: 10, FileListJSON: "[]"})
+	if err := repo.Finalize(ctx, completed, "completed", 10); err != nil {
+		t.Fatalf("Finalize setup: %v", err)
+	}
+
+	n, err := repo.MarkOrphansCancelled(ctx)
+	if err != nil || n != 2 {
+		t.Fatalf("MarkOrphansCancelled: got (%d, %v), want (2, nil)", n, err)
+	}
+
+	check := func(id int64, want string) {
+		var got string
+		_ = db.QueryRow(`SELECT status FROM scans WHERE id = ?`, id).Scan(&got)
+		if got != want {
+			t.Errorf("scan %d: status = %q, want %q", id, got, want)
+		}
+	}
+	check(running, "cancelled")
+	check(enumerating, "cancelled")
+	check(paused, "paused")           // spared
+	check(interrupted, "interrupted") // spared
+	check(completed, "completed")     // untouched
+
+	// Idempotent: a second call finds nothing to cancel.
+	n, err = repo.MarkOrphansCancelled(ctx)
+	if err != nil || n != 0 {
+		t.Errorf("MarkOrphansCancelled (second call): got (%d, %v), want (0, nil)", n, err)
+	}
+}

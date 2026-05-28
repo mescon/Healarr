@@ -1886,18 +1886,66 @@ func (s *ScannerService) IsPathBeingScanned(path string) bool {
 	return false
 }
 
-// CancelScan cancels an ongoing scan
-func (s *ScannerService) CancelScan(scanID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// ReconcileOrphanScans is the startup hook: any DB row left in an active
+// status ("running"/"enumerating"/"scanning") at this point cannot belong to
+// this process (activeScans is empty until the first scan starts), so it must
+// be the residue of a previous hard restart that prevented MarkInterrupted
+// from running. Mark those rows cancelled so they disappear from /scans and
+// Dashboard instead of looking like live work forever. "paused" and
+// "interrupted" are deliberately spared (legitimate resumable states).
+// Idempotent: a fresh DB or a previously-reconciled DB results in 0 updates.
+func (s *ScannerService) ReconcileOrphanScans() {
+	if s.scanRepo() == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	n, err := s.scanRepo().MarkOrphansCancelled(ctx)
+	if err != nil {
+		logger.Warnf("ReconcileOrphanScans: failed to clean orphan rows: %v", err)
+		return
+	}
+	if n > 0 {
+		logger.Infof("ReconcileOrphanScans: marked %d orphan scan row(s) cancelled (residue of a previous hard restart)", n)
+	}
+}
 
+// CancelScan cancels a scan. It signals the in-memory ctx if the scan is
+// actually running in this process AND persists "cancelled" to the DB row,
+// so the page reflects the new state on reload. Both halves run regardless
+// of which is reachable: a live in-process scan + a stale "running" row left
+// by a previous hard restart both deserve to be cleaned up by Cancel. Returns
+// an error only when neither half found anything (no such scan id anywhere).
+func (s *ScannerService) CancelScan(scanID string) error {
+	// 1. Signal the in-memory scan to stop, if it is running in this process.
+	s.mu.Lock()
 	scan, exists := s.activeScans[scanID]
-	if !exists {
-		return fmt.Errorf("scan not found")
+	if exists && scan.cancel != nil {
+		scan.cancel()
+	}
+	s.mu.Unlock()
+
+	// 2. Persist the cancellation to the DB. Before this, the in-memory
+	//    ctx.cancel was the only signal of cancellation, and the scan loop's
+	//    exit path did not write a "cancelled" status, so /scans would still
+	//    show the row as "running" on reload (and the Dashboard's "Scan
+	//    cancelled" toast was misleading). Doing the UPDATE here also cleans
+	//    up stale rows from a previous hard restart where there is nothing
+	//    to signal in memory.
+	dbID, parseErr := strconv.ParseInt(scanID, 10, 64)
+	updated := false
+	if parseErr == nil && s.scanRepo() != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		ok, err := s.scanRepo().MarkCancelled(ctx, dbID, "cancelled by user")
+		if err != nil {
+			logger.Warnf("CancelScan: failed to persist cancellation for scan %s: %v", scanID, err)
+		}
+		updated = ok
 	}
 
-	if scan.cancel != nil {
-		scan.cancel()
+	if !exists && !updated {
+		return fmt.Errorf("scan not found")
 	}
 	return nil
 }

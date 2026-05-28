@@ -252,6 +252,11 @@ func initCoreServices(
 	logger.Infof("Initializing core services...")
 
 	scannerService := services.NewScannerService(sqlDB, eb, healthChecker, pathMapper)
+	// Mark any scan rows left in an active status by a previous hard restart
+	// (SIGKILL/OOM/crash) as cancelled, so they do not appear forever as live
+	// work in /scans and Dashboard. Paused/interrupted rows are left alone -
+	// those are legitimate resumable states.
+	scannerService.ReconcileOrphanScans()
 	logger.Infof("✓ Scanner Service (detects corrupted files)")
 
 	remediatorService := services.NewRemediatorService(eb, arrClient, pathMapper, sqlDB)
