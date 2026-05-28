@@ -408,13 +408,22 @@ func (n *Notifier) Start() error {
 	for _, event := range events {
 		eventType := domain.EventType(event) // Capture for closure
 		n.eb.Subscribe(eventType, func(ev domain.Event) {
-			// Ensure aggregate_id is included in data for proper event correlation
+			// Ensure aggregate_id and aggregate_type are included in data for
+			// proper event correlation. aggregate_type is critical: the
+			// NotificationSent/Failed event published downstream inherits it, and
+			// the corruption_summary trigger keys off it. Hardcoding "corruption"
+			// here previously caused notifications fired for non-corruption
+			// aggregates (e.g. health events like SystemHealthDegraded) to leak
+			// into corruption_summary as stray, file_path-less rows.
 			data := ev.EventData
 			if data == nil {
 				data = make(map[string]interface{})
 			}
 			if ev.AggregateID != "" {
 				data["aggregate_id"] = ev.AggregateID
+			}
+			if ev.AggregateType != "" {
+				data["aggregate_type"] = ev.AggregateType
 			}
 			n.handleEvent(string(eventType), data)
 		})
@@ -437,8 +446,17 @@ func (n *Notifier) Stop() {
 	n.wg.Wait()
 }
 
-// SendSystemHealthDegraded sends a notification when system health is degraded
+// SendSystemHealthDegraded sends a notification when system health is degraded.
+// This path bypasses the event-bus subscription, so it must set aggregate_type
+// explicitly; otherwise the downstream NotificationSent would be tagged as a
+// corruption event and leak into corruption_summary.
 func (n *Notifier) SendSystemHealthDegraded(data map[string]interface{}) {
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+	if _, ok := data["aggregate_type"]; !ok {
+		data["aggregate_type"] = "health"
+	}
 	n.handleEvent(string(domain.SystemHealthDegraded), data)
 }
 
@@ -606,6 +624,7 @@ func (n *Notifier) sendNotification(cfg *NotificationConfig, eventType string, d
 
 	// Log result and publish to EventBus for timeline
 	aggregateID := n.extractAggregateID(data)
+	aggregateType := extractAggregateType(data)
 	providerLabel := n.getProviderLabel(cfg.ProviderType)
 
 	if err != nil {
@@ -616,7 +635,7 @@ func (n *Notifier) sendNotification(cfg *NotificationConfig, eventType string, d
 		// throttle window open so the next event can try again.
 		logger.Errorf("Failed to send notification %d: %v", cfg.ID, err)
 		n.logNotification(cfg.ID, eventType, message, "failed", err.Error())
-		n.publishNotificationEvent(aggregateID, domain.NotificationFailed, providerLabel, eventType, err.Error())
+		n.publishNotificationEvent(aggregateID, aggregateType, domain.NotificationFailed, providerLabel, eventType, err.Error())
 		return
 	}
 
@@ -627,13 +646,32 @@ func (n *Notifier) sendNotification(cfg *NotificationConfig, eventType string, d
 
 	logger.Debugf("Sent notification %d for event %s", cfg.ID, eventType)
 	n.logNotification(cfg.ID, eventType, message, "sent", "")
-	n.publishNotificationEvent(aggregateID, domain.NotificationSent, providerLabel, eventType, "")
+	n.publishNotificationEvent(aggregateID, aggregateType, domain.NotificationSent, providerLabel, eventType, "")
 }
 
-// publishNotificationEvent publishes notification success/failure events to the event bus
-func (n *Notifier) publishNotificationEvent(aggregateID string, eventType domain.EventType, provider, triggerEvent, errMsg string) {
+// extractAggregateType reads the source event's aggregate_type from data (set
+// by the subscription handler in Start). Returns "" if missing so callers can
+// apply a sensible default.
+func extractAggregateType(data map[string]interface{}) string {
+	if v, ok := data["aggregate_type"].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// publishNotificationEvent publishes notification success/failure events to the
+// event bus. aggregateType must come from the source event being notified about
+// (e.g. "corruption" for CorruptionDetected, "health" for SystemHealthDegraded).
+// If it is empty (a defensive fallback, not a normal path), we default to
+// "notification" - never "corruption" - so a notification that lost its origin
+// type does not leak into corruption_summary as a stray row.
+func (n *Notifier) publishNotificationEvent(aggregateID, aggregateType string, eventType domain.EventType, provider, triggerEvent, errMsg string) {
 	if aggregateID == "" {
 		return
+	}
+
+	if aggregateType == "" {
+		aggregateType = "notification"
 	}
 
 	eventData := map[string]interface{}{
@@ -645,7 +683,7 @@ func (n *Notifier) publishNotificationEvent(aggregateID string, eventType domain
 	}
 
 	if err := n.eb.Publish(domain.Event{
-		AggregateType: "corruption",
+		AggregateType: aggregateType,
 		AggregateID:   aggregateID,
 		EventType:     eventType,
 		EventData:     eventData,
