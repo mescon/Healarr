@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Docker image now ships a custom ffmpeg with NVIDIA codec support baked in.** The stock Alpine `apk` ffmpeg was compiled without NVDEC/NVENC/CUVID, so AV1 files always fell back to software decode (`libdav1d`) even on hosts with an NVIDIA GPU passed through. The image now bundles a from-source ffmpeg 7.1.1 built with `--enable-cuda --enable-cuvid --enable-nvdec --enable-nvenc --enable-vaapi`, so AV1 / HEVC / H.264 hardware decode and encode all work when `/dev/nvidia*` (NVIDIA Container Toolkit) or `/dev/dri` (VAAPI / Intel QSV / AMD) is exposed to the container. Runtime ABI shim (`gcompat`) is included so the musl-linked ffmpeg can dlopen the glibc NVIDIA libraries the Container Toolkit injects. Image size: 371 MB (was 249 MB).
+
+### Fixed
+- **Hardware acceleration probe no longer claims success on hosts that only expose an emulated VGA.** When `HEALARR_HEALTH_CHECK_HWACCEL=auto`, the probe used to accept any ffmpeg whose build advertised hwaccels, even inside a VM where the only "GPU" is QEMU/Bochs emulated VGA (PCI vendor `0x1234`) with no decode hardware behind it. Healarr would then add `-hwaccel auto` to every command, ffmpeg would silently fall back to software, and AV1 thorough checks would time out. The probe now also verifies that at least one credible GPU device is exposed to the container (`/dev/nvidiactl`, or a `/dev/dri/renderD*` whose sysfs vendor is not `0x1234`) and logs a clear warning otherwise so the misconfiguration is obvious from the logs.
+
 ## [1.3.3] - 2026-05-29
 
 ### Added
