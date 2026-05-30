@@ -1669,3 +1669,136 @@ func hwAccelSlicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// =============================================================================
+// hwAccelDeviceAvailable tests
+// =============================================================================
+
+// fakeGPULayout builds a fake /dev + /sys/class/drm pair under tempdir for
+// driving hwAccelDeviceAvailableIn. Returns (devRoot, sysClassDrmRoot).
+func fakeGPULayout(t *testing.T, opts fakeGPUOpts) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	devRoot := filepath.Join(root, "dev")
+	sysClassDrm := filepath.Join(root, "sys", "class", "drm")
+	if err := os.MkdirAll(devRoot, 0o755); err != nil {
+		t.Fatalf("mkdir devRoot: %v", err)
+	}
+	if err := os.MkdirAll(sysClassDrm, 0o755); err != nil {
+		t.Fatalf("mkdir sysClassDrm: %v", err)
+	}
+
+	if opts.hasNvidiactl {
+		if err := os.WriteFile(filepath.Join(devRoot, "nvidiactl"), []byte{}, 0o644); err != nil {
+			t.Fatalf("write nvidiactl: %v", err)
+		}
+	}
+
+	if len(opts.driEntries) > 0 {
+		driDir := filepath.Join(devRoot, "dri")
+		if err := os.MkdirAll(driDir, 0o755); err != nil {
+			t.Fatalf("mkdir dri: %v", err)
+		}
+		for _, e := range opts.driEntries {
+			if err := os.WriteFile(filepath.Join(driDir, e.name), []byte{}, 0o644); err != nil {
+				t.Fatalf("write %s: %v", e.name, err)
+			}
+			if e.vendorID != "" {
+				deviceDir := filepath.Join(sysClassDrm, e.name, "device")
+				if err := os.MkdirAll(deviceDir, 0o755); err != nil {
+					t.Fatalf("mkdir %s: %v", deviceDir, err)
+				}
+				if err := os.WriteFile(filepath.Join(deviceDir, "vendor"), []byte(e.vendorID+"\n"), 0o644); err != nil {
+					t.Fatalf("write vendor: %v", err)
+				}
+			}
+		}
+	}
+
+	return devRoot, sysClassDrm
+}
+
+type fakeDRIEntry struct {
+	name     string
+	vendorID string // empty -> no sysfs vendor file at all (simulating unreadable sysfs)
+}
+
+type fakeGPUOpts struct {
+	hasNvidiactl bool
+	driEntries   []fakeDRIEntry
+}
+
+func TestHwAccelDeviceAvailableIn(t *testing.T) {
+	tests := []struct {
+		name string
+		opts fakeGPUOpts
+		want bool
+	}{
+		{
+			name: "nvidiactl present -> available",
+			opts: fakeGPUOpts{hasNvidiactl: true},
+			want: true,
+		},
+		{
+			name: "no nvidiactl and no /dev/dri -> not available",
+			opts: fakeGPUOpts{},
+			want: false,
+		},
+		{
+			name: "renderD128 with real vendor (Intel 0x8086) -> available",
+			opts: fakeGPUOpts{driEntries: []fakeDRIEntry{{name: "renderD128", vendorID: "0x8086"}}},
+			want: true,
+		},
+		{
+			name: "renderD128 with AMD vendor (0x1002) -> available",
+			opts: fakeGPUOpts{driEntries: []fakeDRIEntry{{name: "renderD128", vendorID: "0x1002"}}},
+			want: true,
+		},
+		{
+			name: "renderD128 with NVIDIA vendor (0x10de) -> available",
+			opts: fakeGPUOpts{driEntries: []fakeDRIEntry{{name: "renderD128", vendorID: "0x10de"}}},
+			want: true,
+		},
+		{
+			name: "only QEMU/Bochs emulated VGA (0x1234) -> not available",
+			opts: fakeGPUOpts{driEntries: []fakeDRIEntry{{name: "renderD128", vendorID: "0x1234"}}},
+			want: false,
+		},
+		{
+			name: "QEMU emulated card AND a real Intel card -> available (real one wins)",
+			opts: fakeGPUOpts{driEntries: []fakeDRIEntry{
+				{name: "renderD128", vendorID: "0x1234"},
+				{name: "renderD129", vendorID: "0x8086"},
+			}},
+			want: true,
+		},
+		{
+			name: "render node with unreadable sysfs vendor -> fail open (available)",
+			opts: fakeGPUOpts{driEntries: []fakeDRIEntry{{name: "renderD128", vendorID: ""}}},
+			want: true,
+		},
+		{
+			name: "non-render node (card0) is ignored",
+			opts: fakeGPUOpts{driEntries: []fakeDRIEntry{{name: "card0", vendorID: "0x8086"}}},
+			want: false,
+		},
+		{
+			name: "nvidiactl wins even if /dev/dri only has emulated VGA",
+			opts: fakeGPUOpts{
+				hasNvidiactl: true,
+				driEntries:   []fakeDRIEntry{{name: "renderD128", vendorID: "0x1234"}},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			devRoot, sysClassDrm := fakeGPULayout(t, tt.opts)
+			got := hwAccelDeviceAvailableIn(devRoot, sysClassDrm)
+			if got != tt.want {
+				t.Errorf("hwAccelDeviceAvailableIn() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

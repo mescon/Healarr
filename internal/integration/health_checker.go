@@ -263,15 +263,23 @@ func resolveHwAccelArgs(ffmpegPath, setting string) []string {
 }
 
 // probeHwAccelAvailable runs "ffmpeg -hide_banner -hwaccels" and reports
-// whether any GPU accelerator is listed (anything other than "none"). Any
-// failure (binary missing, exec error) is treated as "no accel available" so
-// the caller silently falls back to software decode.
+// whether any GPU accelerator is listed AND a usable device node is exposed
+// to the container. Both halves matter: ffmpeg may have been compiled with
+// hwaccel support (it will show in -hwaccels) yet have no GPU to talk to
+// because /dev/dri or /dev/nvidia* was not mapped into the container - in
+// which case decode silently falls back to software (libdav1d for AV1) and
+// nobody notices until scans repeatedly time out. When that mismatch is
+// detected we log a clear warning instead of returning true, so the operator
+// can fix their compose entry rather than wondering why scans are still
+// CPU-bound. Any error (binary missing, exec error) is treated as "no accel
+// available".
 func probeHwAccelAvailable(ffmpegPath string) bool {
 	cmd := exec.Command(ffmpegPath, "-hide_banner", "-hwaccels")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return false
 	}
+	hwaccelsListed := false
 	for _, line := range strings.Split(string(out), "\n") {
 		name := strings.TrimSpace(line)
 		if name == "" || strings.Contains(strings.ToLower(name), "hardware acceleration methods") {
@@ -280,7 +288,63 @@ func probeHwAccelAvailable(ffmpegPath string) bool {
 		if strings.ToLower(name) == "none" {
 			continue
 		}
+		hwaccelsListed = true
+		break
+	}
+	if !hwaccelsListed {
+		return false
+	}
+	if !hwAccelDeviceAvailable() {
+		logger.Warnf("Health check: ffmpeg lists hardware accelerators in its build but no usable GPU device is exposed to the container. " +
+			"Decodes will silently fall back to software. To enable hardware acceleration, map /dev/nvidia* " +
+			"(for NVIDIA NVDEC/CUVID) or /dev/dri (for VAAPI/QSV) into the container via the compose 'devices:' entry " +
+			"and re-launch. See HEALARR_HEALTH_CHECK_HWACCEL.")
+		return false
+	}
+	return true
+}
+
+// hwAccelDeviceAvailable returns true if at least one credible GPU device
+// node is exposed to this container. Healarr does not care which accelerator
+// family is present; ffmpeg -hwaccel auto picks whatever works for the codec.
+// We just want to distinguish "ffmpeg was compiled with hwaccel support" from
+// "there is an actual device to talk to". Counts as available:
+//   - /dev/nvidiactl present (NVIDIA Container Toolkit has injected a card)
+//   - /dev/dri/renderD* present AND the device vendor is not QEMU/Bochs
+//     virtio (0x1234), which is the emulated VGA inside a VM with no GPU
+//     passthrough - it has a render node but no decode hardware behind it.
+//
+// If /sys/class/drm/<dev>/device/vendor cannot be read (sysfs not mounted,
+// permissions), we fail open and trust the presence of the render node.
+func hwAccelDeviceAvailable() bool {
+	return hwAccelDeviceAvailableIn("/dev", "/sys/class/drm")
+}
+
+// hwAccelDeviceAvailableIn is the testable form of hwAccelDeviceAvailable.
+// devRoot stands in for /dev, sysClassDrmRoot for /sys/class/drm. The split
+// lets tests assemble a fake filesystem layout without touching real device
+// nodes.
+func hwAccelDeviceAvailableIn(devRoot, sysClassDrmRoot string) bool {
+	if _, err := os.Stat(filepath.Join(devRoot, "nvidiactl")); err == nil {
 		return true
+	}
+	entries, err := os.ReadDir(filepath.Join(devRoot, "dri"))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "renderD") {
+			continue
+		}
+		vendor, err := os.ReadFile(filepath.Join(sysClassDrmRoot, e.Name(), "device", "vendor"))
+		if err != nil {
+			// sysfs path not readable; presence of the render node is the best signal we have.
+			return true
+		}
+		// Vendor ID 0x1234 is QEMU/Bochs emulated VGA - no decode hardware.
+		if strings.TrimSpace(string(vendor)) != "0x1234" {
+			return true
+		}
 	}
 	return false
 }
