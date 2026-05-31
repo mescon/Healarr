@@ -222,20 +222,41 @@ type CmdHealthChecker struct {
 	MediaInfoPath string
 	HandBrakePath string
 
-	// Hardware-acceleration args for ffmpeg thorough/content checks, resolved
-	// once at first use from HEALARR_HEALTH_CHECK_HWACCEL. Empty when "off" or
-	// when no accelerator is available on this host (opportunistic).
-	hwAccelArgs []string
-	hwAccelOnce sync.Once
+	// Hardware-acceleration args for ffmpeg thorough/content checks. The
+	// resolved args are cached keyed by the setting string they were
+	// resolved from - changing the setting via PUT /api/config/tunables
+	// invalidates the cache on the next call. The mutex keeps the
+	// re-probe atomic against concurrent scans.
+	hwAccelMu      sync.RWMutex
+	hwAccelSetting string
+	hwAccelArgs    []string
 }
 
 // hwAccelArgsResolved returns the cached "-hwaccel ..." args, probing ffmpeg
-// the first time if needed. Returns an empty slice when hardware acceleration
-// is unavailable or disabled - callers can safely append it to any args list.
+// when the live setting has changed since the last call. Returns an empty
+// slice when hardware acceleration is unavailable or disabled - callers can
+// safely append it to any args list. The cache means the (expensive) ffmpeg
+// subprocess probe runs at most once per setting value, not once per scan.
 func (hc *CmdHealthChecker) hwAccelArgsResolved() []string {
-	hc.hwAccelOnce.Do(func() {
-		hc.hwAccelArgs = resolveHwAccelArgs(hc.FFmpegPath, config.Get().HealthCheckHwAccel)
-	})
+	setting := config.LiveHealthCheckHwAccel()
+	hc.hwAccelMu.RLock()
+	if hc.hwAccelSetting == setting && hc.hwAccelArgs != nil {
+		args := hc.hwAccelArgs
+		hc.hwAccelMu.RUnlock()
+		return args
+	}
+	hc.hwAccelMu.RUnlock()
+
+	hc.hwAccelMu.Lock()
+	defer hc.hwAccelMu.Unlock()
+	if hc.hwAccelSetting == setting && hc.hwAccelArgs != nil {
+		return hc.hwAccelArgs // another goroutine won the race
+	}
+	hc.hwAccelArgs = resolveHwAccelArgs(hc.FFmpegPath, setting)
+	hc.hwAccelSetting = setting
+	if hc.hwAccelArgs == nil {
+		hc.hwAccelArgs = []string{} // sentinel: non-nil empty means "probed, none"
+	}
 	return hc.hwAccelArgs
 }
 
@@ -867,10 +888,9 @@ func (hc *CmdHealthChecker) AnalyzeContent(path string) (bool, *HealthCheckError
 	// Build ffmpeg command with appropriate filters. Hardware-accel args go
 	// FIRST (they are input options); the optional duration limit "-t N" is
 	// also an input option and must precede "-i".
-	cfg := config.Get()
 	ffmpegArgs := append([]string{"-nostats", "-v", "info"}, hc.hwAccelArgsResolved()...)
-	if cfg.HealthCheckThoroughDuration > 0 {
-		ffmpegArgs = append(ffmpegArgs, "-t", strconv.FormatFloat(cfg.HealthCheckThoroughDuration.Seconds(), 'f', -1, 64))
+	if duration := config.LiveHealthCheckThoroughDuration(); duration > 0 {
+		ffmpegArgs = append(ffmpegArgs, "-t", strconv.FormatFloat(duration.Seconds(), 'f', -1, 64))
 	}
 	ffmpegArgs = append(ffmpegArgs, "-i", path)
 
@@ -893,7 +913,7 @@ func (hc *CmdHealthChecker) AnalyzeContent(path string) (bool, *HealthCheckError
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	timeout := cfg.HealthCheckThoroughTimeout
+	timeout := config.LiveHealthCheckThoroughTimeout()
 	done := make(chan error, 1)
 	safego.Run("content-analysis-cmd", func() {
 		done <- cmd.Run()

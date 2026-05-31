@@ -15,7 +15,8 @@ import clsx from 'clsx';
 import { useToast } from '../contexts/ToastContext';
 import ConfigWarningBanner from '../components/ConfigWarningBanner';
 import AboutSection from '../components/AboutSection';
-import { ArrServersSection, ScanPathsSection, SchedulesSection } from '../components/config';
+import { ArrServersSection, ScanPathsSection, SchedulesSection, TunablesSection } from '../components/config';
+import { Sliders, Activity } from 'lucide-react';
 
 // Notifications Section - imported directly as it has its own complex structure
 import NotificationsSection from './config/NotificationsSection';
@@ -802,6 +803,24 @@ const Config = () => {
             {/* Scan Paths Section */}
             <ScanPathsSection onScrollToDetectionTools={scrollToDetectionTools} />
 
+            {/* Scanning Defaults Section - exposes thorough_duration / timeout / hwaccel / max_retries
+                so operators can tune the "first 60s of decode" feature without env vars or restarts */}
+            <TunablesSection
+                title="Scanning defaults"
+                subtitle="Tuning knobs that apply to all scans. Override per-path on individual scan paths."
+                icon={Sliders}
+                iconColor="bg-blue-500 dark:bg-blue-600"
+                keys={[
+                    'scan.thorough_duration_seconds',
+                    'scan.thorough_timeout_seconds',
+                    'scan.hwaccel',
+                    'scan.default_max_retries',
+                    'scan.workers',
+                    'scan.shutdown_timeout_seconds',
+                    'scan.dry_run_mode',
+                ]}
+            />
+
             {/* Scheduled Scans Section */}
             <SchedulesSection />
 
@@ -906,6 +925,22 @@ const Config = () => {
 
                                         <ServerSettingsSection runtimeConfig={runtimeConfig} queryClient={queryClient} toast={toast} />
                                     </div>
+
+                                    {/* Maintenance & rate limits - retention, verification cadence, *arr API throttling */}
+                                    <TunablesSection
+                                        title="Maintenance & rate limits"
+                                        subtitle="Retention, verification cadence, and outbound rate limits."
+                                        icon={Activity}
+                                        iconColor="bg-emerald-500 dark:bg-emerald-600"
+                                        keys={[
+                                            'maintenance.retention_days',
+                                            'maintenance.verification_timeout_seconds',
+                                            'maintenance.verification_interval_seconds',
+                                            'maintenance.stale_threshold_seconds',
+                                            'limits.arr_rate_limit_rps',
+                                            'limits.arr_rate_limit_burst',
+                                        ]}
+                                    />
 
                                     {/* Security */}
                                     <div className="space-y-4">

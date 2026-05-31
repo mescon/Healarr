@@ -34,10 +34,9 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 		// corruption (a trade the operator opts into).
 		cmdPath = hc.FFmpegPath
 		cmdName = "ffmpeg"
-		cfg := config.Get()
 		args = append([]string{"-v", "error", argXError}, hc.hwAccelArgsResolved()...)
-		if cfg.HealthCheckThoroughDuration > 0 {
-			args = append(args, "-t", strconv.FormatFloat(cfg.HealthCheckThoroughDuration.Seconds(), 'f', -1, 64))
+		if duration := config.LiveHealthCheckThoroughDuration(); duration > 0 {
+			args = append(args, "-t", strconv.FormatFloat(duration.Seconds(), 'f', -1, 64))
 		}
 		args = append(args, customArgs...)
 		args = append(args, "-i", path, "-f", "null", "-")
@@ -67,7 +66,7 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 	// files, or shrink it once you have set THOROUGH_DURATION to a short prefix).
 	timeout := 30 * time.Second
 	if mode == ModeThorough {
-		timeout = config.Get().HealthCheckThoroughTimeout
+		timeout = config.LiveHealthCheckThoroughTimeout()
 	}
 
 	done := make(chan error, 1)
@@ -109,7 +108,7 @@ func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []strin
 		// Thorough mode: Full scan with preview analysis
 		// --previews 10:0 generates 10 previews at different points to verify stream integrity
 		args = []string{argScan, argPreviews, "10:0", "-i", path}
-		timeout = config.Get().HealthCheckThoroughTimeout
+		timeout = config.LiveHealthCheckThoroughTimeout()
 	} else {
 		// Quick mode: Basic container scan
 		args = []string{argScan, "-i", path}
