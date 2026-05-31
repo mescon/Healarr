@@ -92,6 +92,11 @@ func (s *RESTServer) initRepositories() {
 	s.settings = repository.NewSettingsRepository(s.db)
 	s.corruptions = repository.NewCorruptionRepository(s.db)
 	s.scanFiles = repository.NewScanFileRepository(s.db)
+
+	// Register the live tunables source so config.LiveX() accessors in
+	// integration/scanner code see DB-side updates from PUT /api/config/tunables
+	// without needing a restart.
+	config.SetLiveTunables(repository.NewTunables(s.settings))
 }
 
 // ServerDeps contains all dependencies required for the REST server
@@ -460,6 +465,10 @@ func (s *RESTServer) setupRoutes() {
 			protected.PUT("/config/settings", s.updateSettings)
 			protected.POST("/config/restart", s.restartServer)
 			protected.POST("/setup/reset", s.handleSetupReset)
+
+			// Config - Tunables (formerly env-only knobs now editable via UI)
+			protected.GET("/config/tunables", s.getTunables)
+			protected.PUT("/config/tunables", s.updateTunables)
 
 			// Config
 			protected.GET("/config/arr", s.getArrInstances)

@@ -6,3 +6,4 @@ export { default as CronTimeBuilder } from './CronTimeBuilder';
 export { default as ArrServersSection } from './ArrServersSection';
 export { default as ScanPathsSection } from './ScanPathsSection';
 export { default as SchedulesSection } from './SchedulesSection';
+export { default as TunablesSection } from './TunablesSection';

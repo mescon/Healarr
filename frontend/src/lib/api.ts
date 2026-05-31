@@ -473,6 +473,61 @@ export const resetSetupWizard = async (): Promise<{ message: string }> => {
     return data;
 };
 
+// Tunables - runtime-editable settings that mirror HEALARR_* env vars.
+// One entry per row in the backend's repository.Catalog.
+export type TunableKind =
+    | 'duration_seconds'
+    | 'int'
+    | 'float'
+    | 'bool'
+    | 'string'
+    | 'enum';
+
+export type TunableSource = 'env' | 'db' | 'default';
+
+export interface TunableValue {
+    key: string;
+    env_var: string;
+    kind: TunableKind;
+    description: string;
+    requires_restart: boolean;
+    enum_values?: string[];
+    min_int?: number;
+    max_int?: number;
+    min_float?: number;
+    max_float?: number;
+    // Effective value, JSON-typed per kind:
+    //   duration_seconds -> number (seconds)
+    //   int -> number
+    //   float -> number
+    //   bool -> boolean
+    //   string / enum -> string
+    value: number | string | boolean;
+    // Raw env var string if env is set, else null.
+    env_value: string | null;
+    // Raw DB row string if DB has a value, else null.
+    db_value: string | null;
+    source: TunableSource;
+}
+
+export interface TunablesResponse {
+    tunables: TunableValue[];
+}
+
+export const getTunables = async (): Promise<TunablesResponse> => {
+    const { data } = await api.get<TunablesResponse>('/config/tunables');
+    return data;
+};
+
+export const updateTunables = async (
+    updates: Record<string, number | string | boolean>,
+): Promise<TunablesResponse> => {
+    const { data } = await api.put<TunablesResponse>('/config/tunables', {
+        updates,
+    });
+    return data;
+};
+
 // --- Notification API ---
 
 export interface NotificationConfig {

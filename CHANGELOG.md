@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Settings page now exposes the runtime tunables that were previously env-only.** Thirteen `HEALARR_*` knobs are now editable from `/config` (full list: thorough decode duration / timeout, hardware acceleration mode, default retry cap, scanner worker count, scanner shutdown timeout, dry-run mode, retention days, verification timeout / interval, stale threshold, *arr rate limit RPS / burst). Each field shows whether its current value comes from env, the DB, or the built-in default; env-set values render as read-only with a "Set by `HEALARR_FOO`" badge so it's obvious which fields are operator-locked. Phase 1 of a larger /config redesign - per-path overrides and preset bundles are next. The "first 60 seconds of decode" trick (the main practical use of `HEALARR_HEALTH_CHECK_THOROUGH_DURATION`) is now one click in the UI.
+
+### Changed
+- **Thorough scan duration / timeout / hwaccel changes take effect on the next scan tick without a restart.** These three values were previously only read at process startup. The internal resolver now consults env > DB > default at every health-check call, so a UI-side change applies immediately to the next file scanned. The other ten tunables still flag as restart-required because they are bound to subsystems (scheduler, rate limiter, retention pruner) that cache their config on startup.
+
 ### Fixed
 - **Scan-path validation no longer rejects Windows and UNC paths.** The frontend Zod schema required both `local_path` and `arr_path` to start with `/`, which is wrong for two cases: (1) Healarr running on Windows directly (the binary, not the Docker image), and (2) Healarr running on Linux while talking to a Sonarr/Radarr that itself runs on Windows and therefore returns paths like `D:\Media\Movies` or `\\server\share\Movies`. Both fields now accept POSIX absolute (`/foo`), Windows drive-letter (`C:\foo`, `c:/foo`), and UNC (`\\server\share`, `//server/share`) forms. Fixes [#255](https://github.com/mescon/Healarr/issues/255).
 
