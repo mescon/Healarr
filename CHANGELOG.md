@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Scan-path validation no longer rejects Windows and UNC paths.** The frontend Zod schema required both `local_path` and `arr_path` to start with `/`, which is wrong for two cases: (1) Healarr running on Windows directly (the binary, not the Docker image), and (2) Healarr running on Linux while talking to a Sonarr/Radarr that itself runs on Windows and therefore returns paths like `D:\Media\Movies` or `\\server\share\Movies`. Both fields now accept POSIX absolute (`/foo`), Windows drive-letter (`C:\foo`, `c:/foo`), and UNC (`\\server\share`, `//server/share`) forms. Fixes [#255](https://github.com/mescon/Healarr/issues/255).
+
 ### Changed
 - **Docker image now ships a custom ffmpeg with NVIDIA codec support baked in.** The stock Alpine `apk` ffmpeg was compiled without NVDEC/NVENC/CUVID, so AV1 files always fell back to software decode (`libdav1d`) even on hosts with an NVIDIA GPU passed through. The image now bundles a from-source ffmpeg 7.1.1 built with `--enable-cuda --enable-cuvid --enable-nvdec --enable-nvenc --enable-vaapi`, so AV1 / HEVC / H.264 hardware decode and encode all work when `/dev/nvidia*` (NVIDIA Container Toolkit) or `/dev/dri` (VAAPI / Intel QSV / AMD) is exposed to the container. Runtime ABI shim (`gcompat`) is included so the musl-linked ffmpeg can dlopen the glibc NVIDIA libraries the Container Toolkit injects. Image size: 371 MB (was 249 MB).
 
