@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { absolutePathErrorMessage, isAbsolutePath } from '../paths';
 
 /**
  * Validation schema for scan path configuration.
@@ -8,15 +9,11 @@ export const scanPathSchema = z.object({
   local_path: z
     .string()
     .min(1, 'Path is required')
-    .refine((path) => path.startsWith('/'), {
-      message: 'Path must be an absolute path starting with /',
-    }),
+    .refine(isAbsolutePath, { message: absolutePathErrorMessage }),
   arr_path: z
     .string()
     .min(1, 'Arr path is required')
-    .refine((path) => path.startsWith('/'), {
-      message: 'Arr path must be an absolute path starting with /',
-    }),
+    .refine(isAbsolutePath, { message: absolutePathErrorMessage }),
   arr_instance_id: z
     .number()
     .nullable()
