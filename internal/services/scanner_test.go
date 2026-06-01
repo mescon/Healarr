@@ -691,6 +691,37 @@ func TestScannerService_CancelScan(t *testing.T) {
 		delete(scanner.activeScans, "scan-2")
 		scanner.mu.Unlock()
 	})
+
+	// Regression for #274: the HTTP handler routes by DB id, but activeScans
+	// is keyed by UUID. CancelScan must match the entry by ScanDBID when
+	// the direct map lookup misses, so the in-memory ctx actually gets
+	// cancelled (otherwise the scan loop keeps running past the user's
+	// cancel click).
+	t.Run("matches by ScanDBID when scanID is the DB integer", func(t *testing.T) {
+		cancelled := false
+		uuid := "abc-def-uuid"
+
+		scanner.mu.Lock()
+		scanner.activeScans[uuid] = &ScanProgress{
+			ID:       uuid,
+			ScanDBID: 42,
+			cancel:   func() { cancelled = true },
+		}
+		scanner.mu.Unlock()
+
+		// Caller passes the DB id as a string (what the HTTP layer does).
+		err := scanner.CancelScan("42")
+		if err != nil {
+			t.Errorf("CancelScan by DB id: unexpected error %v", err)
+		}
+		if !cancelled {
+			t.Error("cancel function was not called - lookup did not fall back to ScanDBID")
+		}
+
+		scanner.mu.Lock()
+		delete(scanner.activeScans, uuid)
+		scanner.mu.Unlock()
+	})
 }
 
 func TestScannerService_PauseScan(t *testing.T) {

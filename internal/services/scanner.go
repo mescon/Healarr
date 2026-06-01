@@ -1941,6 +1941,32 @@ func (s *ScannerService) ReconcileOrphanScans() {
 	}
 }
 
+// findActiveScanLocked returns the activeScans entry matching scanID, trying
+// the in-memory UUID (the map key) first, then falling back to matching
+// against ScanDBID. The HTTP handlers route by DB integer id (the only
+// stable identifier the frontend has from /api/scans); internal callers
+// like CancelAllScans iterate activeScans and pass the UUID directly. Both
+// shapes are valid scanID inputs and we want both to find the same entry.
+//
+// Caller must hold s.mu. activeScans is small (one entry per concurrent
+// scan), so the linear DB-id fallback is cheaper than maintaining a
+// secondary index.
+func (s *ScannerService) findActiveScanLocked(scanID string) (*ScanProgress, bool) {
+	if scan, ok := s.activeScans[scanID]; ok {
+		return scan, true
+	}
+	dbID, err := strconv.ParseInt(scanID, 10, 64)
+	if err != nil {
+		return nil, false
+	}
+	for _, p := range s.activeScans {
+		if p.ScanDBID == dbID {
+			return p, true
+		}
+	}
+	return nil, false
+}
+
 // CancelScan cancels a scan. It signals the in-memory ctx if the scan is
 // actually running in this process AND persists "cancelled" to the DB row,
 // so the page reflects the new state on reload. Both halves run regardless
@@ -1949,8 +1975,11 @@ func (s *ScannerService) ReconcileOrphanScans() {
 // an error only when neither half found anything (no such scan id anywhere).
 func (s *ScannerService) CancelScan(scanID string) error {
 	// 1. Signal the in-memory scan to stop, if it is running in this process.
+	//    Use findActiveScanLocked so both UUID and DB-id forms of scanID find
+	//    the same entry (the HTTP handler passes the DB id, internal callers
+	//    pass the UUID — both reach this code path).
 	s.mu.Lock()
-	scan, exists := s.activeScans[scanID]
+	scan, exists := s.findActiveScanLocked(scanID)
 	if exists && scan.cancel != nil {
 		scan.cancel()
 	}
@@ -1963,7 +1992,14 @@ func (s *ScannerService) CancelScan(scanID string) error {
 	//    cancelled" toast was misleading). Doing the UPDATE here also cleans
 	//    up stale rows from a previous hard restart where there is nothing
 	//    to signal in memory.
+	// Resolve the DB id: prefer parsing scanID directly (HTTP path), else
+	// fall back to the in-memory entry's ScanDBID (callers that passed the
+	// UUID still want the DB row updated).
 	dbID, parseErr := strconv.ParseInt(scanID, 10, 64)
+	if parseErr != nil && exists && scan.ScanDBID > 0 {
+		dbID = scan.ScanDBID
+		parseErr = nil
+	}
 	updated := false
 	if parseErr == nil && s.scanRepo() != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1986,7 +2022,7 @@ func (s *ScannerService) PauseScan(scanID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	scan, exists := s.activeScans[scanID]
+	scan, exists := s.findActiveScanLocked(scanID)
 	if !exists {
 		return fmt.Errorf("scan not found: %s", scanID)
 	}
@@ -2015,7 +2051,7 @@ func (s *ScannerService) ResumeScan(scanID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	scan, exists := s.activeScans[scanID]
+	scan, exists := s.findActiveScanLocked(scanID)
 	if !exists {
 		return fmt.Errorf("scan not found: %s", scanID)
 	}
