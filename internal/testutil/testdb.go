@@ -9,6 +9,7 @@ import (
 	_ "modernc.org/sqlite" // Register pure-Go SQLite driver for database/sql
 
 	"github.com/mescon/Healarr/internal/domain"
+	"github.com/mescon/Healarr/internal/testutil/schemas"
 )
 
 // NewTestDB creates an in-memory SQLite database with the Healarr schema.
@@ -67,29 +68,9 @@ func initializeSchema(db *sql.DB) error {
 		return fmt.Errorf("failed to create event_type index: %w", err)
 	}
 
-	// Create scan_paths table (matches migrated schema after 008_scan_path_overrides.sql)
-	_, err = db.Exec(`
-		CREATE TABLE scan_paths (
-			id INTEGER PRIMARY KEY,
-			local_path TEXT NOT NULL UNIQUE,
-			arr_path TEXT NOT NULL,
-			arr_instance_id INTEGER,
-			enabled BOOLEAN DEFAULT 1,
-			auto_remediate BOOLEAN DEFAULT 0,
-			dry_run BOOLEAN DEFAULT 0,
-			detection_method TEXT NOT NULL DEFAULT 'ffprobe',
-			detection_args TEXT,
-			detection_mode TEXT NOT NULL DEFAULT 'quick',
-			max_retries INTEGER DEFAULT 3,
-			verification_timeout_hours INTEGER DEFAULT NULL,
-			thorough_duration_seconds INTEGER,
-			thorough_timeout_seconds INTEGER,
-			hwaccel TEXT CHECK (hwaccel IS NULL OR hwaccel IN
-				('auto', 'off', 'cuda', 'vaapi', 'qsv', 'videotoolbox', 'vdpau', 'drm')),
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
-	if err != nil {
+	// Create scan_paths via the shared schema constant. Centralized so a
+	// column addition is one edit, not eight.
+	if _, err = db.Exec(schemas.ScanPaths); err != nil {
 		return fmt.Errorf("failed to create scan_paths table: %w", err)
 	}
 

@@ -6,10 +6,13 @@ import (
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3" // Register CGo SQLite driver for database/sql
+
+	"github.com/mescon/Healarr/internal/testutil/schemas"
 )
 
 // =============================================================================
-// Test helpers (avoiding testutil import due to cycle)
+// Test helpers (avoiding the full testutil import due to package cycle;
+// schemas/ is a leaf sub-package that doesn't pull in the rest)
 // =============================================================================
 
 // newTestDBForPathMapper creates an in-memory SQLite database with schema for tests.
@@ -20,26 +23,7 @@ func newTestDBForPathMapper() (*sql.DB, error) {
 	}
 
 	// Create scan_paths table
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS scan_paths (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			local_path TEXT NOT NULL,
-			arr_path TEXT NOT NULL,
-			arr_instance_id INTEGER,
-			auto_remediate INTEGER NOT NULL DEFAULT 0,
-			dry_run INTEGER NOT NULL DEFAULT 0,
-			enabled INTEGER NOT NULL DEFAULT 1,
-			detection_method TEXT NOT NULL DEFAULT 'ffprobe',
-			detection_args TEXT,
-			detection_mode TEXT NOT NULL DEFAULT 'quick',
-			max_retries INTEGER DEFAULT 3,
-			verification_timeout_hours INTEGER,
-			thorough_duration_seconds INTEGER,
-			thorough_timeout_seconds INTEGER,
-			hwaccel TEXT,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
+	_, err = db.Exec(schemas.ScanPaths)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create scan_paths table: %w", err)

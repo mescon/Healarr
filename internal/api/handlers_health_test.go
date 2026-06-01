@@ -22,6 +22,7 @@ import (
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/metrics"
 	"github.com/mescon/Healarr/internal/services"
+	"github.com/mescon/Healarr/internal/testutil/schemas"
 )
 
 // Global metrics service to avoid Prometheus duplicate registration
@@ -84,24 +85,7 @@ func setupTestDBForHealth(t *testing.T) (*sql.DB, string, func()) {
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 
-		CREATE TABLE scan_paths (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			local_path TEXT NOT NULL,
-			arr_path TEXT NOT NULL,
-			arr_instance_id INTEGER REFERENCES arr_instances(id),
-			enabled INTEGER DEFAULT 1,
-			auto_remediate INTEGER DEFAULT 0,
-			dry_run INTEGER DEFAULT 0,
-			detection_method TEXT DEFAULT 'ffprobe',
-			detection_args TEXT,
-			detection_mode TEXT DEFAULT 'quick',
-			max_retries INTEGER DEFAULT 3,
-			verification_timeout_hours INTEGER,
-			thorough_duration_seconds INTEGER,
-			thorough_timeout_seconds INTEGER,
-			hwaccel TEXT,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		);
+		` + schemas.ScanPaths + `
 
 		CREATE TABLE scans (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

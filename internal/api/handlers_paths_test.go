@@ -20,6 +20,7 @@ import (
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/testutil"
+	"github.com/mescon/Healarr/internal/testutil/schemas"
 )
 
 func init() {
@@ -29,25 +30,16 @@ func init() {
 	})
 }
 
-// setupPathsTestDB creates a test database with full scan_paths schema
+// setupPathsTestDB creates a test database with the full scan_paths schema.
+// setupTestDB hands back a DB with only the minimal scan_paths shape (just
+// what the basic handler tests need). Drop that table and re-create from
+// the canonical schema so this file's tests see every column the repo
+// queries against.
 func setupPathsTestDB(t *testing.T) (*sql.DB, func()) {
 	t.Helper()
 
 	db, cleanup := setupTestDB(t)
-
-	// Add full scan_paths schema
-	schema := `
-		ALTER TABLE scan_paths ADD COLUMN detection_method TEXT DEFAULT 'ffprobe';
-		ALTER TABLE scan_paths ADD COLUMN detection_args TEXT;
-		ALTER TABLE scan_paths ADD COLUMN detection_mode TEXT DEFAULT 'quick';
-		ALTER TABLE scan_paths ADD COLUMN max_retries INTEGER DEFAULT 3;
-		ALTER TABLE scan_paths ADD COLUMN verification_timeout_hours INTEGER;
-		ALTER TABLE scan_paths ADD COLUMN dry_run INTEGER DEFAULT 0;
-		ALTER TABLE scan_paths ADD COLUMN thorough_duration_seconds INTEGER;
-		ALTER TABLE scan_paths ADD COLUMN thorough_timeout_seconds INTEGER;
-		ALTER TABLE scan_paths ADD COLUMN hwaccel TEXT;
-	`
-	_, err := db.Exec(schema)
+	_, err := db.Exec("DROP TABLE scan_paths;" + schemas.ScanPaths)
 	require.NoError(t, err)
 
 	return db, cleanup

@@ -23,6 +23,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/notifier"
 	"github.com/mescon/Healarr/internal/testutil"
+	"github.com/mescon/Healarr/internal/testutil/schemas"
 )
 
 // setupConfigTestDB creates a test database with full schema for config tests
@@ -68,24 +69,7 @@ func setupConfigTestDB(t *testing.T) (*sql.DB, func()) {
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 
-		CREATE TABLE scan_paths (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			local_path TEXT NOT NULL,
-			arr_path TEXT NOT NULL,
-			arr_instance_id INTEGER REFERENCES arr_instances(id) ON DELETE SET NULL,
-			enabled INTEGER DEFAULT 1,
-			auto_remediate INTEGER DEFAULT 1,
-			dry_run INTEGER DEFAULT 0,
-			detection_method TEXT DEFAULT 'ffprobe',
-			detection_args TEXT DEFAULT NULL,
-			detection_mode TEXT DEFAULT 'quick',
-			max_retries INTEGER DEFAULT 3,
-			verification_timeout_hours INTEGER DEFAULT NULL,
-			thorough_duration_seconds INTEGER,
-			thorough_timeout_seconds INTEGER,
-			hwaccel TEXT,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		);
+		` + schemas.ScanPaths + `
 
 		CREATE TABLE scan_schedules (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

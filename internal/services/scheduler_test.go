@@ -7,6 +7,7 @@ import (
 	_ "modernc.org/sqlite" // Register pure-Go SQLite driver for database/sql
 
 	"github.com/mescon/Healarr/internal/testutil"
+	"github.com/mescon/Healarr/internal/testutil/schemas"
 )
 
 // =============================================================================
@@ -138,23 +139,7 @@ func TestSchedulerService_LoadSchedules_WithValidSchedule(t *testing.T) {
 
 	// Create required tables
 	_, err = db.Exec(`
-		CREATE TABLE scan_paths (
-			id INTEGER PRIMARY KEY,
-			local_path TEXT NOT NULL,
-			arr_path TEXT NOT NULL,
-			arr_instance_id INTEGER,
-			enabled BOOLEAN DEFAULT 1,
-			auto_remediate BOOLEAN DEFAULT 0,
-			dry_run BOOLEAN DEFAULT 0,
-			detection_method TEXT NOT NULL DEFAULT 'ffprobe',
-			detection_args TEXT,
-			detection_mode TEXT NOT NULL DEFAULT 'quick',
-			max_retries INTEGER DEFAULT 3,
-			verification_timeout_hours INTEGER,
-			thorough_duration_seconds INTEGER,
-			thorough_timeout_seconds INTEGER,
-			hwaccel TEXT
-		);
+		` + schemas.ScanPaths + `
 		CREATE TABLE scan_schedules (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			scan_path_id INTEGER NOT NULL,
