@@ -446,3 +446,119 @@ func TestScanRepository_MarkOrphansCancelled(t *testing.T) {
 		t.Errorf("MarkOrphansCancelled (second call): got (%d, %v), want (0, nil)", n, err)
 	}
 }
+
+// =============================================================================
+// Regression tests for #274: zombie cancelled-then-interrupted scans
+// =============================================================================
+
+// A row that was cancelled (completed_at set) and later overwritten with
+// status='interrupted' by a graceful shutdown must NOT be picked up by
+// ListInterrupted: the user already decided they were done with it.
+func TestScanRepository_ListInterrupted_SkipsCancelledThenInterrupted(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	// Build the #274 row shape directly: status='interrupted' AND
+	// completed_at IS NOT NULL AND file_list IS NOT NULL.
+	mustExecScan(t, db, `
+		INSERT INTO scans (path, status, file_list, completed_at, error_message)
+		VALUES ('/zombie', 'interrupted', '["/x.mkv"]', datetime('now', '-1 hour'), 'cancelled by user')
+	`)
+
+	rows, err := repo.ListInterrupted(ctx)
+	if err != nil {
+		t.Fatalf("ListInterrupted: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("zombie row returned: %+v - the completed_at IS NULL filter is missing", rows)
+	}
+}
+
+// MarkCancelled must catch an inconsistent active-status row that already
+// has completed_at set (the #274 zombie shape). The old completed_at-based
+// guard rejected this update, leaving the row stuck forever.
+func TestScanRepository_MarkCancelled_RecoversInconsistentZombieRow(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	// Inconsistent row: status='running' but completed_at is set.
+	mustExecScan(t, db, `
+		INSERT INTO scans (id, path, status, file_list, completed_at, error_message)
+		VALUES (42, '/zombie', 'running', '["/x.mkv"]', datetime('now', '-1 hour'), 'cancelled by user')
+	`)
+
+	ok, err := repo.MarkCancelled(ctx, 42, "user cancel retry")
+	if err != nil || !ok {
+		t.Fatalf("MarkCancelled zombie: got (%v, %v), want (true, nil)", ok, err)
+	}
+	var status, errMsg string
+	_ = db.QueryRow(`SELECT status, error_message FROM scans WHERE id = 42`).Scan(&status, &errMsg)
+	if status != "cancelled" || errMsg != "user cancel retry" {
+		t.Errorf("after recovery: status/msg = %q/%q, want cancelled/user cancel retry", status, errMsg)
+	}
+}
+
+// MarkCancelled must still no-op on a fresh-cancelled row (idempotency)
+// and on rows that reached other terminal states.
+func TestScanRepository_MarkCancelled_NoOpOnTerminalStates(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	// already cancelled
+	mustExecScan(t, db, `INSERT INTO scans (id, path, status, completed_at) VALUES (1, '/c', 'cancelled', datetime('now'))`)
+	// completed
+	mustExecScan(t, db, `INSERT INTO scans (id, path, status, completed_at) VALUES (2, '/d', 'completed', datetime('now'))`)
+	// aborted
+	mustExecScan(t, db, `INSERT INTO scans (id, path, status) VALUES (3, '/e', 'aborted')`)
+
+	for _, id := range []int64{1, 2, 3} {
+		ok, err := repo.MarkCancelled(ctx, id, "should not apply")
+		if err != nil || ok {
+			t.Errorf("MarkCancelled terminal id=%d: got (%v, %v), want (false, nil)", id, ok, err)
+		}
+	}
+}
+
+// MarkOrphansCancelled must catch zombie active-with-completed_at rows
+// at startup (the #274 fix). Paused and interrupted are still spared.
+func TestScanRepository_MarkOrphansCancelled_CatchesZombieRows(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	// The #274 zombie: status='running' with completed_at set.
+	mustExecScan(t, db, `
+		INSERT INTO scans (id, path, status, completed_at, error_message)
+		VALUES (10, '/zombie', 'running', datetime('now', '-1 hour'), 'cancelled by user')
+	`)
+	// A clean orphan: status='running', completed_at NULL.
+	mustExecScan(t, db, `INSERT INTO scans (id, path, status) VALUES (11, '/clean', 'running')`)
+	// Paused: must NOT be touched.
+	mustExecScan(t, db, `INSERT INTO scans (id, path, status) VALUES (12, '/p', 'paused')`)
+	// Interrupted: must NOT be touched.
+	mustExecScan(t, db, `INSERT INTO scans (id, path, status) VALUES (13, '/i', 'interrupted')`)
+
+	n, err := repo.MarkOrphansCancelled(ctx)
+	if err != nil || n != 2 {
+		t.Fatalf("MarkOrphansCancelled: got (%d, %v), want (2, nil)", n, err)
+	}
+
+	check := func(id int64, want string) {
+		var got string
+		_ = db.QueryRow(`SELECT status FROM scans WHERE id = ?`, id).Scan(&got)
+		if got != want {
+			t.Errorf("scan %d: status = %q, want %q", id, got, want)
+		}
+	}
+	check(10, "cancelled")   // zombie reaped
+	check(11, "cancelled")   // clean orphan reaped
+	check(12, "paused")      // spared
+	check(13, "interrupted") // spared
+}

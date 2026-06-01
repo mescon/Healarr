@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Cancelling a scan now actually stops the in-process scan loop, and previously-cancelled scans no longer come back as "running" after a restart.** Three composing bugs were producing zombie scans (see [#274](https://github.com/mescon/Healarr/issues/274)):
+  1. `CancelScan` looked up the in-memory scan map by the DB integer id, but the map is keyed by an internal UUID, so the in-memory `ctx.cancel()` never fired. The scan loop kept iterating files after the user clicked cancel - only the DB row was updated. `CancelScan` now also matches by `ScanDBID`, so the HTTP cancel (which routes by DB id) properly signals the in-process scan; `PauseScan` and `ResumeScan` got the same fix.
+  2. `ListInterrupted` (the resume-at-startup query) did not filter out rows with `completed_at` set. A scan that was cancelled and later had its status overwritten to `interrupted` by a graceful shutdown was being **resumed** on the next startup, resurrecting the cancellation as `status='running'`. It now filters on `completed_at IS NULL`.
+  3. `MarkCancelled` / `MarkOrphansCancelled` used `WHERE completed_at IS NULL` as the guard against clobbering a real terminal state. That guard also blocked recovery of the inconsistent rows the other two bugs created (`status='running'` with `completed_at` set), leaving them permanently stuck. The guard is now `status NOT IN ('cancelled', 'completed', 'aborted')` - same protection against the cancel-vs-completion race, but also catches the zombie rows.
+
+  Any installs that previously hit this state have rows like `status IN ('running', 'enumerating', 'scanning', 'interrupted') AND completed_at IS NOT NULL` in the `scans` table; the `MarkOrphansCancelled` startup hook will now clean them up automatically on the next restart.
+
 ## [1.3.4] - 2026-06-01
 
 The headline of this release is the three-phase **`/config` redesign**: every scan-related setting that was previously env-only is now editable from the UI, can be overridden per scan path, and is bundled into one-click presets. Plus AV1 hardware decode finally works out of the box on NVIDIA hosts.

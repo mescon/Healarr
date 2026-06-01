@@ -285,15 +285,23 @@ func (r *ScanRepository) MarkAborted(ctx context.Context, scanID int64, errorMes
 	return nil
 }
 
-// MarkCancelled records a user-initiated cancellation. The "AND completed_at IS
-// NULL" guard makes this a no-op for a scan that has already finished (benign
-// race between cancel and completion) so we never clobber a real terminal
-// state. Returns true iff a row was updated, so callers can distinguish "no
-// such scan" from "scan was already done" for error reporting.
+// MarkCancelled records a user-initiated cancellation.
+//
+// The "status NOT IN ('cancelled', 'completed', 'aborted')" guard makes this
+// a no-op for a scan that already reached a terminal state (benign race
+// between cancel and completion / abort) so we never clobber it. It also
+// catches inconsistent rows like status='running' + completed_at IS NOT NULL
+// (the failure mode in #274 where an earlier-fixed bug left rows mid-state):
+// the old "completed_at IS NULL" guard refused to touch those, leaving the
+// row permanently zombified through every restart. The new guard cancels
+// them.
+//
+// Returns true iff a row was updated, so callers can distinguish "no such
+// scan" from "scan was already done" for error reporting.
 func (r *ScanRepository) MarkCancelled(ctx context.Context, scanID int64, reason string) (bool, error) {
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE scans SET status = 'cancelled', completed_at = datetime('now'), error_message = ?
-		WHERE id = ? AND completed_at IS NULL
+		WHERE id = ? AND status NOT IN ('cancelled', 'completed', 'aborted')
 	`, reason, scanID)
 	if err != nil {
 		return false, fmt.Errorf("mark scan cancelled: %w", err)
@@ -314,13 +322,19 @@ func (r *ScanRepository) MarkCancelled(ctx context.Context, scanID int64, reason
 // those are legitimate resumable states the user (or graceful shutdown) put
 // the scan into. Returns the number of rows updated.
 func (r *ScanRepository) MarkOrphansCancelled(ctx context.Context) (int64, error) {
+	// The status filter (no "completed_at IS NULL") is intentional: an
+	// inconsistent row with status='running' but completed_at already set
+	// (the #274 zombie pattern) IS exactly what this query is supposed to
+	// reap. The old completed_at-based guard meant such rows survived
+	// every restart. The status filter alone is sufficient because
+	// activeScans is empty at startup, so any row in an active status is
+	// by definition an orphan.
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE scans
 		SET status = 'cancelled',
 		    completed_at = datetime('now'),
 		    error_message = 'abandoned on Healarr restart'
-		WHERE completed_at IS NULL
-		  AND status IN ('running', 'enumerating', 'scanning')
+		WHERE status IN ('running', 'enumerating', 'scanning')
 	`)
 	if err != nil {
 		return 0, fmt.Errorf("mark orphan scans cancelled: %w", err)
@@ -352,11 +366,17 @@ func (r *ScanRepository) IncrementCorruptions(scanID int64) error {
 
 // ListInterrupted returns scans left in the 'interrupted' state with a
 // persisted file_list, newest first — the resume queue consumed at startup.
+//
+// The "completed_at IS NULL" filter prevents zombifying a previously-
+// terminal scan: a row that was cancelled (completed_at set) and then
+// later had its status overwritten to 'interrupted' by a graceful
+// shutdown is NOT something we want to resume. The user already decided
+// they were done with it. See #274 for the bug chain that surfaced this.
 func (r *ScanRepository) ListInterrupted(ctx context.Context) ([]InterruptedScan, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, path_id, path, total_files, current_file_index, file_list, detection_config, auto_remediate, COALESCE(dry_run, 0)
 		FROM scans
-		WHERE status = 'interrupted' AND file_list IS NOT NULL
+		WHERE status = 'interrupted' AND file_list IS NOT NULL AND completed_at IS NULL
 		ORDER BY started_at DESC
 	`)
 	if err != nil {
