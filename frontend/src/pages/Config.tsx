@@ -15,7 +15,7 @@ import clsx from 'clsx';
 import { useToast } from '../contexts/ToastContext';
 import ConfigWarningBanner from '../components/ConfigWarningBanner';
 import AboutSection from '../components/AboutSection';
-import { ArrServersSection, ScanPathsSection, SchedulesSection, TunablesSection } from '../components/config';
+import { ArrServersSection, ScanPathsSection, SchedulesSection, TunablesSection, PresetsSection } from '../components/config';
 import { Sliders, Activity } from 'lucide-react';
 
 // Notifications Section - imported directly as it has its own complex structure
@@ -941,6 +941,9 @@ const Config = () => {
                                             'limits.arr_rate_limit_burst',
                                         ]}
                                     />
+
+                                    {/* Scan presets - manage named bundles of scan settings (built-in + custom) */}
+                                    <PresetsSection />
 
                                     {/* Security */}
                                     <div className="space-y-4">

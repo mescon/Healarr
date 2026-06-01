@@ -312,6 +312,58 @@ export const deleteScanPath = async (id: number) => {
     await api.delete(`/config/paths/${id}`);
 };
 
+// Scan presets - named bundles of scan-related field values that the user
+// can apply to a scan path with one click. Built-in presets (is_builtin)
+// are seeded by migration 009 and read-only; the UI disables edit/delete
+// for them.
+export interface ScanPreset {
+    id: number;
+    name: string;
+    description: string;
+    detection_method: 'zero_byte' | 'ffprobe' | 'mediainfo' | 'handbrake';
+    detection_mode: 'quick' | 'thorough';
+    detection_args: string[] | null;
+    thorough_duration_seconds: number | null;
+    thorough_timeout_seconds: number | null;
+    hwaccel: 'auto' | 'off' | 'cuda' | 'vaapi' | 'qsv' | 'videotoolbox' | 'vdpau' | 'drm' | null;
+    is_builtin: boolean;
+}
+
+export const getScanPresets = async (): Promise<ScanPreset[]> => {
+    const { data } = await api.get<ScanPreset[]>('/config/presets');
+    return data;
+};
+
+export const createScanPreset = async (preset: Omit<ScanPreset, 'id' | 'is_builtin'>): Promise<ScanPreset> => {
+    const { data } = await api.post<ScanPreset>('/config/presets', preset);
+    return data;
+};
+
+export const updateScanPreset = async (id: number, preset: Omit<ScanPreset, 'id' | 'is_builtin'>): Promise<ScanPreset> => {
+    const { data } = await api.put<ScanPreset>(`/config/presets/${id}`, preset);
+    return data;
+};
+
+export const deleteScanPreset = async (id: number): Promise<void> => {
+    await api.delete(`/config/presets/${id}`);
+};
+
+// presetMatchesPath returns true when the path's scan-related fields exactly
+// equal those defined by the preset. Used by the UI to show "Preset: X"
+// vs "Custom" badge on each scan path row. NULL/undefined are normalized
+// so "inherit global" matches across the two shapes.
+export const presetMatchesPath = (
+    preset: ScanPreset,
+    path: Pick<ScanPath, 'detection_method' | 'detection_mode' | 'thorough_duration_seconds' | 'thorough_timeout_seconds' | 'hwaccel'>,
+): boolean => {
+    if ((path.detection_method ?? 'ffprobe') !== preset.detection_method) return false;
+    if ((path.detection_mode ?? 'quick') !== preset.detection_mode) return false;
+    if ((path.thorough_duration_seconds ?? null) !== preset.thorough_duration_seconds) return false;
+    if ((path.thorough_timeout_seconds ?? null) !== preset.thorough_timeout_seconds) return false;
+    if ((path.hwaccel ?? null) !== preset.hwaccel) return false;
+    return true;
+};
+
 // Path validation response
 export interface PathValidation {
     accessible: boolean;
