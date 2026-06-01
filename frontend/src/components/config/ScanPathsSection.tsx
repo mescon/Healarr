@@ -5,7 +5,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
     getArrInstances, getScanPaths, createScanPath, updateScanPath, deleteScanPath,
     triggerScan, getDetectionPreview, validateScanPath, getSystemInfo,
-    type ScanPath
+    getScanPresets, presetMatchesPath,
+    type ScanPath, type ScanPreset
 } from '../../lib/api';
 import clsx from 'clsx';
 import { useToast } from '../../contexts/ToastContext';
@@ -115,6 +116,41 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
         queryFn: getSystemInfo,
         staleTime: 60000,
     });
+
+    // Scan presets used by both the "Apply preset" dropdown in the edit form
+    // and the per-row badge that shows which preset a path matches.
+    const { data: presets } = useQuery({
+        queryKey: ['scanPresets'],
+        queryFn: getScanPresets,
+        staleTime: 60000,
+    });
+
+    // applyPreset writes a preset's bundle of values into the form state.
+    // The user can still tweak any field after applying; the badge logic
+    // detects "still matches preset" vs "diverged to Custom" automatically.
+    const applyPreset = (preset: ScanPreset) => {
+        setNewPath((prev) => ({
+            ...prev,
+            detection_method: preset.detection_method,
+            detection_mode: preset.detection_mode,
+            detection_args: preset.detection_args ? preset.detection_args.join(', ') : '',
+            thorough_duration_seconds: preset.thorough_duration_seconds,
+            thorough_timeout_seconds: preset.thorough_timeout_seconds,
+            hwaccel: preset.hwaccel,
+        }));
+    };
+
+    // currentPresetMatch returns the preset the form currently matches, or null.
+    // Used to highlight the dropdown selection.
+    const currentPresetMatch = (presets ?? []).find((p) =>
+        presetMatchesPath(p, {
+            detection_method: newPath.detection_method,
+            detection_mode: newPath.detection_mode,
+            thorough_duration_seconds: newPath.thorough_duration_seconds ?? null,
+            thorough_timeout_seconds: newPath.thorough_timeout_seconds ?? null,
+            hwaccel: newPath.hwaccel ?? null,
+        }),
+    );
 
     const { data: detectionPreview, isLoading: isLoadingPreview } = useQuery({
         queryKey: ['detectionPreview', newPath.detection_method || 'ffprobe', newPath.detection_mode || 'quick', newPath.detection_args || ''],
@@ -310,6 +346,45 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
                                 transition={{ duration: 0.2, ease: "easeInOut" }}
                             >
                                 <form onSubmit={handleSubmit} className="px-6 pb-6 space-y-4 border-t border-slate-200 dark:border-slate-800/50 pt-4">
+                                    {/* Apply preset - one click pre-fills detection_method/mode/args
+                                        and the three per-path overrides. The form remains editable so
+                                        the user can tweak any field after applying; the chip on the
+                                        right shows the current state (matched preset name or "Custom"). */}
+                                    {presets && presets.length > 0 && (
+                                        <div className="flex items-center gap-3 pb-2 border-b border-slate-200 dark:border-slate-800/50">
+                                            <label htmlFor="path-preset" className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                                                Apply preset:
+                                            </label>
+                                            <select
+                                                id="path-preset"
+                                                value={currentPresetMatch?.id ?? ''}
+                                                onChange={(e) => {
+                                                    const v = e.target.value;
+                                                    if (v === '') return;
+                                                    const p = presets.find((x) => x.id === parseInt(v));
+                                                    if (p) applyPreset(p);
+                                                }}
+                                                className="flex-1 max-w-xs px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+                                            >
+                                                <option value="">Custom (no preset)</option>
+                                                {presets.filter((p) => p.is_builtin).map((p) => (
+                                                    <option key={p.id} value={p.id}>{p.name}</option>
+                                                ))}
+                                                {presets.some((p) => !p.is_builtin) && (
+                                                    <option disabled>──────────</option>
+                                                )}
+                                                {presets.filter((p) => !p.is_builtin).map((p) => (
+                                                    <option key={p.id} value={p.id}>{p.name}</option>
+                                                ))}
+                                            </select>
+                                            {currentPresetMatch && (
+                                                <span className="text-xs text-slate-500 italic" title={currentPresetMatch.description}>
+                                                    {currentPresetMatch.description}
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
+
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
                                             <label htmlFor="path-local" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Local Path <span className="text-red-400">*</span></label>

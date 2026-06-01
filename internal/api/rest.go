@@ -77,6 +77,7 @@ type RESTServer struct {
 	settings       *repository.SettingsRepository
 	corruptions    *repository.CorruptionRepository
 	scanFiles      *repository.ScanFileRepository
+	scanPresets    *repository.ScanPresetRepository
 }
 
 // initRepositories populates the domain repository fields from s.db. Called
@@ -92,6 +93,7 @@ func (s *RESTServer) initRepositories() {
 	s.settings = repository.NewSettingsRepository(s.db)
 	s.corruptions = repository.NewCorruptionRepository(s.db)
 	s.scanFiles = repository.NewScanFileRepository(s.db)
+	s.scanPresets = repository.NewScanPresetRepository(s.db)
 
 	// Register the live tunables source so config.LiveX() accessors in
 	// integration/scanner code see DB-side updates from PUT /api/config/tunables
@@ -469,6 +471,12 @@ func (s *RESTServer) setupRoutes() {
 			// Config - Tunables (formerly env-only knobs now editable via UI)
 			protected.GET("/config/tunables", s.getTunables)
 			protected.PUT("/config/tunables", s.updateTunables)
+
+			// Config - Scan presets (named bundles of scan field values)
+			protected.GET("/config/presets", s.getScanPresets)
+			protected.POST("/config/presets", s.createScanPreset)
+			protected.PUT("/config/presets/:id", s.updateScanPreset)
+			protected.DELETE("/config/presets/:id", s.deleteScanPreset)
 
 			// Config
 			protected.GET("/config/arr", s.getArrInstances)
