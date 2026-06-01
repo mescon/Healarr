@@ -39,6 +39,15 @@ func scanPathFieldsFromRequest(req *scanPathRequest, detectionArgsJSON []byte) r
 	if req.VerificationTimeoutHours != nil {
 		fields.VerificationTimeoutHours = sql.NullInt64{Int64: int64(*req.VerificationTimeoutHours), Valid: true}
 	}
+	if req.ThoroughDurationSeconds != nil {
+		fields.ThoroughDurationSeconds = sql.NullInt64{Int64: *req.ThoroughDurationSeconds, Valid: true}
+	}
+	if req.ThoroughTimeoutSeconds != nil {
+		fields.ThoroughTimeoutSeconds = sql.NullInt64{Int64: *req.ThoroughTimeoutSeconds, Valid: true}
+	}
+	if req.Hwaccel != nil && *req.Hwaccel != "" {
+		fields.Hwaccel = sql.NullString{String: *req.Hwaccel, Valid: true}
+	}
 	return fields
 }
 
@@ -78,6 +87,13 @@ func sanitizeBrowsePath(requestedPath string) (string, error) {
 }
 
 // scanPathRequest is the common request structure for creating and updating scan paths.
+//
+// The three pointer fields at the bottom (ThoroughDurationSeconds /
+// ThoroughTimeoutSeconds / Hwaccel) are per-path overrides. nil/empty
+// means "inherit the matching global tunable" - the existing behavior
+// for every row that predates Phase 2. A non-nil value wins over the
+// global for that specific path; the resolver picks per-path > global >
+// env > default.
 type scanPathRequest struct {
 	LocalPath                string   `json:"local_path"`
 	ArrPath                  string   `json:"arr_path"`
@@ -90,6 +106,9 @@ type scanPathRequest struct {
 	DetectionMode            string   `json:"detection_mode"`
 	MaxRetries               int      `json:"max_retries"`
 	VerificationTimeoutHours *int     `json:"verification_timeout_hours"`
+	ThoroughDurationSeconds  *int64   `json:"thorough_duration_seconds,omitempty"`
+	ThoroughTimeoutSeconds   *int64   `json:"thorough_timeout_seconds,omitempty"`
+	Hwaccel                  *string  `json:"hwaccel,omitempty"`
 }
 
 // prepareScanPathRequest validates and normalizes a scan path request.
@@ -126,6 +145,32 @@ func prepareScanPathRequest(req *scanPathRequest, c *gin.Context) ([]byte, bool)
 		hours := *req.VerificationTimeoutHours
 		if hours < 1 || hours > 8760 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "verification_timeout_hours must be between 1 and 8760"})
+			return nil, false
+		}
+	}
+
+	// Validate per-path overrides. Bounds mirror the catalog entries
+	// (internal/repository/tunables.go) so the validation rule is the
+	// same whether the value lands in a global setting or a per-path
+	// override. nil/zero/empty means "inherit", which is always allowed.
+	if req.ThoroughDurationSeconds != nil {
+		if v := *req.ThoroughDurationSeconds; v < 0 || v > 24*3600 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "thorough_duration_seconds must be between 0 and 86400"})
+			return nil, false
+		}
+	}
+	if req.ThoroughTimeoutSeconds != nil {
+		if v := *req.ThoroughTimeoutSeconds; v < 30 || v > 6*3600 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "thorough_timeout_seconds must be between 30 and 21600"})
+			return nil, false
+		}
+	}
+	if req.Hwaccel != nil && *req.Hwaccel != "" {
+		switch *req.Hwaccel {
+		case "auto", "off", "cuda", "vaapi", "qsv", "videotoolbox", "vdpau", "drm":
+			// allowed
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid hwaccel value"})
 			return nil, false
 		}
 	}
@@ -191,6 +236,21 @@ func (s *RESTServer) getScanPaths(c *gin.Context) {
 			path["verification_timeout_hours"] = p.VerificationTimeoutHours.Int64
 		} else {
 			path["verification_timeout_hours"] = nil
+		}
+		if p.ThoroughDurationSeconds.Valid {
+			path["thorough_duration_seconds"] = p.ThoroughDurationSeconds.Int64
+		} else {
+			path["thorough_duration_seconds"] = nil
+		}
+		if p.ThoroughTimeoutSeconds.Valid {
+			path["thorough_timeout_seconds"] = p.ThoroughTimeoutSeconds.Int64
+		} else {
+			path["thorough_timeout_seconds"] = nil
+		}
+		if p.Hwaccel.Valid {
+			path["hwaccel"] = p.Hwaccel.String
+		} else {
+			path["hwaccel"] = nil
 		}
 		paths = append(paths, path)
 	}

@@ -1802,3 +1802,87 @@ func TestHwAccelDeviceAvailableIn(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// ScanOverrides / effective* tests
+// =============================================================================
+
+func TestEffectiveThoroughDuration_OverrideWinsOverGlobal(t *testing.T) {
+	t.Setenv("HEALARR_HEALTH_CHECK_THOROUGH_DURATION", "")
+
+	tests := []struct {
+		name string
+		ov   *ScanOverrides
+		want time.Duration
+	}{
+		{
+			name: "nil overrides falls through to live global (default 0)",
+			ov:   nil,
+			want: 0,
+		},
+		{
+			name: "nil ThoroughDurationSeconds inside overrides also falls through",
+			ov:   &ScanOverrides{},
+			want: 0,
+		},
+		{
+			name: "non-nil override wins",
+			ov:   &ScanOverrides{ThoroughDurationSeconds: ptrInt64(90)},
+			want: 90 * time.Second,
+		},
+		{
+			name: "zero seconds override wins (operator explicitly chose 'full file')",
+			ov:   &ScanOverrides{ThoroughDurationSeconds: ptrInt64(0)},
+			want: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveThoroughDuration(tt.ov); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveThoroughTimeout_OverrideWinsOverGlobal(t *testing.T) {
+	t.Setenv("HEALARR_HEALTH_CHECK_THOROUGH_TIMEOUT", "")
+
+	// nil -> live global, which is 10m default when env unset and no live tunables source
+	if got := effectiveThoroughTimeout(nil); got != 10*time.Minute {
+		t.Errorf("nil ov: got %v, want 10m", got)
+	}
+
+	// override wins
+	ov := &ScanOverrides{ThoroughTimeoutSeconds: ptrInt64(300)}
+	if got := effectiveThoroughTimeout(ov); got != 300*time.Second {
+		t.Errorf("override: got %v, want 5m", got)
+	}
+}
+
+func TestHwAccelArgsResolved_OverrideBypassesCache(t *testing.T) {
+	t.Setenv("HEALARR_HEALTH_CHECK_HWACCEL", "off") // global says off
+	hc := &CmdHealthChecker{FFmpegPath: "/nonexistent/ffmpeg"}
+
+	// No override -> global "off" -> empty args.
+	if got := hc.hwAccelArgsResolved(nil); len(got) != 0 {
+		t.Errorf("global off: got %v, want empty", got)
+	}
+
+	// Override "cuda" -> ["-hwaccel","cuda"] regardless of global.
+	cuda := "cuda"
+	ov := &ScanOverrides{Hwaccel: &cuda}
+	args := hc.hwAccelArgsResolved(ov)
+	if len(args) != 2 || args[0] != "-hwaccel" || args[1] != "cuda" {
+		t.Errorf("cuda override: got %v, want [-hwaccel cuda]", args)
+	}
+
+	// Empty-string override is treated as nil (inherit global).
+	empty := ""
+	ov2 := &ScanOverrides{Hwaccel: &empty}
+	if got := hc.hwAccelArgsResolved(ov2); len(got) != 0 {
+		t.Errorf("empty-string override: got %v, want empty (inherit global off)", got)
+	}
+}
+
+func ptrInt64(v int64) *int64 { return &v }

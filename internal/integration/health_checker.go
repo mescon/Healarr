@@ -212,6 +212,26 @@ type DetectionConfig struct {
 	Method DetectionMethod
 	Args   []string
 	Mode   string // "quick" or "thorough"
+	// Overrides is the optional per-scan-path override bundle. nil means
+	// "inherit every value from the live global tunables". When non-nil,
+	// any non-nil field inside wins over the matching global for this
+	// specific check.
+	Overrides *ScanOverrides
+}
+
+// ScanOverrides bundles per-scan-path values that take precedence over the
+// global tunables in the settings table. All fields are optional; nil
+// means "inherit the matching global". The scanner constructs one of
+// these from a `scan_paths` row before kicking off a file check.
+//
+// The fields mirror the catalog entries that have meaningful per-library
+// variance: AV1 / 4K libraries on a CUDA host want -hwaccel cuda and a
+// short thorough_duration; a remote SMB share wants hwaccel=off and a
+// longer thorough_timeout to ride out network latency.
+type ScanOverrides struct {
+	ThoroughDurationSeconds *int64
+	ThoroughTimeoutSeconds  *int64
+	Hwaccel                 *string
 }
 
 // CmdHealthChecker validates media files using external command-line tools.
@@ -232,12 +252,20 @@ type CmdHealthChecker struct {
 	hwAccelArgs    []string
 }
 
-// hwAccelArgsResolved returns the cached "-hwaccel ..." args, probing ffmpeg
-// when the live setting has changed since the last call. Returns an empty
-// slice when hardware acceleration is unavailable or disabled - callers can
-// safely append it to any args list. The cache means the (expensive) ffmpeg
-// subprocess probe runs at most once per setting value, not once per scan.
-func (hc *CmdHealthChecker) hwAccelArgsResolved() []string {
+// hwAccelArgsResolved returns the "-hwaccel ..." args for this check,
+// probing ffmpeg when the setting has changed since the last call.
+// Returns an empty slice when hardware acceleration is unavailable or
+// disabled - callers can safely append it to any args list.
+//
+// When ov.Hwaccel is set, the per-path override wins over the global
+// (no caching for the override path - per-path values are rare and
+// re-probing per-call avoids cache-key proliferation). The cached
+// fast-path is reserved for the global setting, which the scanner hits
+// thousands of times.
+func (hc *CmdHealthChecker) hwAccelArgsResolved(ov *ScanOverrides) []string {
+	if ov != nil && ov.Hwaccel != nil && *ov.Hwaccel != "" {
+		return resolveHwAccelArgs(hc.FFmpegPath, *ov.Hwaccel)
+	}
 	setting := config.LiveHealthCheckHwAccel()
 	hc.hwAccelMu.RLock()
 	if hc.hwAccelSetting == setting && hc.hwAccelArgs != nil {
@@ -258,6 +286,24 @@ func (hc *CmdHealthChecker) hwAccelArgsResolved() []string {
 		hc.hwAccelArgs = []string{} // sentinel: non-nil empty means "probed, none"
 	}
 	return hc.hwAccelArgs
+}
+
+// effectiveThoroughDuration picks the per-path override if set, otherwise
+// the live global from the tunable resolver. Zero return means "no -t flag".
+func effectiveThoroughDuration(ov *ScanOverrides) time.Duration {
+	if ov != nil && ov.ThoroughDurationSeconds != nil {
+		return time.Duration(*ov.ThoroughDurationSeconds) * time.Second
+	}
+	return config.LiveHealthCheckThoroughDuration()
+}
+
+// effectiveThoroughTimeout picks the per-path override if set, otherwise
+// the live global from the tunable resolver.
+func effectiveThoroughTimeout(ov *ScanOverrides) time.Duration {
+	if ov != nil && ov.ThoroughTimeoutSeconds != nil {
+		return time.Duration(*ov.ThoroughTimeoutSeconds) * time.Second
+	}
+	return config.LiveHealthCheckThoroughTimeout()
 }
 
 // resolveHwAccelArgs translates HEALARR_HEALTH_CHECK_HWACCEL into the actual
@@ -430,7 +476,7 @@ func (hc *CmdHealthChecker) CheckWithConfig(path string, config DetectionConfig)
 	// 3. Run appropriate detector with mode awareness
 	switch config.Method {
 	case DetectionFFprobe:
-		err := hc.runFFprobeWithArgs(path, config.Args, mode)
+		err := hc.runFFprobeWithArgs(path, config.Args, mode, config.Overrides)
 		if err != nil {
 			return false, hc.classifyDetectorError(err, path)
 		}
@@ -440,7 +486,7 @@ func (hc *CmdHealthChecker) CheckWithConfig(path string, config DetectionConfig)
 			return false, hc.classifyDetectorError(err, path)
 		}
 	case DetectionHandBrake:
-		err := hc.runHandBrakeWithArgs(path, config.Args, mode)
+		err := hc.runHandBrakeWithArgs(path, config.Args, mode, config.Overrides)
 		if err != nil {
 			// HandBrake errors are typically stream-level corruption
 			errStr := err.Error()
@@ -861,7 +907,11 @@ func (hc *CmdHealthChecker) getMediaProbeInfo(path string) (*mediaProbeInfo, err
 // AnalyzeContent checks for content-level issues (black video, frozen video, silent audio)
 // in files that have already passed structural health checks.
 // Only meaningful in thorough mode — call after CheckWithConfig passes.
-func (hc *CmdHealthChecker) AnalyzeContent(path string) (bool, *HealthCheckError) {
+//
+// ov bundles the per-scan-path overrides for the global scan tunables
+// (thorough duration / timeout / hwaccel). Pass nil to inherit every
+// value from the live globals.
+func (hc *CmdHealthChecker) AnalyzeContent(path string, ov *ScanOverrides) (bool, *HealthCheckError) {
 	if err := validateMediaPath(path); err != nil {
 		return false, &HealthCheckError{
 			Type:    ErrorTypeInvalidConfig,
@@ -888,8 +938,8 @@ func (hc *CmdHealthChecker) AnalyzeContent(path string) (bool, *HealthCheckError
 	// Build ffmpeg command with appropriate filters. Hardware-accel args go
 	// FIRST (they are input options); the optional duration limit "-t N" is
 	// also an input option and must precede "-i".
-	ffmpegArgs := append([]string{"-nostats", "-v", "info"}, hc.hwAccelArgsResolved()...)
-	if duration := config.LiveHealthCheckThoroughDuration(); duration > 0 {
+	ffmpegArgs := append([]string{"-nostats", "-v", "info"}, hc.hwAccelArgsResolved(ov)...)
+	if duration := effectiveThoroughDuration(ov); duration > 0 {
 		ffmpegArgs = append(ffmpegArgs, "-t", strconv.FormatFloat(duration.Seconds(), 'f', -1, 64))
 	}
 	ffmpegArgs = append(ffmpegArgs, "-i", path)
@@ -913,7 +963,7 @@ func (hc *CmdHealthChecker) AnalyzeContent(path string) (bool, *HealthCheckError
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	timeout := config.LiveHealthCheckThoroughTimeout()
+	timeout := effectiveThoroughTimeout(ov)
 	done := make(chan error, 1)
 	safego.Run("content-analysis-cmd", func() {
 		done <- cmd.Run()

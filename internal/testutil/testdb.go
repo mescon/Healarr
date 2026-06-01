@@ -67,7 +67,7 @@ func initializeSchema(db *sql.DB) error {
 		return fmt.Errorf("failed to create event_type index: %w", err)
 	}
 
-	// Create scan_paths table
+	// Create scan_paths table (matches migrated schema after 008_scan_path_overrides.sql)
 	_, err = db.Exec(`
 		CREATE TABLE scan_paths (
 			id INTEGER PRIMARY KEY,
@@ -75,7 +75,6 @@ func initializeSchema(db *sql.DB) error {
 			arr_path TEXT NOT NULL,
 			arr_instance_id INTEGER,
 			enabled BOOLEAN DEFAULT 1,
-			health_check_mode TEXT DEFAULT 'thorough',
 			auto_remediate BOOLEAN DEFAULT 0,
 			dry_run BOOLEAN DEFAULT 0,
 			detection_method TEXT NOT NULL DEFAULT 'ffprobe',
@@ -83,6 +82,10 @@ func initializeSchema(db *sql.DB) error {
 			detection_mode TEXT NOT NULL DEFAULT 'quick',
 			max_retries INTEGER DEFAULT 3,
 			verification_timeout_hours INTEGER DEFAULT NULL,
+			thorough_duration_seconds INTEGER,
+			thorough_timeout_seconds INTEGER,
+			hwaccel TEXT CHECK (hwaccel IS NULL OR hwaccel IN
+				('auto', 'off', 'cuda', 'vaapi', 'qsv', 'videotoolbox', 'vdpau', 'drm')),
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)
 	`)

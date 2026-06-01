@@ -30,11 +30,18 @@ func SetLiveTunables(t *repository.Tunables) {
 // ffmpeg decodes during thorough scans. Zero means "decode the whole
 // file". Resolves env > DB > default at every call so a UI-side update
 // takes effect on the next scan tick.
+//
+// Falls back to the hardcoded default (0, "decode full file") when
+// neither a live tunables source nor a loaded Config exists - keeps
+// unit tests that don't call config.Load() out of panic-land.
 func LiveHealthCheckThoroughDuration() time.Duration {
 	if tn := liveTunables.Load(); tn != nil {
 		return tn.ThoroughDuration(context.Background()).Value
 	}
-	return Get().HealthCheckThoroughDuration
+	if cfg != nil {
+		return cfg.HealthCheckThoroughDuration
+	}
+	return 0
 }
 
 // LiveHealthCheckThoroughTimeout returns the per-file wall-clock cap for
@@ -43,7 +50,10 @@ func LiveHealthCheckThoroughTimeout() time.Duration {
 	if tn := liveTunables.Load(); tn != nil {
 		return tn.ThoroughTimeout(context.Background()).Value
 	}
-	return Get().HealthCheckThoroughTimeout
+	if cfg != nil {
+		return cfg.HealthCheckThoroughTimeout
+	}
+	return 10 * time.Minute
 }
 
 // LiveHealthCheckHwAccel returns the resolved hardware acceleration
@@ -53,5 +63,8 @@ func LiveHealthCheckHwAccel() string {
 	if tn := liveTunables.Load(); tn != nil {
 		return tn.HwAccel(context.Background()).Value
 	}
-	return Get().HealthCheckHwAccel
+	if cfg != nil {
+		return cfg.HealthCheckHwAccel
+	}
+	return "auto"
 }

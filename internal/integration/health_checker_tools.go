@@ -9,12 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/safego"
 )
 
-func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string, mode string) error {
+func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string, mode string, ov *ScanOverrides) error {
 	// Mode determines the type of check:
 	// - "quick": Only check container headers and stream info (fast, ~1-2 seconds) using ffprobe
 	// - "thorough": Decode entire file to detect stream corruption (slow, can take minutes) using ffmpeg
@@ -34,8 +33,8 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 		// corruption (a trade the operator opts into).
 		cmdPath = hc.FFmpegPath
 		cmdName = "ffmpeg"
-		args = append([]string{"-v", "error", argXError}, hc.hwAccelArgsResolved()...)
-		if duration := config.LiveHealthCheckThoroughDuration(); duration > 0 {
+		args = append([]string{"-v", "error", argXError}, hc.hwAccelArgsResolved(ov)...)
+		if duration := effectiveThoroughDuration(ov); duration > 0 {
 			args = append(args, "-t", strconv.FormatFloat(duration.Seconds(), 'f', -1, 64))
 		}
 		args = append(args, customArgs...)
@@ -66,7 +65,7 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 	// files, or shrink it once you have set THOROUGH_DURATION to a short prefix).
 	timeout := 30 * time.Second
 	if mode == ModeThorough {
-		timeout = config.LiveHealthCheckThoroughTimeout()
+		timeout = effectiveThoroughTimeout(ov)
 	}
 
 	done := make(chan error, 1)
@@ -96,7 +95,7 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 	return nil
 }
 
-func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []string, mode string) error {
+func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []string, mode string, ov *ScanOverrides) error {
 	// Mode determines the type of check:
 	// - "quick": Basic scan of container structure
 	// - "thorough": Full stream analysis (HandBrake's default scan is already quite thorough)
@@ -108,7 +107,7 @@ func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []strin
 		// Thorough mode: Full scan with preview analysis
 		// --previews 10:0 generates 10 previews at different points to verify stream integrity
 		args = []string{argScan, argPreviews, "10:0", "-i", path}
-		timeout = config.LiveHealthCheckThoroughTimeout()
+		timeout = effectiveThoroughTimeout(ov)
 	} else {
 		// Quick mode: Basic container scan
 		args = []string{argScan, "-i", path}
