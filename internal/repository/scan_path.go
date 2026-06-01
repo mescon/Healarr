@@ -28,6 +28,14 @@ type ScanPath struct {
 	DetectionMode            string
 	MaxRetries               int
 	VerificationTimeoutHours sql.NullInt64
+
+	// Per-path overrides. NULL means "inherit the matching global tunable"
+	// (scan.thorough_duration_seconds / scan.thorough_timeout_seconds /
+	// scan.hwaccel from the settings table). Healarr's effective-config
+	// resolver picks per-path > global > env > default.
+	ThoroughDurationSeconds sql.NullInt64
+	ThoroughTimeoutSeconds  sql.NullInt64
+	Hwaccel                 sql.NullString
 }
 
 // ScanPathFields is the input shape shared by Create and Update — all the
@@ -48,6 +56,11 @@ type ScanPathFields struct {
 	DetectionMode            string
 	MaxRetries               int
 	VerificationTimeoutHours sql.NullInt64
+
+	// Per-path overrides; NULL/zero = inherit global (see ScanPath).
+	ThoroughDurationSeconds sql.NullInt64
+	ThoroughTimeoutSeconds  sql.NullInt64
+	Hwaccel                 sql.NullString
 }
 
 // ScanPathRepository wraps the scan_paths table.
@@ -62,7 +75,8 @@ func NewScanPathRepository(db *sql.DB) *ScanPathRepository {
 
 const scanPathColumns = `id, local_path, arr_path, arr_instance_id, enabled,
 	auto_remediate, dry_run, detection_method, detection_args, detection_mode,
-	max_retries, verification_timeout_hours`
+	max_retries, verification_timeout_hours,
+	thorough_duration_seconds, thorough_timeout_seconds, hwaccel`
 
 func scanScanPathRow(scanner interface {
 	Scan(dest ...interface{}) error
@@ -71,6 +85,7 @@ func scanScanPathRow(scanner interface {
 		&p.ID, &p.LocalPath, &p.ArrPath, &p.ArrInstanceID, &p.Enabled,
 		&p.AutoRemediate, &p.DryRun, &p.DetectionMethod, &p.DetectionArgs,
 		&p.DetectionMode, &p.MaxRetries, &p.VerificationTimeoutHours,
+		&p.ThoroughDurationSeconds, &p.ThoroughTimeoutSeconds, &p.Hwaccel,
 	)
 }
 
@@ -210,10 +225,12 @@ func (r *ScanPathRepository) Create(ctx context.Context, f ScanPathFields) (int6
 	}
 	res, err := r.db.ExecContext(ctx, `INSERT INTO scan_paths
 		(local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run,
-		 detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 detection_method, detection_args, detection_mode, max_retries, verification_timeout_hours,
+		 thorough_duration_seconds, thorough_timeout_seconds, hwaccel)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.LocalPath, f.ArrPath, f.ArrInstanceID, f.Enabled, f.AutoRemediate, f.DryRun,
 		f.DetectionMethod, detectionArgs, f.DetectionMode, f.MaxRetries, f.VerificationTimeoutHours,
+		f.ThoroughDurationSeconds, f.ThoroughTimeoutSeconds, f.Hwaccel,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert scan_path: %w", err)
@@ -234,11 +251,13 @@ func (r *ScanPathRepository) Update(ctx context.Context, id int64, f ScanPathFie
 	_, err := r.db.ExecContext(ctx, `UPDATE scan_paths SET
 		local_path = ?, arr_path = ?, arr_instance_id = ?, enabled = ?,
 		auto_remediate = ?, dry_run = ?, detection_method = ?, detection_args = ?,
-		detection_mode = ?, max_retries = ?, verification_timeout_hours = ?
+		detection_mode = ?, max_retries = ?, verification_timeout_hours = ?,
+		thorough_duration_seconds = ?, thorough_timeout_seconds = ?, hwaccel = ?
 		WHERE id = ?`,
 		f.LocalPath, f.ArrPath, f.ArrInstanceID, f.Enabled,
 		f.AutoRemediate, f.DryRun, f.DetectionMethod, detectionArgs,
-		f.DetectionMode, f.MaxRetries, f.VerificationTimeoutHours, id,
+		f.DetectionMode, f.MaxRetries, f.VerificationTimeoutHours,
+		f.ThoroughDurationSeconds, f.ThoroughTimeoutSeconds, f.Hwaccel, id,
 	)
 	if err != nil {
 		return fmt.Errorf("update scan_path: %w", err)

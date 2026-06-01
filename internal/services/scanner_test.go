@@ -4157,7 +4157,7 @@ func TestScannerService_ContentAnalysis_ThoroughMode(t *testing.T) {
 			return true, nil
 		},
 		// Content analysis detects black video
-		AnalyzeContentFunc: func(path string) (bool, *integration.HealthCheckError) {
+		AnalyzeContentFunc: func(path string, ov *integration.ScanOverrides) (bool, *integration.HealthCheckError) {
 			return false, &integration.HealthCheckError{
 				Type:    integration.ErrorTypeBlackVideo,
 				Message: "video is 100% black",
@@ -4224,7 +4224,7 @@ func TestScannerService_ContentAnalysis_QuickMode_Skipped(t *testing.T) {
 		CheckWithConfigFunc: func(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError) {
 			return true, nil
 		},
-		AnalyzeContentFunc: func(path string) (bool, *integration.HealthCheckError) {
+		AnalyzeContentFunc: func(path string, ov *integration.ScanOverrides) (bool, *integration.HealthCheckError) {
 			t.Error("AnalyzeContent should NOT be called in quick mode")
 			return true, nil
 		},

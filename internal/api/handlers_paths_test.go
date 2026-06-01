@@ -43,6 +43,9 @@ func setupPathsTestDB(t *testing.T) (*sql.DB, func()) {
 		ALTER TABLE scan_paths ADD COLUMN max_retries INTEGER DEFAULT 3;
 		ALTER TABLE scan_paths ADD COLUMN verification_timeout_hours INTEGER;
 		ALTER TABLE scan_paths ADD COLUMN dry_run INTEGER DEFAULT 0;
+		ALTER TABLE scan_paths ADD COLUMN thorough_duration_seconds INTEGER;
+		ALTER TABLE scan_paths ADD COLUMN thorough_timeout_seconds INTEGER;
+		ALTER TABLE scan_paths ADD COLUMN hwaccel TEXT;
 	`
 	_, err := db.Exec(schema)
 	require.NoError(t, err)
@@ -261,6 +264,9 @@ func TestGetScanPaths_ArrInstanceIDNull(t *testing.T) {
 		detection_mode TEXT DEFAULT 'quick',
 		max_retries INTEGER DEFAULT 3,
 		verification_timeout_hours INTEGER,
+		thorough_duration_seconds INTEGER,
+		thorough_timeout_seconds INTEGER,
+		hwaccel TEXT,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
 	require.NoError(t, err)

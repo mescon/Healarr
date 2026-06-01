@@ -538,7 +538,7 @@ func (m *MockPathMapper) CallCount(method string) int {
 type MockHealthChecker struct {
 	CheckFunc           func(path, mode string) (bool, *integration.HealthCheckError)
 	CheckWithConfigFunc func(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError)
-	AnalyzeContentFunc  func(path string) (bool, *integration.HealthCheckError)
+	AnalyzeContentFunc  func(path string, ov *integration.ScanOverrides) (bool, *integration.HealthCheckError)
 
 	// Strict makes unconfigured methods panic rather than fall back to the
 	// "file is healthy" default. Opt-in (default false).
@@ -580,10 +580,10 @@ func (m *MockHealthChecker) CheckWithConfig(path string, config integration.Dete
 	return true, nil
 }
 
-func (m *MockHealthChecker) AnalyzeContent(path string) (bool, *integration.HealthCheckError) {
+func (m *MockHealthChecker) AnalyzeContent(path string, ov *integration.ScanOverrides) (bool, *integration.HealthCheckError) {
 	m.recordCall("AnalyzeContent", path)
 	if m.AnalyzeContentFunc != nil {
-		return m.AnalyzeContentFunc(path)
+		return m.AnalyzeContentFunc(path, ov)
 	}
 	m.unconfigured("AnalyzeContent")
 	// Default: content is healthy

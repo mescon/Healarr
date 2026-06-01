@@ -63,7 +63,10 @@ func setupRecoveryTestDB(t *testing.T) *sql.DB {
 			detection_args TEXT,
 			detection_mode TEXT NOT NULL DEFAULT 'quick',
 			max_retries INTEGER DEFAULT 3,
-			verification_timeout_hours INTEGER
+			verification_timeout_hours INTEGER,
+			thorough_duration_seconds INTEGER,
+			thorough_timeout_seconds INTEGER,
+			hwaccel TEXT
 		);
 	`)
 	if err != nil {

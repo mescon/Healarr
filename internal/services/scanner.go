@@ -875,15 +875,46 @@ func (s *ScannerService) loadScanPathSettings(pathID int64) scanPathSettings {
 		}
 	}
 
+	// Bundle the per-path overrides for the global scan tunables (Phase 2 of
+	// the /config redesign). nil-valued fields inside mean "inherit the
+	// global"; the resolver in health_checker handles the precedence.
+	overrides := buildScanOverrides(path)
+
 	return scanPathSettings{
 		AutoRemediate: autoRemediate,
 		DryRun:        dryRun,
 		DetectionConfig: integration.DetectionConfig{
-			Method: integration.DetectionMethod(detectionMethod),
-			Args:   detectionArgs,
-			Mode:   detectionMode,
+			Method:    integration.DetectionMethod(detectionMethod),
+			Args:      detectionArgs,
+			Mode:      detectionMode,
+			Overrides: overrides,
 		},
 	}
+}
+
+// buildScanOverrides translates the nullable per-path override columns on
+// a scan_paths row into the integration package's ScanOverrides bundle.
+// Returns nil when no override is set so the resolver short-circuits
+// straight to the live globals - cheaper than constructing a bundle of
+// nil pointers per file in a 25k-file library.
+func buildScanOverrides(path repository.ScanPath) *integration.ScanOverrides {
+	if !path.ThoroughDurationSeconds.Valid && !path.ThoroughTimeoutSeconds.Valid && !path.Hwaccel.Valid {
+		return nil
+	}
+	ov := &integration.ScanOverrides{}
+	if path.ThoroughDurationSeconds.Valid {
+		v := path.ThoroughDurationSeconds.Int64
+		ov.ThoroughDurationSeconds = &v
+	}
+	if path.ThoroughTimeoutSeconds.Valid {
+		v := path.ThoroughTimeoutSeconds.Int64
+		ov.ThoroughTimeoutSeconds = &v
+	}
+	if path.Hwaccel.Valid {
+		v := path.Hwaccel.String
+		ov.Hwaccel = &v
+	}
+	return ov
 }
 
 // walkStats tracks statistics during directory enumeration
@@ -1735,7 +1766,7 @@ func (s *ScannerService) detectFile(sfc *scanFileContext, cfg scanFilesConfig) d
 	healthy, healthErr := s.detector.CheckWithConfig(sfc.filePath, cfg.DetectionConfig)
 	if healthy && cfg.DetectionConfig.Mode == integration.ModeThorough {
 		// Thorough mode: structurally-healthy files get a content-analysis pass.
-		healthy, healthErr = s.detector.AnalyzeContent(sfc.filePath)
+		healthy, healthErr = s.detector.AnalyzeContent(sfc.filePath, cfg.DetectionConfig.Overrides)
 	}
 	if healthy {
 		return detectionResult{outcome: outcomeHealthy}

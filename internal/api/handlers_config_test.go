@@ -81,6 +81,9 @@ func setupConfigTestDB(t *testing.T) (*sql.DB, func()) {
 			detection_mode TEXT DEFAULT 'quick',
 			max_retries INTEGER DEFAULT 3,
 			verification_timeout_hours INTEGER DEFAULT NULL,
+			thorough_duration_seconds INTEGER,
+			thorough_timeout_seconds INTEGER,
+			hwaccel TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 

@@ -259,6 +259,14 @@ export interface ScanPath {
     detection_mode?: 'quick' | 'thorough';
     max_retries?: number;
     verification_timeout_hours?: number | null;  // NULL = use global setting
+
+    // Per-path overrides for the matching global scan tunables. null/undefined
+    // means "inherit the global" (the existing behaviour); a non-null value
+    // wins over the global. Bounds and enums mirror the catalog entries on
+    // the backend.
+    thorough_duration_seconds?: number | null;
+    thorough_timeout_seconds?: number | null;
+    hwaccel?: 'auto' | 'off' | 'cuda' | 'vaapi' | 'qsv' | 'videotoolbox' | 'vdpau' | 'drm' | null;
 }
 
 export const getArrInstances = async (): Promise<ArrInstance[]> => {

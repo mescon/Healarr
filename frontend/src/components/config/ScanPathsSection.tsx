@@ -226,11 +226,15 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
             arr_instance_id: path.arr_instance_id,
             enabled: path.enabled,
             auto_remediate: path.auto_remediate,
+            dry_run: path.dry_run ?? false,
             detection_method: path.detection_method || 'ffprobe',
             detection_mode: path.detection_mode || 'quick',
             detection_args: detectionArgsStr,
             max_retries: path.max_retries ?? 3,
-            verification_timeout_hours: path.verification_timeout_hours ?? null
+            verification_timeout_hours: path.verification_timeout_hours ?? null,
+            thorough_duration_seconds: path.thorough_duration_seconds ?? null,
+            thorough_timeout_seconds: path.thorough_timeout_seconds ?? null,
+            hwaccel: path.hwaccel ?? null,
         });
         setEditingId(path.id);
         setIsAddExpanded(true);
@@ -240,13 +244,17 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
         setNewPath({
             enabled: true,
             auto_remediate: true,
+            dry_run: false,
             local_path: '',
             arr_path: '',
             arr_instance_id: null,
             detection_method: 'ffprobe',
             detection_mode: 'quick',
             max_retries: 3,
-            verification_timeout_hours: null
+            verification_timeout_hours: null,
+            thorough_duration_seconds: null,
+            thorough_timeout_seconds: null,
+            hwaccel: null,
         });
         setIsAddExpanded(false);
         setEditingId(null);
@@ -396,6 +404,18 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
                                             <label htmlFor="path-auto-remediate" className="text-sm text-slate-700 dark:text-slate-300">Auto Remediate</label>
                                         </div>
                                         <div className="flex items-center gap-3">
+                                            <input
+                                                type="checkbox"
+                                                id="path-dry-run"
+                                                checked={newPath.dry_run || false}
+                                                onChange={e => setNewPath({ ...newPath, dry_run: e.target.checked })}
+                                                className="w-4 h-4 text-amber-500 bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 rounded focus:ring-amber-500"
+                                            />
+                                            <label htmlFor="path-dry-run" className="text-sm text-slate-700 dark:text-slate-300" title="Log remediation actions for this path without actually deleting files. Useful for testing.">
+                                                Dry run
+                                            </label>
+                                        </div>
+                                        <div className="flex items-center gap-3">
                                             <label htmlFor="path-max-retries" className="text-sm text-slate-700 dark:text-slate-300">Max Retries:</label>
                                             <input
                                                 type="number"
@@ -431,6 +451,92 @@ const ScanPathsSection = ({ onScrollToDetectionTools }: ScanPathsSectionProps) =
                                             How long to keep searching for replacements. Use longer timeouts for rare/hard-to-find content.
                                         </p>
                                     </div>
+
+                                    {/* Per-path scan overrides. Each field defaults to "Inherit global", in
+                                        which case the values configured under Settings -> Scanning defaults
+                                        are used. A non-empty value pins this path to that specific value
+                                        regardless of the global - useful for mixed setups (e.g. a 4K library
+                                        on CUDA, a remote SMB share on software decode). */}
+                                    <details className="pb-2">
+                                        <summary className="cursor-pointer text-sm font-medium text-slate-700 dark:text-slate-300 select-none">
+                                            Override scanning defaults for this path
+                                        </summary>
+                                        <div className="mt-3 ml-4 space-y-3 border-l-2 border-slate-200 dark:border-slate-700 pl-4">
+                                            {/* Thorough decode duration */}
+                                            <div className="flex items-center gap-3">
+                                                <label htmlFor="path-thorough-duration" className="text-sm text-slate-700 dark:text-slate-300 w-48">
+                                                    Thorough decode duration:
+                                                </label>
+                                                <select
+                                                    id="path-thorough-duration"
+                                                    value={newPath.thorough_duration_seconds ?? ''}
+                                                    onChange={e => setNewPath({ ...newPath, thorough_duration_seconds: e.target.value === '' ? null : parseInt(e.target.value) })}
+                                                    className="w-40 px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+                                                >
+                                                    <option value="">Inherit global</option>
+                                                    <option value="0">Full file</option>
+                                                    <option value="30">First 30 seconds</option>
+                                                    <option value="60">First 60 seconds</option>
+                                                    <option value="300">First 5 minutes</option>
+                                                    <option value="600">First 10 minutes</option>
+                                                </select>
+                                            </div>
+
+                                            {/* Thorough decode timeout */}
+                                            <div className="flex items-center gap-3">
+                                                <label htmlFor="path-thorough-timeout" className="text-sm text-slate-700 dark:text-slate-300 w-48">
+                                                    Thorough decode timeout:
+                                                </label>
+                                                <select
+                                                    id="path-thorough-timeout"
+                                                    value={newPath.thorough_timeout_seconds ?? ''}
+                                                    onChange={e => setNewPath({ ...newPath, thorough_timeout_seconds: e.target.value === '' ? null : parseInt(e.target.value) })}
+                                                    className="w-40 px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+                                                >
+                                                    <option value="">Inherit global</option>
+                                                    <option value="60">1 minute</option>
+                                                    <option value="300">5 minutes</option>
+                                                    <option value="600">10 minutes</option>
+                                                    <option value="1800">30 minutes</option>
+                                                    <option value="3600">1 hour</option>
+                                                </select>
+                                            </div>
+
+                                            {/* Hardware acceleration */}
+                                            <div className="flex items-center gap-3">
+                                                <label htmlFor="path-hwaccel" className="text-sm text-slate-700 dark:text-slate-300 w-48">
+                                                    Hardware acceleration:
+                                                </label>
+                                                <select
+                                                    id="path-hwaccel"
+                                                    value={newPath.hwaccel ?? ''}
+                                                    onChange={e => {
+                                                        const v = e.target.value;
+                                                        setNewPath({
+                                                            ...newPath,
+                                                            hwaccel: v === '' ? null : (v as NonNullable<ScanPathFormState['hwaccel']>),
+                                                        });
+                                                    }}
+                                                    className="w-40 px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+                                                >
+                                                    <option value="">Inherit global</option>
+                                                    <option value="auto">auto</option>
+                                                    <option value="off">off</option>
+                                                    <option value="cuda">cuda</option>
+                                                    <option value="vaapi">vaapi</option>
+                                                    <option value="qsv">qsv</option>
+                                                    <option value="videotoolbox">videotoolbox</option>
+                                                    <option value="vdpau">vdpau</option>
+                                                    <option value="drm">drm</option>
+                                                </select>
+                                            </div>
+                                            <p className="text-xs text-slate-500">
+                                                Each field defaults to "Inherit global". Pick a value to pin this path to that
+                                                specific setting (e.g. force <code>cuda</code> on your 4K library while leaving
+                                                the rest on auto).
+                                            </p>
+                                        </div>
+                                    </details>
 
                                     {/* Detection Configuration */}
                                     <div className="space-y-4 pt-4 border-t border-slate-200 dark:border-slate-800">

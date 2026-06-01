@@ -41,6 +41,27 @@ export const scanPathSchema = z.object({
     .max(168, 'Maximum 168 hours (7 days)')
     .nullable()
     .optional(),
+
+  // Per-path overrides for the global scan tunables. null = "inherit the
+  // global" (the existing behaviour); a numeric/string value wins for this
+  // specific path. Bounds mirror the catalog entries on the backend
+  // (internal/repository/tunables.go).
+  thorough_duration_seconds: z
+    .number()
+    .min(0, 'Cannot be negative')
+    .max(86400, 'Maximum 24 hours')
+    .nullable()
+    .optional(),
+  thorough_timeout_seconds: z
+    .number()
+    .min(30, 'Must be at least 30 seconds')
+    .max(21600, 'Maximum 6 hours')
+    .nullable()
+    .optional(),
+  hwaccel: z
+    .enum(['auto', 'off', 'cuda', 'vaapi', 'qsv', 'videotoolbox', 'vdpau', 'drm'])
+    .nullable()
+    .optional(),
 });
 
 /**

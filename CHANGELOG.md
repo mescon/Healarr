@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Per-scan-path overrides for the three scan-related global tunables.** Each scan path can now pin its own `thorough_duration_seconds`, `thorough_timeout_seconds`, and `hwaccel` (NULL = inherit the global; non-NULL wins for that path). Lets a mixed setup keep one global value while making narrow exceptions: e.g. a 4K AV1 library on a CUDA host forces `hwaccel=cuda` and `thorough_duration=60s`, while the same Healarr instance scanning a remote SMB share runs with `hwaccel=off` and a longer thorough timeout. Configured under the "Override scanning defaults for this path" disclosure on each scan path. Phase 2 of the /config redesign; Phase 3 (preset bundles, including user-defined ones) is next.
+- **Per-path Dry Run checkbox.** The `dry_run` column has existed on `scan_paths` for several versions but was missing from the form, so it could only be set via direct DB poke or import/export. It now sits next to the Auto Remediate checkbox.
+
+### Removed
+- **Dead `health_check_mode` column on `scan_paths`.** It was defined in `001_schema.sql` with a CHECK constraint but never read or written by any Go code; the concept moved into `detection_mode` (which is what the scanner actually consults). Carrying both invited future confusion. Migration `008` drops the column.
+
+### Added
 - **Settings page now exposes the runtime tunables that were previously env-only.** Thirteen `HEALARR_*` knobs are now editable from `/config` (full list: thorough decode duration / timeout, hardware acceleration mode, default retry cap, scanner worker count, scanner shutdown timeout, dry-run mode, retention days, verification timeout / interval, stale threshold, *arr rate limit RPS / burst). Each field shows whether its current value comes from env, the DB, or the built-in default; env-set values render as read-only with a "Set by `HEALARR_FOO`" badge so it's obvious which fields are operator-locked. Phase 1 of a larger /config redesign - per-path overrides and preset bundles are next. The "first 60 seconds of decode" trick (the main practical use of `HEALARR_HEALTH_CHECK_THOROUGH_DURATION`) is now one click in the UI.
 
 ### Changed
