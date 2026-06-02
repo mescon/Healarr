@@ -58,7 +58,7 @@ func (hc *CmdHealthChecker) runDetectorAttempt(path string, customArgs []string,
 		// corruption (a trade the operator opts into).
 		cmdPath = hc.FFmpegPath
 		cmdName = "ffmpeg"
-		args = append([]string{"-v", "error", argXError}, hc.hwAccelArgsResolved(ov)...)
+		args = append([]string{"-v", "error", argXError}, hc.hwAccelInputArgs(ov, path)...)
 		if duration := effectiveThoroughDuration(ov); duration > 0 {
 			args = append(args, "-t", strconv.FormatFloat(duration.Seconds(), 'f', -1, 64))
 		}
