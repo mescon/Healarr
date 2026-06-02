@@ -76,7 +76,7 @@ RUN apt-get update && \
     install -d /usr/share/keyrings && \
     curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
         | gpg --dearmor -o /usr/share/keyrings/jellyfin.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/jellyfin.gpg] https://repo.jellyfin.org/debian bookworm main" \
+    echo "deb [signed-by=/usr/share/keyrings/jellyfin.gpg] https://repo.jellyfin.org/debian bookworm main" \
         > /etc/apt/sources.list.d/jellyfin.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
