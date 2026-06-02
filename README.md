@@ -413,7 +413,119 @@ environment:
 | `HEALARR_MEDIAINFO_PATH` | `mediainfo` | Path to mediainfo binary |
 | `HEALARR_HANDBRAKE_PATH` | `HandBrakeCLI` | Path to HandBrakeCLI binary |
 
-> **Note:** The Docker image (Alpine 3.23) includes ffmpeg 8.0.1, HandBrake 1.10.2, and MediaInfo 25.09. Custom binaries are only needed for specific requirements.
+> **Note:** The Docker image (Debian Bookworm slim) includes jellyfin-ffmpeg 8.1, HandBrake CLI, and MediaInfo. Custom binaries are only needed for specific requirements.
+
+## Hardware Acceleration
+
+Thorough scans decode video to detect mid-file corruption. By default that work runs on the CPU and pins one core per scan worker. For AV1, VP9, HEVC and H.264 you can offload the decode to your GPU and dramatically reduce scan time — a `Fast triage` preset against a 7,000-file AV1 library on an RTX 4070 finishes in minutes rather than hours.
+
+Quick mode (the default for new paths) only reads container headers and does not benefit from hardware decode.
+
+### Codec coverage
+
+| Codec | Hardware decode? | Setup notes |
+|---|---|---|
+| H.264, HEVC, MPEG2, VC-1 | yes | Work via ffmpeg's `-hwaccel` flag alone on every vendor |
+| **AV1**, **VP9**, **VP8** | yes (v1.3.5+) | Healarr auto-selects the vendor-specific decoder (`av1_cuvid` / `av1_qsv` / VAAPI internal) because the software defaults (`libdav1d`, `libvpx`) have no hwaccel hooks |
+
+Healarr probes each file's codec with `ffprobe` and adds the correct `-c:v` override at scan time. You do not need to configure decoders per codec — just enable hardware acceleration globally or per scan path.
+
+### NVIDIA (CUDA / NVDEC)
+
+**Prerequisite:** [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed on the host.
+
+```yaml
+services:
+  healarr:
+    image: ghcr.io/mescon/healarr:latest
+    runtime: nvidia
+    environment:
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HEALARR_HEALTH_CHECK_HWACCEL=auto   # auto-detects nvidia
+    devices:
+      - /dev/dri:/dev/dri
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./config:/config
+      - /path/to/media:/media:ro
+```
+
+**Verify:**
+
+```bash
+# Inside the container, cuda should be listed
+docker exec healarr ffmpeg -hwaccels
+
+# During a thorough scan, Healarr's ffmpeg should appear here
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
+```
+
+### Intel iGPU (Quick Sync — QSV)
+
+```yaml
+services:
+  healarr:
+    image: ghcr.io/mescon/healarr:latest
+    environment:
+      - HEALARR_HEALTH_CHECK_HWACCEL=qsv
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - ./config:/config
+      - /path/to/media:/media:ro
+```
+
+AV1 NVDEC for Intel iGPUs requires 12th-gen Core (Arc) or later. Older iGPUs handle HEVC / H.264 / VP9 fine via QSV.
+
+### Intel iGPU and AMD GPU (VAAPI)
+
+The universal Linux GPU decode path. Works on Intel HD Graphics, Intel Arc, and AMD RDNA GPUs.
+
+```yaml
+services:
+  healarr:
+    image: ghcr.io/mescon/healarr:latest
+    environment:
+      - HEALARR_HEALTH_CHECK_HWACCEL=auto   # auto-detects vaapi when no NVIDIA card is present
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - ./config:/config
+      - /path/to/media:/media:ro
+```
+
+AV1 hardware decode on AMD requires RDNA 2 (RX 6000 series) or later. Older AMD GPUs handle HEVC / H.264 fine via VAAPI.
+
+### Per-scan-path overrides
+
+The `HEALARR_HEALTH_CHECK_HWACCEL` env var is the **global default**. The Scan Paths panel under `/config` lets each path override the global with its own setting (`auto`, `off`, `cuda`, `vaapi`, `qsv`, or any specific accelerator). This is useful for mixed setups:
+
+- A local 4K AV1 library on a CUDA host: `cuda` with `Fast triage` preset
+- A remote SMB share scanned by the same Healarr instance: `off` with a longer timeout
+
+Set HW accel per path in the UI under **Settings → Scan Paths → expand row → Override scanning defaults**.
+
+### Recommended presets
+
+| Preset | Decodes | Best for |
+|---|---|---|
+| **Quick** (default) | container headers only | Fast pre-screen, no GPU benefit |
+| **Fast triage** | first 60 seconds | The killer preset when HW decode is enabled — most files scan in milliseconds |
+| **Deep scan** | full file, 30-min timeout | Catches mid-file corruption, practical only with HW decode |
+| **Paranoid** | full file via HandBrake, software only | When you don't trust ffmpeg's tolerance |
+
+Set the preset per scan path in **Settings → Scan Paths → Apply preset**.
+
+### Safety net
+
+If a hardware decoder fails in a way that suggests the GPU runtime is broken (SIGSEGV, `Cannot load libcuda`, "Failed to setup hwaccel", etc.) Healarr automatically retries the same file with hardware acceleration disabled. A broken driver / missing library / decoder crash can never trigger a false-positive corruption flag, so no file gets routed to remediation because of a GPU issue. The retry costs one extra ffmpeg invocation per affected file in the worst case.
 
 ## Notifications
 

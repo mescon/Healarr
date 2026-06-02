@@ -446,6 +446,163 @@ const Help = () => {
                 </Accordion>
             </motion.div>
 
+            {/* Hardware Acceleration - Accordion */}
+            <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.33 }}
+            >
+                <Accordion
+                    title="Hardware Acceleration"
+                    icon={<Zap className="w-5 h-5 text-emerald-400" />}
+                    iconBgClass="bg-emerald-500/10 border-emerald-500/20"
+                >
+                    <p className="text-slate-700 dark:text-slate-300">
+                        Thorough scans decode video to detect mid-file corruption. Healarr can offload that work to your GPU instead of pinning a CPU core per scan worker. With hardware decode enabled, a Fast triage scan against a 7,000-file AV1 library on an RTX 4070 finishes in minutes instead of hours.
+                    </p>
+
+                    <p className="text-slate-700 dark:text-slate-300 mt-3">
+                        Quick mode (the default for new paths) only reads container headers and does not benefit from hardware decode.
+                    </p>
+
+                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white mt-6">Codec coverage</h3>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr className="border-b border-slate-300 dark:border-slate-700">
+                                    <th className="text-left py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold">Codec</th>
+                                    <th className="text-left py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold">Hardware decode</th>
+                                    <th className="text-left py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold">Notes</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-slate-200 dark:border-slate-800">
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">H.264 / HEVC / MPEG2 / VC-1</td>
+                                    <td className="py-2 px-3 text-emerald-700 dark:text-emerald-400">Yes</td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Works via <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">-hwaccel</code> on every vendor</td>
+                                </tr>
+                                <tr>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold">AV1, VP9, VP8</td>
+                                    <td className="py-2 px-3 text-emerald-700 dark:text-emerald-400">Yes (v1.3.5+)</td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Healarr auto-selects the vendor-specific decoder (<code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">av1_cuvid</code>, <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">av1_qsv</code>, etc.)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white mt-6">NVIDIA (CUDA / NVDEC)</h3>
+                    <p className="text-slate-700 dark:text-slate-300">
+                        Requires the <a href="https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html" target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 hover:underline">NVIDIA Container Toolkit</a> on the host.
+                    </p>
+                    <pre className="bg-slate-100 dark:bg-slate-800 p-3 rounded-lg overflow-x-auto text-sm">
+{`services:
+  healarr:
+    image: ghcr.io/mescon/healarr:latest
+    runtime: nvidia
+    environment:
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HEALARR_HEALTH_CHECK_HWACCEL=auto
+    devices:
+      - /dev/dri:/dev/dri
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]`}
+                    </pre>
+                    <p className="text-slate-700 dark:text-slate-300 mt-2">Verify with:</p>
+                    <pre className="bg-slate-100 dark:bg-slate-800 p-3 rounded-lg overflow-x-auto text-sm">
+{`# Inside the container - 'cuda' should be listed
+docker exec healarr ffmpeg -hwaccels
+
+# During a thorough scan - Healarr's ffmpeg should appear here
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv`}
+                    </pre>
+
+                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white mt-6">Intel iGPU (Quick Sync / QSV)</h3>
+                    <pre className="bg-slate-100 dark:bg-slate-800 p-3 rounded-lg overflow-x-auto text-sm">
+{`services:
+  healarr:
+    image: ghcr.io/mescon/healarr:latest
+    environment:
+      - HEALARR_HEALTH_CHECK_HWACCEL=qsv
+    devices:
+      - /dev/dri:/dev/dri`}
+                    </pre>
+                    <p className="text-slate-700 dark:text-slate-300 mt-2 text-sm">
+                        AV1 hardware decode for Intel iGPUs requires 12th-gen Core (Arc) or later. Older iGPUs handle HEVC / H.264 / VP9 via QSV.
+                    </p>
+
+                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white mt-6">Intel and AMD (VAAPI)</h3>
+                    <p className="text-slate-700 dark:text-slate-300">
+                        The universal Linux GPU decode path. Works on Intel HD Graphics, Intel Arc, and AMD RDNA GPUs.
+                    </p>
+                    <pre className="bg-slate-100 dark:bg-slate-800 p-3 rounded-lg overflow-x-auto text-sm">
+{`services:
+  healarr:
+    image: ghcr.io/mescon/healarr:latest
+    environment:
+      - HEALARR_HEALTH_CHECK_HWACCEL=auto   # auto-detects vaapi when no NVIDIA card
+    devices:
+      - /dev/dri:/dev/dri`}
+                    </pre>
+                    <p className="text-slate-700 dark:text-slate-300 mt-2 text-sm">
+                        AV1 hardware decode on AMD requires RDNA 2 (RX 6000 series) or later.
+                    </p>
+
+                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white mt-6">Per-scan-path overrides</h3>
+                    <p className="text-slate-700 dark:text-slate-300">
+                        <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">HEALARR_HEALTH_CHECK_HWACCEL</code> is the global default. Each scan path can override the global with its own setting under <span className="font-semibold">Settings → Scan Paths → expand row → Override scanning defaults</span>. Useful for mixed setups — a 4K AV1 library on CUDA plus a slow remote SMB share on software decode.
+                    </p>
+
+                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white mt-6">Recommended presets</h3>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr className="border-b border-slate-300 dark:border-slate-700">
+                                    <th className="text-left py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold">Preset</th>
+                                    <th className="text-left py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold">Decodes</th>
+                                    <th className="text-left py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold">Best for</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-slate-200 dark:border-slate-800">
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300"><span className="font-semibold">Quick</span> (default)</td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">container headers only</td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Fast pre-screen, no GPU benefit</td>
+                                </tr>
+                                <tr className="border-b border-slate-200 dark:border-slate-800">
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300"><span className="font-semibold">Fast triage</span></td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">first 60 seconds</td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">The killer preset with HW decode - most files scan in milliseconds</td>
+                                </tr>
+                                <tr className="border-b border-slate-200 dark:border-slate-800">
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300"><span className="font-semibold">Deep scan</span></td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">full file, 30-min timeout</td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">Catches mid-file corruption, practical only with HW decode</td>
+                                </tr>
+                                <tr>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300"><span className="font-semibold">Paranoid</span></td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">full file via HandBrake, software only</td>
+                                    <td className="py-2 px-3 text-slate-700 dark:text-slate-300">When you do not trust ffmpeg's tolerance</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="text-slate-700 dark:text-slate-300 mt-2">
+                        Apply per scan path under <span className="font-semibold">Settings → Scan Paths → Apply preset</span>.
+                    </p>
+
+                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white mt-6">Safety net</h3>
+                    <p className="text-slate-700 dark:text-slate-300">
+                        If a hardware decoder fails in a way that suggests the GPU runtime is broken (SIGSEGV, <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">Cannot load libcuda</code>, "Failed to setup hwaccel", etc.) Healarr automatically retries the same file with hardware acceleration disabled. A broken driver / missing library / decoder crash can never trigger a false-positive corruption flag, so no file is ever routed to remediation because of a GPU issue. The retry costs one extra ffmpeg invocation per affected file in the worst case.
+                    </p>
+                </Accordion>
+            </motion.div>
+
             {/* Reverse Proxy Setup - Accordion */}
             <motion.div
                 initial={{ opacity: 0, y: 20 }}
