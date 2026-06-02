@@ -45,5 +45,7 @@ chown -R healarr:healarr /config
 # Print startup info
 echo "Starting Healarr as UID:$(id -u healarr) GID:$(id -g healarr)"
 
-# Execute the main application as the healarr user
-exec su-exec healarr /app/healarr "$@"
+# Execute the main application as the healarr user. gosu is the Debian-
+# equivalent of Alpine's su-exec: both drop privileges to the named user
+# and exec the command without leaving a shell or extra PID 1 wrapper.
+exec gosu healarr /app/healarr "$@"
