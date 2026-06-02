@@ -66,8 +66,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # falling back to software.
 FROM debian:bookworm-slim
 
-# Add the jellyfin apt repo (it ships jellyfin-ffmpeg as a separate
-# package, currently v7.x tracking ffmpeg 7.1).
+# Add the jellyfin apt repo. The package is named jellyfin-ffmpegN where N
+# is the major ffmpeg version (8 = ffmpeg 8.x, 7 = ffmpeg 7.x). The
+# repo only keeps the current major, so this version pin needs a bump
+# every ~year as upstream majors out.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl gnupg ca-certificates && \
@@ -78,7 +80,7 @@ RUN apt-get update && \
         > /etc/apt/sources.list.d/jellyfin.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        jellyfin-ffmpeg7 \
+        jellyfin-ffmpeg8 \
         mediainfo \
         handbrake-cli \
         tzdata \
