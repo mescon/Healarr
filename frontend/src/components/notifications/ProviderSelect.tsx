@@ -2,7 +2,8 @@
  * ProviderSelect - Categorized dropdown for selecting notification providers.
  * Supports both Config page styling (pink accent) and Wizard styling (green accent).
  */
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
 import { PROVIDER_CONFIGS, PROVIDER_CATEGORIES } from '../../lib/notificationProviders';
@@ -43,25 +44,69 @@ export function ProviderSelect({
     noneLabel = 'Skip (no notifications)',
 }: ProviderSelectProps) {
     const [isOpen, setIsOpen] = useState(false);
-    const dropdownRef = useRef<HTMLDivElement>(null);
+    const triggerRef = useRef<HTMLDivElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
     const styles = variantStyles[variant];
 
-    // Close on click outside
+    // The dropdown is rendered into document.body via a portal so it
+    // escapes overflow:hidden ancestors (the Config-page card and the
+    // Framer Motion height-animated container both clip otherwise).
+    // Position is computed from the trigger's bounding rect each time
+    // the menu opens, and refreshed on scroll / resize while open.
+    const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number } | null>(null);
+
+    const updateMenuPosition = useCallback(() => {
+        if (!triggerRef.current) return;
+        const rect = triggerRef.current.getBoundingClientRect();
+        setMenuPos({
+            top: rect.bottom + 4, // 4px gap matches the previous mt-1
+            left: rect.left,
+            width: rect.width,
+        });
+    }, []);
+
+    // useLayoutEffect + setState is intentional: this is the standard
+    // "measure DOM after layout then position the portal" pattern for
+    // popovers/dropdowns. The setState fires synchronously after layout
+    // so the menu paints in the right place on the first frame instead
+    // of flashing at (0,0).
+    useLayoutEffect(() => {
+        if (!isOpen) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
+            setMenuPos(null);
+            return;
+        }
+        updateMenuPosition();
+        const onScroll = () => updateMenuPosition();
+        const onResize = () => updateMenuPosition();
+        window.addEventListener('scroll', onScroll, true); // capture-phase: catches nested scroll
+        window.addEventListener('resize', onResize);
+        return () => {
+            window.removeEventListener('scroll', onScroll, true);
+            window.removeEventListener('resize', onResize);
+        };
+    }, [isOpen, updateMenuPosition]);
+
+    // Close on click outside. With the portal in place the menu is not
+    // a DOM child of the trigger, so we check BOTH refs - a click is
+    // outside only if it hit neither.
     useEffect(() => {
+        if (!isOpen) return;
         const handleClickOutside = (event: MouseEvent) => {
-            if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-                setIsOpen(false);
-            }
+            const target = event.target as Node;
+            if (triggerRef.current?.contains(target)) return;
+            if (menuRef.current?.contains(target)) return;
+            setIsOpen(false);
         };
         document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, []);
+    }, [isOpen]);
 
     const selectedConfig = PROVIDER_CONFIGS[value];
     const displayLabel = value === 'none' ? noneLabel : selectedConfig?.label || 'Select provider';
 
     return (
-        <div ref={dropdownRef} className={clsx("relative", className)}>
+        <div ref={triggerRef} className={clsx("relative", className)}>
             {/* Selected value button */}
             <button
                 type="button"
@@ -91,9 +136,20 @@ export function ProviderSelect({
                 <ChevronDown className={clsx("w-4 h-4 transition-transform", isOpen && "rotate-180")} />
             </button>
 
-            {/* Dropdown menu */}
-            {isOpen && (
-                <div role="listbox" aria-label="Notification providers" className="absolute z-50 w-full mt-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg shadow-lg max-h-80 overflow-y-auto">
+            {/* Dropdown menu - rendered into document.body via a portal so
+                it escapes any overflow:hidden ancestor (the Config-page
+                card uses overflow-hidden to clip its rounded corners, and
+                the Framer-Motion height-animated wrapper also clips
+                during/after the expand animation). Position is computed
+                from the trigger's bounding rect in updateMenuPosition. */}
+            {isOpen && menuPos && createPortal(
+                <div
+                    ref={menuRef}
+                    role="listbox"
+                    aria-label="Notification providers"
+                    className="fixed z-50 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg shadow-lg max-h-80 overflow-y-auto"
+                    style={{ top: menuPos.top, left: menuPos.left, width: menuPos.width }}
+                >
                     {/* None/Skip option */}
                     {includeNone && (
                         <button
@@ -150,7 +206,8 @@ export function ProviderSelect({
                             </div>
                         );
                     })}
-                </div>
+                </div>,
+                document.body,
             )}
         </div>
     );
