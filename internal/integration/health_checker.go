@@ -306,6 +306,148 @@ func effectiveThoroughTimeout(ov *ScanOverrides) time.Duration {
 	return config.LiveHealthCheckThoroughTimeout()
 }
 
+// hwAccelInputArgs returns the ffmpeg INPUT args (placed before -i) that
+// engage hardware decode for `path`. Combines two pieces:
+//
+//  1. The -hwaccel context (from hwAccelArgsResolved).
+//  2. For codecs whose default ffmpeg decoder is pure software with no
+//     internal hwaccel hooks (AV1 / VP9 / VP8), an explicit -c:v override
+//     that selects the vendor-specific hardware decoder. Without (2)
+//     ffmpeg uses libdav1d / libvpx and the hwaccel context is set up
+//     but never consumed - the GPU is never engaged. See #276 for the
+//     bug this fixes.
+//
+// Vendor coverage: NVIDIA (cuvid), Intel QSV (qsv), and VAAPI (Intel
+// iGPU / AMD, via the bare internal decoder which has VAAPI hooks).
+// H.264 / HEVC / MPEG2 / VC-1 are NOT in the override table because
+// their default decoders already have internal hwaccel hooks - the
+// -hwaccel flag alone routes them through the GPU.
+//
+// Safe to call even when the decoder turns out to be broken on a given
+// host: any failure during decode is caught by runFFprobeWithArgs's
+// retry-without-hwaccel path, so a crash here can never trigger a
+// false-positive corruption flag (#276 prerequisite #2).
+//
+// Returns nil when hwaccel is disabled or unavailable.
+func (hc *CmdHealthChecker) hwAccelInputArgs(ov *ScanOverrides, path string) []string {
+	args := hc.hwAccelArgsResolved(ov)
+	if len(args) == 0 {
+		return nil
+	}
+	vendor := resolveHwAccelVendor(args)
+	if vendor == "" {
+		// Operator explicitly set hwaccel to something we don't have a
+		// vendor mapping for, or to "off". Pass the args through unchanged.
+		return args
+	}
+	codec := hc.detectVideoCodec(path)
+	if dec := hwAccelDecoderForCodec(vendor, codec); dec != "" {
+		args = append(args, "-c:v", dec)
+	}
+	return args
+}
+
+// resolveHwAccelVendor inspects the -hwaccel args and returns the
+// concrete vendor ("cuda" / "qsv" / "vaapi") this invocation should
+// engage. For -hwaccel auto we probe device nodes: NVIDIA card first
+// (/dev/nvidiactl), then VAAPI fallback (any non-emulated render node
+// in /dev/dri). QSV is not picked automatically; the operator must set
+// HEALARR_HEALTH_CHECK_HWACCEL=qsv explicitly because it needs the
+// Intel iGPU drivers installed AND the right runtime config.
+// Returns empty string when the args don't route through a known vendor.
+func resolveHwAccelVendor(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] != "-hwaccel" {
+			continue
+		}
+		v := args[i+1]
+		switch v {
+		case "cuda":
+			return "cuda"
+		case "vaapi":
+			return "vaapi"
+		case "qsv":
+			return "qsv"
+		case "auto":
+			if _, err := os.Stat("/dev/nvidiactl"); err == nil {
+				return "cuda"
+			}
+			if hwAccelDeviceAvailable() {
+				// hwAccelDeviceAvailable returns true for /dev/dri/renderD*
+				// when an Intel/AMD GPU is exposed (already filters out
+				// QEMU's emulated VGA). VAAPI is the universal Linux GPU
+				// decode path on those vendors.
+				return "vaapi"
+			}
+			return ""
+		}
+		return ""
+	}
+	return ""
+}
+
+// hwAccelDecoderForCodec returns the ffmpeg decoder name to pass via
+// -c:v to actually engage hardware decode for `codec` on the given
+// `vendor`. Empty string means "no override needed" - either the
+// codec has no hardware decoder on this vendor, or its default
+// software decoder already has internal hwaccel hooks (h264 / hevc /
+// mpeg2 / vc1).
+//
+// VAAPI is the odd one: it doesn't use a _vaapi-suffixed decoder
+// name like the other vendors. Instead we override to ffmpeg's bare
+// internal codec decoder (e.g. "av1" instead of "libdav1d") - the
+// internal decoder has VAAPI hwaccel hooks that the libdav1d /
+// libvpx software defaults lack.
+func hwAccelDecoderForCodec(vendor, codec string) string {
+	switch vendor {
+	case "cuda":
+		switch codec {
+		case "av1":
+			return "av1_cuvid"
+		case "vp9":
+			return "vp9_cuvid"
+		case "vp8":
+			return "vp8_cuvid"
+		}
+	case "qsv":
+		switch codec {
+		case "av1":
+			return "av1_qsv"
+		case "vp9":
+			return "vp9_qsv"
+		}
+	case "vaapi":
+		switch codec {
+		case "av1":
+			return "av1" // forces internal decoder over libdav1d
+		case "vp9":
+			return "vp9" // forces internal decoder over libvpx-vp9
+		case "vp8":
+			return "vp8" // forces internal decoder over libvpx
+		}
+	}
+	return ""
+}
+
+// detectVideoCodec runs a cheap ffprobe (~30-50ms) to extract the codec
+// name of the first video stream. Returns the empty string when the
+// probe fails, the file has no video stream, or the output cannot be
+// parsed - the caller treats that as "skip the cuvid override".
+func (hc *CmdHealthChecker) detectVideoCodec(path string) string {
+	cmd := exec.Command(hc.FFprobePath,
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=codec_name",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		path,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // resolveHwAccelArgs translates HEALARR_HEALTH_CHECK_HWACCEL into the actual
 // ffmpeg args to use. Split out so it can be tested without a real ffmpeg.
 //   - "off"    -> []
@@ -938,7 +1080,7 @@ func (hc *CmdHealthChecker) AnalyzeContent(path string, ov *ScanOverrides) (bool
 	// Build ffmpeg command with appropriate filters. Hardware-accel args go
 	// FIRST (they are input options); the optional duration limit "-t N" is
 	// also an input option and must precede "-i".
-	ffmpegArgs := append([]string{"-nostats", "-v", "info"}, hc.hwAccelArgsResolved(ov)...)
+	ffmpegArgs := append([]string{"-nostats", "-v", "info"}, hc.hwAccelInputArgs(ov, path)...)
 	if duration := effectiveThoroughDuration(ov); duration > 0 {
 		ffmpegArgs = append(ffmpegArgs, "-t", strconv.FormatFloat(duration.Seconds(), 'f', -1, 64))
 	}

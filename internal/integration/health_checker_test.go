@@ -1969,3 +1969,104 @@ func TestWithHwAccelOff(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// Multi-vendor hardware-decoder selection (#276)
+// =============================================================================
+
+func TestHwAccelDecoderForCodec(t *testing.T) {
+	tests := []struct {
+		vendor string
+		codec  string
+		want   string
+	}{
+		// CUDA (NVIDIA): cuvid decoders for the software-default codecs
+		{"cuda", "av1", "av1_cuvid"},
+		{"cuda", "vp9", "vp9_cuvid"},
+		{"cuda", "vp8", "vp8_cuvid"},
+		// CUDA: codecs with internal hwaccel hooks - no override needed
+		{"cuda", "h264", ""},
+		{"cuda", "hevc", ""},
+		{"cuda", "mpeg2video", ""},
+		{"cuda", "vc1", ""},
+
+		// QSV (Intel iGPU): _qsv suffix
+		{"qsv", "av1", "av1_qsv"},
+		{"qsv", "vp9", "vp9_qsv"},
+		{"qsv", "h264", ""}, // h264 default has QSV hooks
+		{"qsv", "hevc", ""},
+
+		// VAAPI (Intel/AMD): bare internal decoder names, not _vaapi
+		{"vaapi", "av1", "av1"}, // forces ffmpeg off libdav1d
+		{"vaapi", "vp9", "vp9"}, // forces ffmpeg off libvpx-vp9
+		{"vaapi", "vp8", "vp8"},
+		{"vaapi", "h264", ""}, // h264 with hwaccel hooks: -hwaccel alone is enough
+		{"vaapi", "hevc", ""},
+
+		// Unknown vendor or empty codec - skip
+		{"", "av1", ""},
+		{"unknown", "av1", ""},
+		{"cuda", "", ""},
+		{"cuda", "unknown", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.vendor+"/"+tt.codec, func(t *testing.T) {
+			if got := hwAccelDecoderForCodec(tt.vendor, tt.codec); got != tt.want {
+				t.Errorf("hwAccelDecoderForCodec(%q, %q) = %q, want %q", tt.vendor, tt.codec, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveHwAccelVendor(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		// Empty / no -hwaccel flag
+		{"nil args", nil, ""},
+		{"no -hwaccel flag", []string{"-v", "error", "-i", "x"}, ""},
+		{"trailing -hwaccel with no value", []string{"-hwaccel"}, ""},
+
+		// Explicit vendors map straight through
+		{"explicit cuda", []string{"-hwaccel", "cuda"}, "cuda"},
+		{"explicit vaapi", []string{"-hwaccel", "vaapi"}, "vaapi"},
+		{"explicit qsv", []string{"-hwaccel", "qsv"}, "qsv"},
+
+		// "off" / unknown values map to empty
+		{"explicit off", []string{"-hwaccel", "off"}, ""},
+		{"unknown name", []string{"-hwaccel", "totally-not-real"}, ""},
+
+		// Args context doesn't confuse the parser
+		{"-hwaccel cuda mid-stream", []string{"-v", "error", "-hwaccel", "cuda", "-i", "x"}, "cuda"},
+		{"-hwaccel vaapi mid-stream", []string{"-v", "error", "-hwaccel", "vaapi", "-i", "x"}, "vaapi"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveHwAccelVendor(tt.args); got != tt.want {
+				t.Errorf("resolveHwAccelVendor(%v) = %q, want %q", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+// resolveHwAccelVendor's "auto" branch dispatches based on device-node
+// presence. We can't reliably set up /dev/nvidiactl in a test, but we
+// CAN assert the auto branch is decoupled from the literal string
+// "auto" (i.e. it returns the right vendor on a NVIDIA host and
+// either vaapi or "" on a non-NVIDIA host).
+func TestResolveHwAccelVendor_AutoMatchesHostState(t *testing.T) {
+	got := resolveHwAccelVendor([]string{"-hwaccel", "auto"})
+	if _, err := os.Stat("/dev/nvidiactl"); err == nil {
+		if got != "cuda" {
+			t.Errorf("auto on NVIDIA host: got %q, want cuda", got)
+		}
+		return
+	}
+	// On a non-NVIDIA host the answer depends on whether a render node
+	// is exposed (vaapi) or not (empty). Either is correct.
+	if got != "" && got != "vaapi" {
+		t.Errorf("auto on non-NVIDIA host: got %q, want vaapi or empty", got)
+	}
+}
