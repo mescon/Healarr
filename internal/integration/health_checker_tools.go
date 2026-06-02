@@ -13,11 +13,36 @@ import (
 	"github.com/mescon/Healarr/internal/safego"
 )
 
+// runFFprobeWithArgs runs the configured detector (ffprobe in quick mode,
+// ffmpeg in thorough mode). For thorough mode it has a defensive retry
+// path: if the first attempt fails AND the failure pattern looks like a
+// hardware-decoder / hwaccel infrastructure problem (SIGSEGV, libcuvid
+// missing, "Failed to setup hwaccel"), it retries the same file once
+// with hwaccel forced off. Only if BOTH attempts fail does the error
+// propagate to classifyDetectorError - which means the corruption /
+// remediation pipeline never deletes a file that "failed" only because
+// the GPU runtime is broken. See #276 for the bug this prevents.
 func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string, mode string, ov *ScanOverrides) error {
-	// Mode determines the type of check:
-	// - "quick": Only check container headers and stream info (fast, ~1-2 seconds) using ffprobe
-	// - "thorough": Decode entire file to detect stream corruption (slow, can take minutes) using ffmpeg
+	err := hc.runDetectorAttempt(path, customArgs, mode, ov)
+	if err == nil {
+		return nil
+	}
+	// Only the thorough path uses hwaccel, so the retry only makes sense there.
+	if mode != ModeThorough {
+		return err
+	}
+	if !isLikelyHwAccelFailure(err) {
+		return err
+	}
+	logger.Warnf("Thorough decode failed with a hwaccel/decoder-init pattern on %s, retrying with hwaccel disabled: %v", path, err)
+	return hc.runDetectorAttempt(path, customArgs, mode, withHwAccelOff(ov))
+}
 
+// runDetectorAttempt is a single ffmpeg/ffprobe invocation against
+// `path`. The runFFprobeWithArgs wrapper handles the retry-without-hwaccel
+// fallback; this is the lower-level "build args, run, propagate result"
+// that the wrapper composes.
+func (hc *CmdHealthChecker) runDetectorAttempt(path string, customArgs []string, mode string, ov *ScanOverrides) error {
 	var args []string
 	var cmdPath string
 	var cmdName string
@@ -88,11 +113,81 @@ func (hc *CmdHealthChecker) runFFprobeWithArgs(path string, customArgs []string,
 		return fmt.Errorf("%s timed out after %v", cmdName, timeout)
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("%s failed: %s", cmdName, stderr.String())
+			// Include the wait-error description (which carries signal info like
+			// "signal: segmentation fault" for crashed processes) AND the stderr
+			// content. The signal info is what isLikelyHwAccelFailure pattern-
+			// matches against to detect a crashed decoder vs. a corrupt file.
+			return fmt.Errorf("%s failed (%v): %s", cmdName, err, stderr.String())
 		}
 	}
 
 	return nil
+}
+
+// isLikelyHwAccelFailure returns true if the error looks like a problem
+// with the hardware-decode path (driver lib missing, decoder crashed,
+// hwaccel init failed) rather than the input file being corrupt. Healarr
+// uses this to know when to retry with hwaccel disabled instead of
+// letting the failure cascade into classifyDetectorError and from there
+// into the remediation/delete pipeline.
+//
+// The patterns are deliberately broad: a false positive here just costs
+// one extra ffmpeg invocation; a false negative could route a healthy
+// file to deletion (see #276 for the failure mode this prevents).
+func isLikelyHwAccelFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+
+	// Process-level crashes. Go's exec wraps these as "signal: <name>" or
+	// "exit status 139" (128 + SIGSEGV). A crashed decoder is never the
+	// file's fault - cleanly-broken files exit non-zero with a message.
+	if strings.Contains(s, "signal: segmentation fault") ||
+		strings.Contains(s, "signal: bus error") ||
+		strings.Contains(s, "signal: aborted") ||
+		strings.Contains(s, "signal: killed") ||
+		strings.Contains(s, "exit status 139") {
+		return true
+	}
+
+	// Explicit hwaccel-init failure messages from ffmpeg. Match on the
+	// shared "hardware decoder" substring so we catch both the US and
+	// UK "initializ/initialis" spellings ffmpeg has used in various
+	// release branches without tripping the misspell linter on our own
+	// source.
+	if strings.Contains(s, "failed to setup hwaccel") ||
+		strings.Contains(s, "hardware decoder") ||
+		strings.Contains(s, "device creation failed") ||
+		strings.Contains(s, "no supported hwaccel") {
+		return true
+	}
+
+	// CUDA / NVDEC userspace library load failures (the #276 symptom on
+	// our Alpine + NVIDIA Container Toolkit combo: libcuda.so missing).
+	if strings.Contains(s, "cannot load libcuda") ||
+		strings.Contains(s, "cannot load libnvcuvid") ||
+		strings.Contains(s, "cannot load nvcuvid") ||
+		strings.Contains(s, "cuvid initialization failed") ||
+		strings.Contains(s, "could not initialize cuda") ||
+		strings.Contains(s, "cuda_error_") {
+		return true
+	}
+
+	return false
+}
+
+// withHwAccelOff returns a copy of ov with Hwaccel forced to "off". Used
+// by the retry path in runFFprobeWithArgs to disable hardware decode
+// for the second attempt without mutating the caller's overrides.
+func withHwAccelOff(ov *ScanOverrides) *ScanOverrides {
+	off := "off"
+	if ov == nil {
+		return &ScanOverrides{Hwaccel: &off}
+	}
+	out := *ov
+	out.Hwaccel = &off
+	return &out
 }
 
 func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []string, mode string, ov *ScanOverrides) error {

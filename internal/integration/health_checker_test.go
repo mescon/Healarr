@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1886,3 +1887,85 @@ func TestHwAccelArgsResolved_OverrideBypassesCache(t *testing.T) {
 }
 
 func ptrInt64(v int64) *int64 { return &v }
+
+// =============================================================================
+// Defensive classifier (isLikelyHwAccelFailure / withHwAccelOff): the
+// guard that stops a broken GPU runtime from triggering mass file
+// deletion via the corruption-classification fall-through. See #276.
+// =============================================================================
+
+func TestIsLikelyHwAccelFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		// Non-hwaccel: real corruption / I/O / nil should NOT trigger retry
+		{"nil error", nil, false},
+		{"plain corruption", errors.New("ffmpeg failed (exit status 1): [matroska,webm] Header missing"), false},
+		{"no such file", errors.New("ffmpeg failed (exit status 1): No such file or directory"), false},
+		{"permission denied", errors.New("ffmpeg failed (exit status 1): Permission denied"), false},
+		{"i/o error", errors.New("ffmpeg failed (exit status 1): Input/output error"), false},
+
+		// Process crashes - definitely hwaccel/driver path
+		{"SIGSEGV via signal text", errors.New("ffmpeg failed (signal: segmentation fault): "), true},
+		{"SIGSEGV via exit 139", errors.New("ffmpeg failed (exit status 139): "), true},
+		{"SIGBUS", errors.New("ffmpeg failed (signal: bus error): "), true},
+		{"SIGABRT", errors.New("ffmpeg failed (signal: aborted): "), true},
+		{"SIGKILL (OOM, etc.)", errors.New("ffmpeg failed (signal: killed): "), true},
+
+		// Explicit hwaccel-init messages
+		{"Failed to setup hwaccel", errors.New("ffmpeg failed (exit status 1): Failed to setup hwaccel"), true},
+		{"hardware decoder init US", errors.New("ffmpeg failed: Failed to initialize hardware decoder."), true},
+		{"hardware decoder init UK", errors.New("ffmpeg failed: Failed to initialise hardware decoder."), true}, //nolint:misspell // pattern test
+		{"Device creation failed", errors.New("ffmpeg failed: Device creation failed: -1"), true},
+		{"No supported hwaccel", errors.New("ffmpeg failed: No supported hwaccel found"), true},
+
+		// CUDA/NVDEC library load failures - the #276 root cause symptom
+		{"libcuda missing", errors.New("ffmpeg failed: Cannot load libcuda.so.1"), true},
+		{"libnvcuvid missing", errors.New("ffmpeg failed: Cannot load libnvcuvid.so.1"), true},
+		{"CUDA error code", errors.New("ffmpeg failed: CUDA_ERROR_NOT_INITIALIZED"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isLikelyHwAccelFailure(tt.err); got != tt.want {
+				t.Errorf("isLikelyHwAccelFailure(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWithHwAccelOff(t *testing.T) {
+	t.Run("nil overrides creates fresh off override", func(t *testing.T) {
+		out := withHwAccelOff(nil)
+		if out == nil || out.Hwaccel == nil || *out.Hwaccel != "off" {
+			t.Errorf("withHwAccelOff(nil): got %+v, want Hwaccel=off", out)
+		}
+	})
+	t.Run("preserves existing non-hwaccel fields", func(t *testing.T) {
+		dur := int64(60)
+		tmo := int64(300)
+		orig := &ScanOverrides{
+			ThoroughDurationSeconds: &dur,
+			ThoroughTimeoutSeconds:  &tmo,
+		}
+		out := withHwAccelOff(orig)
+		if *out.Hwaccel != "off" {
+			t.Errorf("Hwaccel not set to off: %+v", out)
+		}
+		if out.ThoroughDurationSeconds == nil || *out.ThoroughDurationSeconds != 60 {
+			t.Errorf("duration override lost: %+v", out)
+		}
+		if out.ThoroughTimeoutSeconds == nil || *out.ThoroughTimeoutSeconds != 300 {
+			t.Errorf("timeout override lost: %+v", out)
+		}
+	})
+	t.Run("does not mutate caller's overrides", func(t *testing.T) {
+		cuda := "cuda"
+		orig := &ScanOverrides{Hwaccel: &cuda}
+		_ = withHwAccelOff(orig)
+		if *orig.Hwaccel != "cuda" {
+			t.Errorf("caller's Hwaccel was mutated to %q (expected unchanged 'cuda')", *orig.Hwaccel)
+		}
+	})
+}

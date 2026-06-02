@@ -43,91 +43,62 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     ./cmd/server
 
 # -----------------------------------------------------------------------------
-# Stage 3: ffmpeg builder (custom build with NVIDIA codec support)
+# Stage 3: Production Runtime
 # -----------------------------------------------------------------------------
-# Alpine's stock ffmpeg is built without NVIDIA codec support, so AV1 files
-# silently decode in software (libdav1d) even when the host has an NVIDIA GPU
-# passed through. We compile ffmpeg from source with cuvid/nvdec/nvenc enabled.
-# nv-codec-headers is open-source stub headers - no CUDA toolkit is needed at
-# build time. At runtime ffmpeg dlopen's the host's libnvcuvid / libcuda /
-# libnvidia-encode injected by the NVIDIA Container Toolkit. Total image
-# growth vs stock Alpine ffmpeg: roughly nothing - we just trade the apk
-# binary for our own.
-FROM alpine:3.23 AS ffmpeg-builder
+# Switched from "Alpine + custom-compiled ffmpeg + gcompat" (the build that
+# shipped in v1.3.4) to Debian-slim + jellyfin-ffmpeg. Reason: on hosts
+# using the NVIDIA Container Toolkit, the toolkit's userspace-driver-lib
+# injection (libcuda.so / libnvcuvid.so / libnvidia-encode.so) expects a
+# glibc layout. On the Alpine + gcompat container the libraries weren't
+# being injected at all - they're absent from /usr/lib inside a running
+# container despite runtime: nvidia and NVIDIA_DRIVER_CAPABILITIES=all
+# being set. Every cuvid decoder SIGSEGV'd in 1-2 seconds. The same
+# toolkit + same host works perfectly for jellyfin-ffmpeg in Tdarr
+# (Debian based). See #276 for the diagnosis.
+#
+# jellyfin-ffmpeg is the same focused build Tdarr/Jellyfin/Emby use - it
+# tracks ffmpeg HEAD, ships NVIDIA cuvid/nvdec/nvenc + VAAPI + libplacebo,
+# and produces a much leaner footprint than Debian's stock apt ffmpeg
+# (which would pull in libllvm + Mesa + Wayland transitively). Total
+# image growth vs the Alpine build is ~150-300 MB depending on
+# jellyfin-ffmpeg's deps; the trade is paid for by NVDEC actually
+# working out of the box on every NVIDIA host instead of silently
+# falling back to software.
+FROM debian:bookworm-slim
 
-ARG FFMPEG_VERSION=7.1.1
-ARG NVCODEC_HEADERS_VERSION=12.2.72.0
+# Add the jellyfin apt repo (it ships jellyfin-ffmpeg as a separate
+# package, currently v7.x tracking ffmpeg 7.1).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl gnupg ca-certificates && \
+    install -d /usr/share/keyrings && \
+    curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
+        | gpg --dearmor -o /usr/share/keyrings/jellyfin.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/jellyfin.gpg] https://repo.jellyfin.org/debian bookworm main" \
+        > /etc/apt/sources.list.d/jellyfin.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        jellyfin-ffmpeg7 \
+        mediainfo \
+        handbrake-cli \
+        tzdata \
+        gosu \
+        passwd \
+        wget && \
+    apt-get purge -y curl gnupg && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN apk add --no-cache \
-    build-base nasm yasm pkgconfig bash wget tar xz \
-    x264-dev x265-dev libvpx-dev libass-dev opus-dev \
-    dav1d-dev aom-dev lame-dev libva-dev
+# jellyfin-ffmpeg installs to /usr/lib/jellyfin-ffmpeg/{ffmpeg,ffprobe}. Symlink
+# into /usr/local/bin so callers that look up "ffmpeg" / "ffprobe" via PATH
+# find it. Healarr also honors HEALARR_FFMPEG_PATH / HEALARR_FFPROBE_PATH if
+# the operator wants to point at a different binary.
+RUN ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg && \
+    ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe
 
-# NVIDIA codec header stubs (open source, ~50KB; no CUDA toolkit needed)
-WORKDIR /tmp/nv
-RUN wget -q "https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n${NVCODEC_HEADERS_VERSION}.tar.gz" && \
-    tar -xzf "n${NVCODEC_HEADERS_VERSION}.tar.gz" && \
-    cd "nv-codec-headers-n${NVCODEC_HEADERS_VERSION}" && \
-    make install PREFIX=/usr/local
-
-# ffmpeg with the codec libs Healarr's health checks actually exercise.
-# Skipping --enable-libnpp (would need CUDA libs at build time) - that is for
-# image-processing filters, not the decode path we care about.
-WORKDIR /tmp/ffmpeg
-RUN wget -q "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" && \
-    tar -xJf "ffmpeg-${FFMPEG_VERSION}.tar.xz" && \
-    cd "ffmpeg-${FFMPEG_VERSION}" && \
-    PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/lib/pkgconfig \
-    ./configure \
-        --prefix=/opt/ffmpeg \
-        --enable-gpl --enable-nonfree --enable-version3 \
-        --enable-cuda --enable-cuvid --enable-nvdec --enable-nvenc \
-        --enable-vaapi \
-        --enable-libx264 --enable-libx265 \
-        --enable-libvpx --enable-libopus --enable-libass --enable-libmp3lame \
-        --enable-libdav1d --enable-libaom \
-        --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages \
-        --extra-cflags=-I/usr/local/include \
-        --extra-ldflags=-L/usr/local/lib && \
-    make -j"$(nproc)" && \
-    make install && \
-    strip /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe
-
-# -----------------------------------------------------------------------------
-# Stage 4: Production Runtime
-# -----------------------------------------------------------------------------
-FROM alpine:3.23
-
-# Runtime dependencies.
-# - codec shared libs that match the builder stage's -dev packages (libx264,
-#   libx265, libvpx, libass, opus, dav1d, aom, lame)
-# - mediainfo: alternative health check method
-# - handbrake: HandBrake CLI for the HandBrake detection method
-# - ca-certificates, tzdata: HTTPS + TZ handling
-# - su-exec: drop privileges from root to PUID/PGID user
-# - shadow: usermod/groupmod for the PUID/PGID remap in the entrypoint
-# - gcompat: glibc-compat shim so the custom ffmpeg can dlopen the host's
-#   glibc-linked NVIDIA libs (libnvcuvid.so / libcuda.so / libnvidia-encode.so)
-#   that the NVIDIA Container Toolkit injects at runtime. Without it the
-#   dlopen fails silently on musl and we fall back to software decode.
-RUN apk add --no-cache \
-    mediainfo \
-    handbrake \
-    ca-certificates \
-    tzdata \
-    su-exec \
-    shadow \
-    gcompat \
-    x264-libs x265-libs libvpx libass opus libgcc \
-    dav1d aom-libs lame-libs libva
-
-# Custom ffmpeg/ffprobe with NVIDIA cuvid/nvdec/nvenc (from ffmpeg-builder)
-COPY --from=ffmpeg-builder /opt/ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg
-COPY --from=ffmpeg-builder /opt/ffmpeg/bin/ffprobe /usr/local/bin/ffprobe
-
-# Create default user (will be modified by entrypoint if PUID/PGID set)
-RUN addgroup -g 1000 healarr && \
-    adduser -u 1000 -G healarr -s /bin/sh -D healarr
+# Create default user (will be modified by entrypoint if PUID/PGID set).
+RUN groupadd -g 1000 healarr && \
+    useradd -u 1000 -g healarr -s /bin/sh -m healarr
 
 WORKDIR /app
 
