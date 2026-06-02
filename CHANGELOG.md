@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Notification provider dropdown no longer gets clipped by its parent card.** The dropdown was rendered inline with `position: absolute`, which respects ancestor `overflow: hidden` (set on the Settings card for rounded-corner clipping) and Framer Motion's height-animated container. Listed options past the card's bottom were cut off and unselectable. Dropdown now renders via a React portal into `document.body` with `position: fixed` coordinates computed from the trigger's bounding rect, so it escapes all overflow contexts and floats over the rest of the page.
+
 - **Cancelling a scan now actually stops the in-process scan loop, and previously-cancelled scans no longer come back as "running" after a restart.** Three composing bugs were producing zombie scans (see [#274](https://github.com/mescon/Healarr/issues/274)):
   1. `CancelScan` looked up the in-memory scan map by the DB integer id, but the map is keyed by an internal UUID, so the in-memory `ctx.cancel()` never fired. The scan loop kept iterating files after the user clicked cancel - only the DB row was updated. `CancelScan` now also matches by `ScanDBID`, so the HTTP cancel (which routes by DB id) properly signals the in-process scan; `PauseScan` and `ResumeScan` got the same fix.
   2. `ListInterrupted` (the resume-at-startup query) did not filter out rows with `completed_at` set. A scan that was cancelled and later had its status overwritten to `interrupted` by a graceful shutdown was being **resumed** on the next startup, resurrecting the cancellation as `status='running'`. It now filters on `completed_at IS NULL`.
