@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -141,6 +142,7 @@ func setupArrTestServer(t *testing.T, db *sql.DB) (*gin.Engine, string, func()) 
 		protected.POST("/config/arr/test", s.testArrConnection)
 		protected.PUT("/config/arr/:id", s.updateArrInstance)
 		protected.DELETE("/config/arr/:id", s.deleteArrInstance)
+		protected.POST("/config/arr/:id/webhook-secret", s.regenerateWebhookSecret)
 	}
 
 	cleanup := func() {
@@ -1317,4 +1319,157 @@ func TestGenerateInstanceName_SonarrV3(t *testing.T) {
 	// sonarr-v3 should use "Sonarr" display name
 	name := s.generateInstanceName("sonarr-v3")
 	assert.Equal(t, "Sonarr", name)
+}
+
+// =============================================================================
+// Coverage-driven error-branch tests for handlers_arr.go
+// =============================================================================
+
+// createArrInstance must reject URLs with bad schemes (validateArrURL gate).
+func TestCreateArrInstance_RejectsBadURL(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	router, apiKey, srv := setupArrTestServer(t, db)
+	defer srv()
+
+	body := bytes.NewBufferString(`{
+		"name": "Bad URL",
+		"type": "sonarr",
+		"url": "file:///etc/passwd",
+		"api_key": "k",
+		"enabled": true
+	}`)
+	req, _ := http.NewRequest("POST", "/api/config/arr", body)
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// createArrInstance must reject unknown *arr types (ParseArrType gate).
+func TestCreateArrInstance_RejectsBadType(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	router, apiKey, srv := setupArrTestServer(t, db)
+	defer srv()
+
+	body := bytes.NewBufferString(`{
+		"name": "Bad Type",
+		"type": "wrongarr",
+		"url": "http://localhost:8989",
+		"api_key": "k",
+		"enabled": true
+	}`)
+	req, _ := http.NewRequest("POST", "/api/config/arr", body)
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// updateArrInstance must reject URLs with bad schemes.
+func TestUpdateArrInstance_RejectsBadURL(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	router, apiKey, srv := setupArrTestServer(t, db)
+	defer srv()
+
+	// Seed a row to update
+	encKey, _ := crypto.Encrypt("orig")
+	res, err := db.Exec(`INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES ('orig','sonarr','http://localhost:8989',?,1)`, encKey)
+	require.NoError(t, err)
+	id, _ := res.LastInsertId()
+
+	body := bytes.NewBufferString(`{
+		"name": "orig",
+		"type": "sonarr",
+		"url": "javascript:alert(1)",
+		"api_key": "k",
+		"enabled": true
+	}`)
+	req, _ := http.NewRequest("PUT", "/api/config/arr/"+strconv.FormatInt(id, 10), body)
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// regenerateWebhookSecret returns a fresh secret and updates the DB on a valid id.
+func TestRegenerateWebhookSecret_Success(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	router, apiKey, srv := setupArrTestServer(t, db)
+	defer srv()
+
+	encKey, _ := crypto.Encrypt("origkey")
+	res, err := db.Exec(`INSERT INTO arr_instances (name, type, url, api_key, enabled) VALUES ('s','sonarr','http://localhost:8989',?,1)`, encKey)
+	require.NoError(t, err)
+	id, _ := res.LastInsertId()
+
+	req, _ := http.NewRequest("POST", "/api/config/arr/"+strconv.FormatInt(id, 10)+"/webhook-secret", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	secret, ok := body["webhook_secret"].(string)
+	require.True(t, ok, "webhook_secret missing from response")
+	require.NotEmpty(t, secret)
+
+	// DB should have an encrypted webhook_secret stored
+	var stored string
+	require.NoError(t, db.QueryRow(`SELECT webhook_secret FROM arr_instances WHERE id=?`, id).Scan(&stored))
+	require.NotEmpty(t, stored)
+}
+
+// regenerateWebhookSecret returns 404 when the id is valid format but no row matches.
+func TestRegenerateWebhookSecret_NotFound(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	router, apiKey, srv := setupArrTestServer(t, db)
+	defer srv()
+
+	req, _ := http.NewRequest("POST", "/api/config/arr/99999/webhook-secret", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// regenerateWebhookSecret returns 400 when the id is not a valid integer.
+func TestRegenerateWebhookSecret_BadID(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	router, apiKey, srv := setupArrTestServer(t, db)
+	defer srv()
+
+	req, _ := http.NewRequest("POST", "/api/config/arr/not-a-number/webhook-secret", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// regenerateWebhookSecret requires auth.
+func TestRegenerateWebhookSecret_Unauthorized(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	router, _, srv := setupArrTestServer(t, db)
+	defer srv()
+
+	req, _ := http.NewRequest("POST", "/api/config/arr/1/webhook-secret", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.NotEqual(t, http.StatusOK, w.Code)
 }
