@@ -313,23 +313,76 @@ func (r *ScanRepository) MarkCancelled(ctx context.Context, scanID int64, reason
 	return n > 0, nil
 }
 
+// ReconcileOrphansResult reports the outcome of the startup reconcile.
+type ReconcileOrphansResult struct {
+	// Interrupted is the count of rows that had real persisted progress
+	// (current_file_index > 0 and a saved file_list) and were demoted to
+	// 'interrupted' so ResumeInterruptedScans picks them up.
+	Interrupted int64
+	// Cancelled is the count of rows that had no resumable state
+	// (enumerating, or zero progress) and were marked terminal.
+	Cancelled int64
+}
+
 // MarkOrphansCancelled is the startup reconciliation: any row left in an
 // active state ("running"/"enumerating"/"scanning") that does not belong to
 // this process's in-memory activeScans is the residue of a hard restart
-// (SIGKILL/OOM/crash) that prevented MarkInterrupted from running. Mark them
-// cancelled so they disappear from /scans and Dashboard instead of looking
-// like live work forever. "paused" and "interrupted" are deliberately spared:
-// those are legitimate resumable states the user (or graceful shutdown) put
-// the scan into. Returns the number of rows updated.
+// (SIGKILL/OOM/crash) that prevented MarkInterrupted from running.
+//
+// Rows with real persisted progress (current_file_index > 0 AND
+// total_files > 0 AND a saved file_list) are demoted to 'interrupted'
+// so the next ResumeInterruptedScans sweep picks them up. Rows with no
+// resumable state (enumerating mid-walk, or zero progress) are marked
+// 'cancelled' so they leave the active UI.
+//
+// "paused" and "interrupted" are spared throughout: they are the
+// legitimate resumable states that the user or graceful shutdown put
+// the scan into.
+//
+// The legacy single-counter return is preserved for callers/tests: it
+// is the sum of interrupted+cancelled. The structured outcome is also
+// exposed via ReconcileOrphans for richer logging.
 func (r *ScanRepository) MarkOrphansCancelled(ctx context.Context) (int64, error) {
-	// The status filter (no "completed_at IS NULL") is intentional: an
-	// inconsistent row with status='running' but completed_at already set
-	// (the #274 zombie pattern) IS exactly what this query is supposed to
-	// reap. The old completed_at-based guard meant such rows survived
-	// every restart. The status filter alone is sufficient because
-	// activeScans is empty at startup, so any row in an active status is
-	// by definition an orphan.
-	res, err := r.db.ExecContext(ctx, `
+	res, err := r.ReconcileOrphans(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return res.Interrupted + res.Cancelled, nil
+}
+
+// ReconcileOrphans runs the two-step reconcile in a single transaction:
+//  1. Resumable orphans -> 'interrupted'
+//  2. Everything else still in an active status -> 'cancelled'
+//
+// The status filter (no "completed_at IS NULL") is intentional: an
+// inconsistent row with an active status but completed_at already set
+// (the #274 zombie pattern) IS exactly what this query is supposed to
+// reap. activeScans is empty at startup, so any row in an active status
+// is by definition an orphan.
+func (r *ScanRepository) ReconcileOrphans(ctx context.Context) (ReconcileOrphansResult, error) {
+	var out ReconcileOrphansResult
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return out, fmt.Errorf("reconcile orphans begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	resInt, err := tx.ExecContext(ctx, `
+		UPDATE scans
+		SET status = 'interrupted',
+		    error_message = 'auto-marked interrupted on Healarr restart'
+		WHERE status IN ('running', 'scanning')
+		  AND current_file_index > 0
+		  AND total_files > 0
+		  AND file_list IS NOT NULL
+	`)
+	if err != nil {
+		return out, fmt.Errorf("mark resumable orphans interrupted: %w", err)
+	}
+	out.Interrupted, _ = resInt.RowsAffected()
+
+	resCan, err := tx.ExecContext(ctx, `
 		UPDATE scans
 		SET status = 'cancelled',
 		    completed_at = datetime('now'),
@@ -337,9 +390,14 @@ func (r *ScanRepository) MarkOrphansCancelled(ctx context.Context) (int64, error
 		WHERE status IN ('running', 'enumerating', 'scanning')
 	`)
 	if err != nil {
-		return 0, fmt.Errorf("mark orphan scans cancelled: %w", err)
+		return out, fmt.Errorf("mark orphan scans cancelled: %w", err)
 	}
-	return res.RowsAffected()
+	out.Cancelled, _ = resCan.RowsAffected()
+
+	if err := tx.Commit(); err != nil {
+		return out, fmt.Errorf("reconcile orphans commit: %w", err)
+	}
+	return out, nil
 }
 
 // UpdateProgress updates the live current_file_index and files_scanned
