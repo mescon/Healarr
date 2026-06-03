@@ -266,23 +266,32 @@ func (s *RESTServer) getScanDetails(c *gin.Context) {
 	scan.ID = int(row.ID)
 	scan.Path = row.Path
 	scan.Status = row.Status
-	scan.FilesScanned = row.FilesScanned
-	scan.CorruptionsFound = row.CorruptionsFound
 	scan.StartedAt = row.StartedAt
 	scan.CompletedAt = row.CompletedAt.String
 	if row.PathID.Valid {
 		scan.PathID = int(row.PathID.Int64)
 	}
 
-	// Get file counts from scan_files table using single GROUP BY query (performance optimization)
+	// Derive aggregate counters from scan_files in a single GROUP BY so that
+	// files_scanned, corruptions_found, and the per-status breakdown all come
+	// from the same source. The scans.files_scanned / corruptions_found
+	// columns are lagging caches (files_scanned is only persisted every 10
+	// files during a running scan) — reading them alongside a live
+	// scan_files COUNT made the UI show three different numbers for the
+	// same quantity (e.g. files_scanned=1791 but healthy_files=1792 with
+	// a header progress of 1855).
 	counts, err := s.scanFiles.CountByStatus(c.Request.Context(), scanIDInt)
 	if err != nil {
-		logger.Debugf("Failed to query file counts: %v", err)
+		logger.Debugf("Failed to query file counts, falling back to cached aggregates: %v", err)
+		scan.FilesScanned = row.FilesScanned
+		scan.CorruptionsFound = row.CorruptionsFound
 	} else {
 		scan.HealthyFiles = counts["healthy"]
 		scan.CorruptFiles = counts["corrupt"]
 		scan.SkippedFiles = counts["skipped"]
 		scan.InaccessibleFiles = counts["inaccessible"]
+		scan.FilesScanned = scan.HealthyFiles + scan.CorruptFiles + scan.SkippedFiles + scan.InaccessibleFiles
+		scan.CorruptionsFound = scan.CorruptFiles
 	}
 
 	c.JSON(http.StatusOK, scan)
