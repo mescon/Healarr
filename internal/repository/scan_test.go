@@ -447,6 +447,83 @@ func TestScanRepository_MarkOrphansCancelled(t *testing.T) {
 	}
 }
 
+// ReconcileOrphans must demote rows with real persisted progress to
+// 'interrupted' (resumable) rather than 'cancelled' (terminal). This is the
+// case where a long-running scan was killed by an abrupt container restart
+// before its SIGTERM handler could MarkInterrupted — historically the row
+// was left dead, so a multi-hour run had to be restarted from zero.
+func TestScanRepository_ReconcileOrphans_ResumesProgress(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	// Resumable orphan: real progress + file_list saved.
+	resumable, _ := repo.Create(ctx, CreateScanParams{Path: "/resumable", PathID: 1, TotalFiles: 100, FileListJSON: `["a","b","c"]`})
+	mustExecScan(t, db, `UPDATE scans SET status='running', current_file_index=42 WHERE id=?`, resumable)
+
+	// Zero-progress orphan: running but never got past file 0 (e.g. crashed in setup).
+	zero, _ := repo.Create(ctx, CreateScanParams{Path: "/zero", PathID: 1, TotalFiles: 100, FileListJSON: `["a","b","c"]`})
+	mustExecScan(t, db, `UPDATE scans SET status='running', current_file_index=0 WHERE id=?`, zero)
+
+	// Enumerating: file list not built yet — never resumable.
+	enumerating, _ := repo.Create(ctx, CreateScanParams{Path: "/enum", PathID: 1, TotalFiles: 0, FileListJSON: ""})
+	mustExecScan(t, db, `UPDATE scans SET status='enumerating', current_file_index=0, file_list=NULL WHERE id=?`, enumerating)
+
+	// Spared statuses (must not be touched at all).
+	paused, _ := repo.Create(ctx, CreateScanParams{Path: "/pause", PathID: 1, TotalFiles: 10, FileListJSON: `["x"]`})
+	if err := repo.MarkPaused(ctx, paused, 5); err != nil {
+		t.Fatalf("MarkPaused setup: %v", err)
+	}
+	completed, _ := repo.Create(ctx, CreateScanParams{Path: "/done", PathID: 1, TotalFiles: 10, FileListJSON: `["x"]`})
+	if err := repo.Finalize(ctx, completed, "completed", 10); err != nil {
+		t.Fatalf("Finalize setup: %v", err)
+	}
+
+	out, err := repo.ReconcileOrphans(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileOrphans: %v", err)
+	}
+	if out.Interrupted != 1 {
+		t.Errorf("Interrupted count: got %d, want 1 (only the row with progress)", out.Interrupted)
+	}
+	if out.Cancelled != 2 {
+		t.Errorf("Cancelled count: got %d, want 2 (zero-progress running + enumerating)", out.Cancelled)
+	}
+
+	check := func(id int64, want string) {
+		var got string
+		_ = db.QueryRow(`SELECT status FROM scans WHERE id=?`, id).Scan(&got)
+		if got != want {
+			t.Errorf("scan %d: status = %q, want %q", id, got, want)
+		}
+	}
+	check(resumable, "interrupted") // demoted, resume will pick up
+	check(zero, "cancelled")        // no progress to resume
+	check(enumerating, "cancelled") // file list not built
+	check(paused, "paused")         // spared
+	check(completed, "completed")   // untouched
+
+	// Resumable row's progress fields must survive so resume can use them.
+	var currentFileIndex int
+	var fileList sql.NullString
+	if err := db.QueryRow(`SELECT current_file_index, file_list FROM scans WHERE id=?`, resumable).Scan(&currentFileIndex, &fileList); err != nil {
+		t.Fatalf("read resumable row: %v", err)
+	}
+	if currentFileIndex != 42 {
+		t.Errorf("current_file_index reset: got %d, want 42", currentFileIndex)
+	}
+	if !fileList.Valid || fileList.String == "" {
+		t.Errorf("file_list cleared on reconcile (must be preserved for resume)")
+	}
+
+	// Idempotent: second call is a no-op.
+	out2, err := repo.ReconcileOrphans(ctx)
+	if err != nil || out2.Interrupted != 0 || out2.Cancelled != 0 {
+		t.Errorf("second ReconcileOrphans: got (%d intr, %d can, %v), want (0,0,nil)", out2.Interrupted, out2.Cancelled, err)
+	}
+}
+
 // =============================================================================
 // Regression tests for #274: zombie cancelled-then-interrupted scans
 // =============================================================================

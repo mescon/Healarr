@@ -1921,23 +1921,32 @@ func (s *ScannerService) IsPathBeingScanned(path string) bool {
 // status ("running"/"enumerating"/"scanning") at this point cannot belong to
 // this process (activeScans is empty until the first scan starts), so it must
 // be the residue of a previous hard restart that prevented MarkInterrupted
-// from running. Mark those rows cancelled so they disappear from /scans and
-// Dashboard instead of looking like live work forever. "paused" and
-// "interrupted" are deliberately spared (legitimate resumable states).
-// Idempotent: a fresh DB or a previously-reconciled DB results in 0 updates.
+// from running.
+//
+// Rows with real persisted progress (file_list saved, current_file_index > 0)
+// are demoted to 'interrupted' so the subsequent ResumeInterruptedScans pass
+// picks them up and continues from the saved checkpoint. Rows without
+// resumable state (mid-enumerate, or zero progress) are marked 'cancelled'.
+//
+// "paused" and "interrupted" are deliberately spared (legitimate resumable
+// states). Idempotent: a fresh DB or a previously-reconciled DB results in
+// 0 updates.
 func (s *ScannerService) ReconcileOrphanScans() {
 	if s.scanRepo() == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	n, err := s.scanRepo().MarkOrphansCancelled(ctx)
+	res, err := s.scanRepo().ReconcileOrphans(ctx)
 	if err != nil {
 		logger.Warnf("ReconcileOrphanScans: failed to clean orphan rows: %v", err)
 		return
 	}
-	if n > 0 {
-		logger.Infof("ReconcileOrphanScans: marked %d orphan scan row(s) cancelled (residue of a previous hard restart)", n)
+	if res.Interrupted > 0 {
+		logger.Infof("ReconcileOrphanScans: demoted %d orphan scan row(s) to 'interrupted' for auto-resume (residue of a previous hard restart)", res.Interrupted)
+	}
+	if res.Cancelled > 0 {
+		logger.Infof("ReconcileOrphanScans: marked %d orphan scan row(s) cancelled (no resumable progress)", res.Cancelled)
 	}
 }
 
