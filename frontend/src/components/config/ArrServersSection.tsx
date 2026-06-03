@@ -439,7 +439,7 @@ const ArrServersSection = () => {
                                                     <input
                                                         type="text"
                                                         readOnly
-                                                        value={`${window.location.origin}/api/webhook/${arr.id}?apikey=${apiKeyData?.api_key || '...'}`}
+                                                        value={`${window.location.origin}/api/webhook/${arr.id}?apikey=${arr.webhook_secret || apiKeyData?.api_key || '...'}`}
                                                         onClick={(e) => e.currentTarget.select()}
                                                         className="w-full max-w-md bg-white dark:bg-slate-900/50 border border-slate-300 dark:border-slate-700 rounded px-2 py-1 text-xs text-slate-600 dark:text-slate-400 font-mono focus:outline-none focus:border-blue-500 focus:text-blue-300 cursor-pointer"
                                                     />

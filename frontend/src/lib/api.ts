@@ -244,6 +244,10 @@ export interface ArrInstance {
     url: string;
     api_key: string;
     enabled: boolean;
+    // Per-instance webhook secret. Null on legacy rows created before the
+    // per-instance-secret migration; the master api_key acts as the
+    // fallback credential in that case.
+    webhook_secret?: string | null;
 }
 
 export interface ScanPath {

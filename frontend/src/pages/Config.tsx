@@ -405,9 +405,9 @@ const SecuritySection = ({ apiKeyData, refetchApiKey }: SecuritySectionProps) =>
             <div className="rounded-xl border border-slate-200 dark:border-slate-800/50 bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-6 h-full">
                 <div className="space-y-4">
                     <div>
-                        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Webhook API Key</h3>
+                        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Master API Key</h3>
                         <p className="text-xs text-slate-500 mb-4">
-                            Use this API key in your Sonarr/Radarr webhook URLs. Add <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded text-purple-600 dark:text-purple-300">?apikey=YOUR_KEY</code> to the webhook URL.
+                            Used by external integrations to call the Healarr API. For Sonarr/Radarr webhooks, copy the per-instance URL from the instance row above. The master key is only a fallback for legacy instances that have no per-instance webhook secret.
                         </p>
                     </div>
 
@@ -441,8 +441,9 @@ const SecuritySection = ({ apiKeyData, refetchApiKey }: SecuritySectionProps) =>
 
                     <div className="bg-amber-100 dark:bg-yellow-500/10 border border-amber-300 dark:border-yellow-500/20 rounded-lg p-3">
                         <p className="text-xs text-amber-800 dark:text-yellow-300">
-                            <strong>Webhook URL Format:</strong><br />
-                            <code className="text-xs">{window.location.origin}/api/webhook/{'{'}instance_id{'}'}</code> + <code>?apikey={apiKeyData?.api_key || 'YOUR_KEY'}</code>
+                            <strong>Legacy webhook URL (fallback only):</strong><br />
+                            <code className="text-xs">{window.location.origin}/api/webhook/{'{'}instance_id{'}'}</code> + <code>?apikey={apiKeyData?.api_key || 'YOUR_KEY'}</code><br />
+                            Prefer the per-instance URL shown in each instance row above.
                         </p>
                     </div>
                 </div>
