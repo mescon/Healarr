@@ -674,12 +674,14 @@ func (s *RESTServer) verifyAPIToken(token string) error {
 	// Session token path (browsers).
 	sessErr := s.sessions.Validate(ctx, token)
 	if sessErr == nil {
-		// Bump last_used_at on a successful validation. We don't fail the
-		// request if this update errors — the session is valid, the bump
-		// is purely diagnostic ("when did this session last act?").
-		if bumpErr := s.sessions.BumpLastUsed(ctx, token); bumpErr != nil {
-			logger.Debugf("session last_used_at update failed: %v", bumpErr)
-		}
+		// Bump last_used_at on a successful validation. The update is
+		// best-effort: the session is valid, the bump is purely
+		// diagnostic ("when did this session last act?"). Any error
+		// here is discarded — under page-load fanout multiple requests
+		// race on the same UPDATE and all-but-one hit SQLITE_BUSY,
+		// which would otherwise spam the log viewer with misleading
+		// "database is locked" lines.
+		_ = s.sessions.BumpLastUsed(ctx, token)
 		return nil
 	}
 	if !errors.Is(sessErr, repository.ErrNotFound) && !errors.Is(sessErr, repository.ErrSessionExpired) {
