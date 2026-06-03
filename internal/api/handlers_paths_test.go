@@ -2025,3 +2025,116 @@ func TestRelPathOrName(t *testing.T) {
 		})
 	}
 }
+
+// TestCreateScanPath_InvalidThoroughDuration covers the per-path
+// thorough_duration_seconds bounds check (0..86400).
+func TestCreateScanPath_InvalidThoroughDuration(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	result, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := result.LastInsertId()
+
+	router, apiKey, srv := setupPathsTestServer(t, db)
+	defer srv()
+
+	cases := []struct {
+		name    string
+		seconds int64
+	}{
+		{"negative", -1},
+		{"too_large", 86401},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := bytes.NewBufferString(fmt.Sprintf(`{
+				"local_path": "/media/dur-%s",
+				"arr_instance_id": %d,
+				"enabled": true,
+				"thorough_duration_seconds": %d
+			}`, tc.name, arrID, tc.seconds))
+			req, _ := http.NewRequest("POST", "/api/config/paths", body)
+			req.Header.Set("X-API-Key", apiKey)
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			require.Equal(t, http.StatusBadRequest, w.Code, "body=%s", w.Body.String())
+			require.Contains(t, w.Body.String(), "thorough_duration_seconds")
+		})
+	}
+}
+
+// TestCreateScanPath_InvalidThoroughTimeout covers the per-path
+// thorough_timeout_seconds bounds check (30..21600).
+func TestCreateScanPath_InvalidThoroughTimeout(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	result, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := result.LastInsertId()
+
+	router, apiKey, srv := setupPathsTestServer(t, db)
+	defer srv()
+
+	cases := []struct {
+		name    string
+		seconds int64
+	}{
+		{"too_small", 29},
+		{"too_large", 21601},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := bytes.NewBufferString(fmt.Sprintf(`{
+				"local_path": "/media/timeout-%s",
+				"arr_instance_id": %d,
+				"enabled": true,
+				"thorough_timeout_seconds": %d
+			}`, tc.name, arrID, tc.seconds))
+			req, _ := http.NewRequest("POST", "/api/config/paths", body)
+			req.Header.Set("X-API-Key", apiKey)
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			require.Equal(t, http.StatusBadRequest, w.Code, "body=%s", w.Body.String())
+			require.Contains(t, w.Body.String(), "thorough_timeout_seconds")
+		})
+	}
+}
+
+// TestCreateScanPath_InvalidHwaccel covers the per-path hwaccel allowlist.
+// Empty string and nil mean "inherit"; only the named codec backends are
+// accepted otherwise.
+func TestCreateScanPath_InvalidHwaccel(t *testing.T) {
+	db, cleanup := setupPathsTestDB(t)
+	defer cleanup()
+
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	result, _ := db.Exec("INSERT INTO arr_instances (name, type, url, api_key) VALUES (?, ?, ?, ?)",
+		"Sonarr", "sonarr", "http://localhost:8989", encryptedKey)
+	arrID, _ := result.LastInsertId()
+
+	router, apiKey, srv := setupPathsTestServer(t, db)
+	defer srv()
+
+	body := bytes.NewBufferString(fmt.Sprintf(`{
+		"local_path": "/media/hwaccel-bad",
+		"arr_instance_id": %d,
+		"enabled": true,
+		"hwaccel": "not-a-backend"
+	}`, arrID))
+	req, _ := http.NewRequest("POST", "/api/config/paths", body)
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "body=%s", w.Body.String())
+	require.Contains(t, w.Body.String(), "invalid hwaccel")
+}
