@@ -814,6 +814,90 @@ func TestGetScanDetails_Success(t *testing.T) {
 	}
 }
 
+// TestGetScanDetails_CountersDerivedFromScanFiles asserts that
+// files_scanned and corruptions_found in the response are derived from the
+// scan_files table — not read from the lagging scans.files_scanned /
+// scans.corruptions_found cache columns. This guards against the
+// "three different numbers for the same quantity" UI regression where a
+// running scan showed e.g. files_scanned=1791, healthy_files=1792.
+func TestGetScanDetails_CountersDerivedFromScanFiles(t *testing.T) {
+	db, cleanup := setupScansTestDB(t)
+	defer cleanup()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	now := time.Now()
+
+	// Insert a scan row with stale cached aggregates: simulates a running
+	// scan that has only checkpointed the every-10-files counter to 100
+	// while the per-file scan_files rows have advanced further.
+	_, err := db.Exec(`
+		INSERT INTO scans (path, status, started_at, files_scanned, corruptions_found)
+		VALUES (?, 'running', ?, 100, 5)
+	`, "/test/path", now.Format("2006-01-02 15:04:05"))
+	if err != nil {
+		t.Fatalf("Failed to insert scan: %v", err)
+	}
+
+	// 3 healthy + 2 corrupt + 1 skipped + 1 inaccessible = 7 actually-scanned
+	statuses := []struct {
+		path   string
+		status string
+	}{
+		{"/test/h1.mkv", "healthy"}, {"/test/h2.mkv", "healthy"}, {"/test/h3.mkv", "healthy"},
+		{"/test/c1.mkv", "corrupt"}, {"/test/c2.mkv", "corrupt"},
+		{"/test/s1.mkv", "skipped"},
+		{"/test/i1.mkv", "inaccessible"},
+	}
+	for _, s := range statuses {
+		if _, err := db.Exec(
+			`INSERT INTO scan_files (scan_id, file_path, status) VALUES (1, ?, ?)`,
+			s.path, s.status,
+		); err != nil {
+			t.Fatalf("Failed to insert scan_file: %v", err)
+		}
+	}
+
+	server := createScansTestServer(t, db, eb)
+	defer server.scanner.Shutdown()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/scans/:scan_id", server.getScanDetails)
+
+	req, _ := http.NewRequest("GET", "/scans/1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var scan map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &scan); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	// files_scanned must come from scan_files (7), not from the cached
+	// scans.files_scanned column (100).
+	if got := scan["files_scanned"].(float64); got != 7 {
+		t.Errorf("files_scanned: expected 7 (derived from scan_files), got %v (cached column?)", got)
+	}
+	// corruptions_found must equal corrupt_files (2), not the cached
+	// scans.corruptions_found column (5).
+	if got := scan["corruptions_found"].(float64); got != 2 {
+		t.Errorf("corruptions_found: expected 2 (= corrupt_files), got %v (cached column?)", got)
+	}
+	// Identity: files_scanned == healthy + corrupt + skipped + inaccessible.
+	sum := scan["healthy_files"].(float64) + scan["corrupt_files"].(float64) +
+		scan["skipped_files"].(float64) + scan["inaccessible_files"].(float64)
+	if scan["files_scanned"].(float64) != sum {
+		t.Errorf("files_scanned (%v) must equal sum of per-status counts (%v)",
+			scan["files_scanned"], sum)
+	}
+}
+
 func TestGetScanFiles_NotFound(t *testing.T) {
 	db, cleanup := setupScansTestDB(t)
 	defer cleanup()
