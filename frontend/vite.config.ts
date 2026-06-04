@@ -17,15 +17,18 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
-        manualChunks: {
-          // React core
-          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-          // UI libraries
-          'ui-vendor': ['framer-motion', 'lucide-react', 'clsx'],
-          // Charting
-          'chart-vendor': ['recharts'],
-          // Data fetching
-          'query-vendor': ['@tanstack/react-query', 'axios'],
+        // Function form (object literal is no longer accepted in vite 8 /
+        // rollup 4+ TypeScript types). Equivalent to the previous map:
+        // packages → bundle. Match on the node_modules path so subpath
+        // imports (`react-dom/client`, `lucide-react/icons/...`) all land
+        // in the same chunk as the root package.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (/[\\/]node_modules[\\/](react|react-dom|react-router-dom)[\\/]/.test(id)) return 'react-vendor'
+          if (/[\\/]node_modules[\\/](framer-motion|lucide-react|clsx)[\\/]/.test(id)) return 'ui-vendor'
+          if (/[\\/]node_modules[\\/]recharts[\\/]/.test(id)) return 'chart-vendor'
+          if (/[\\/]node_modules[\\/](@tanstack[\\/]react-query|axios)[\\/]/.test(id)) return 'query-vendor'
+          return undefined
         },
       },
     },
