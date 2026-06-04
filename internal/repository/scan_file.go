@@ -44,9 +44,20 @@ func NewScanFileRepository(sqlDB *sql.DB) *ScanFileRepository {
 // Record inserts a per-file scan result for the given scan.
 //
 // Uses db.ExecWithRetry because these inserts fire from parallel per-file
-// scan goroutines and can hit SQLite BUSY under contention; the retry
-// wrapper is the same one the scanner used inline before this migration,
-// so concurrency behavior is unchanged.
+// scan goroutines and can hit SQLite BUSY under contention.
+//
+// Idempotent on (scan_id, file_path) via the UNIQUE index added in migration
+// 010 and the ON CONFLICT DO NOTHING clause below: on resume from
+// interruption, the scanner's watermark may lag behind the actual
+// highest-completed index, so a re-detection of an already-recorded file
+// must not produce a duplicate row. Callers that need to distinguish
+// "fresh insert" from "already existed" can check the returned bool.
+//
+// scanned_at is set explicitly via strftime to millisecond precision
+// instead of the column's CURRENT_TIMESTAMP default (second precision).
+// The old precision clustered batch-completions into a single per-second
+// timestamp; with the new out-of-order worker pool, real wall-clock order
+// is visible in the scan-detail UI.
 func (r *ScanFileRepository) Record(ctx context.Context, scanID int64, rec ScanFileRecord) error {
 	_ = ctx // retry wrapper operates on the pool; ctx reserved for a future ExecContext variant
 	var corruptionType, errorDetails interface{}
@@ -57,8 +68,9 @@ func (r *ScanFileRepository) Record(ctx context.Context, scanID int64, rec ScanF
 		errorDetails = rec.ErrorDetails
 	}
 	_, err := db.ExecWithRetry(r.db, `
-		INSERT INTO scan_files (scan_id, file_path, status, corruption_type, error_details, file_size)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO scan_files (scan_id, file_path, status, corruption_type, error_details, file_size, scanned_at)
+		VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+		ON CONFLICT(scan_id, file_path) DO NOTHING
 	`, scanID, rec.FilePath, rec.Status, corruptionType, errorDetails, rec.FileSize)
 	if err != nil {
 		return fmt.Errorf("record scan file: %w", err)

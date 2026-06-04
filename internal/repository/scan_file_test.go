@@ -19,6 +19,11 @@ CREATE TABLE scan_files (
 	file_size       INTEGER,
 	scanned_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+-- Mirrors migration 010_scan_files_unique_index.sql so the test DB
+-- exercises the same ON CONFLICT(scan_id, file_path) path the production
+-- repository relies on.
+CREATE UNIQUE INDEX idx_scan_files_scan_id_file_path_unique
+    ON scan_files(scan_id, file_path);
 `
 
 func newScanFileTestDB(t *testing.T) *sql.DB {
@@ -160,5 +165,75 @@ func TestScanFileRepository_ListForScan_pagination(t *testing.T) {
 	page3, err := repo.ListForScan(ctx, 1, "all", 2, 4)
 	if err != nil || len(page3) != 1 {
 		t.Fatalf("page3 = (%d, %v), want (1, nil)", len(page3), err)
+	}
+}
+
+// Record must be idempotent on (scan_id, file_path) so the scanner's
+// post-interruption replay window cannot produce duplicate rows. The
+// underlying INSERT ... ON CONFLICT DO NOTHING (migration 010) is what
+// guarantees this; this test pins the behavior.
+func TestScanFileRepository_Record_IdempotentOnReplay(t *testing.T) {
+	t.Parallel()
+	db := newScanFileTestDB(t)
+	repo := NewScanFileRepository(db)
+	ctx := context.Background()
+
+	rec := ScanFileRecord{FilePath: "/a.mkv", Status: "healthy", FileSize: 1024}
+
+	// First insert succeeds.
+	if err := repo.Record(ctx, 7, rec); err != nil {
+		t.Fatalf("first Record: %v", err)
+	}
+	// Second insert with the same (scan_id, file_path) must NOT error.
+	if err := repo.Record(ctx, 7, rec); err != nil {
+		t.Fatalf("second Record (replay) should be a no-op, got error: %v", err)
+	}
+
+	// The table must still contain exactly one row for the pair.
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM scan_files WHERE scan_id=7 AND file_path='/a.mkv'`).Scan(&count); err != nil {
+		t.Fatalf("count query: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("duplicate inserts produced %d rows, want 1", count)
+	}
+
+	// A different scan_id with the same file_path is a different row — the
+	// uniqueness is scoped to (scan_id, file_path), not file_path alone.
+	if err := repo.Record(ctx, 8, rec); err != nil {
+		t.Fatalf("Record for different scan: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM scan_files WHERE file_path='/a.mkv'`).Scan(&count); err != nil {
+		t.Fatalf("count query 2: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("got %d rows for /a.mkv across scans, want 2 (one per scan)", count)
+	}
+}
+
+// Record must persist scanned_at at millisecond precision rather than the
+// column's CURRENT_TIMESTAMP default (second precision). The chunked-burst
+// timestamp clustering visible in the scan-detail UI before #290 came from
+// many parallel workers committing within the same second; the new write
+// path stamps each row with strftime('%f') so per-file order survives.
+func TestScanFileRepository_Record_StoresMillisecondTimestamp(t *testing.T) {
+	t.Parallel()
+	db := newScanFileTestDB(t)
+	repo := NewScanFileRepository(db)
+	ctx := context.Background()
+
+	if err := repo.Record(ctx, 1, ScanFileRecord{FilePath: "/a.mkv", Status: "healthy"}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	var ts string
+	if err := db.QueryRow(`SELECT scanned_at FROM scan_files WHERE scan_id=1 AND file_path='/a.mkv'`).Scan(&ts); err != nil {
+		t.Fatalf("read scanned_at: %v", err)
+	}
+	// strftime('%Y-%m-%d %H:%M:%f', 'now') produces e.g. "2026-06-04 15:23:42.789".
+	// CURRENT_TIMESTAMP produces "2026-06-04 15:23:42" (no fractional part).
+	// We expect the dot-and-fractional-seconds tail.
+	if len(ts) < 20 || ts[19] != '.' {
+		t.Errorf("scanned_at=%q is missing fractional-seconds tail; expected millisecond-precision format", ts)
 	}
 }

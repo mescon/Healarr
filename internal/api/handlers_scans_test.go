@@ -77,6 +77,9 @@ func setupScansTestDB(t *testing.T) (*sql.DB, func()) {
 			file_size INTEGER,
 			scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
+		-- Mirrors migration 010_scan_files_unique_index.sql.
+		CREATE UNIQUE INDEX idx_scan_files_scan_id_file_path_unique
+		    ON scan_files(scan_id, file_path);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
