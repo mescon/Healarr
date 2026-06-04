@@ -36,6 +36,33 @@ func NewPathMapper(db *sql.DB) (*SQLPathMapper, error) {
 	return pm, nil
 }
 
+// pathSeparators are the path separators we recognize when matching a stored
+// scan-path against a path reported by an *arr instance. Forward slash covers
+// Linux/macOS and *arr's normalized form on most setups; backslash covers
+// Windows UNC paths (e.g. \\server\share\folder) that Sonarr/Radarr report
+// verbatim when running on Windows.
+const pathSeparators = "/\\"
+
+// trimTrailingSep removes any trailing path separators (both / and \) so the
+// stored mapping form is canonical. TrimRight is safe for UNC paths because
+// it only strips trailing characters, not the leading \\ that anchors the
+// UNC root.
+func trimTrailingSep(p string) string {
+	return strings.TrimRight(p, pathSeparators)
+}
+
+// hasSepPrefix reports whether s begins with a recognized path separator
+// (forward slash or backslash). Used after a HasPrefix match to confirm that
+// the matched stem ends on a directory boundary, so /mnt/media/TV doesn't
+// false-match against /mnt/media/TV2, and \\srv\share\Movies doesn't
+// false-match \\srv\share\MoviesArchive.
+func hasSepPrefix(s string) bool {
+	if s == "" {
+		return false
+	}
+	return strings.ContainsRune(pathSeparators, rune(s[0]))
+}
+
 func (pm *SQLPathMapper) Reload() error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -47,11 +74,9 @@ func (pm *SQLPathMapper) Reload() error {
 
 	mappings := make([]PathMapping, 0, len(rows))
 	for _, row := range rows {
-		// Ensure paths don't have trailing slashes for consistent matching,
-		// unless it's root (which shouldn't happen for media folders)
 		mappings = append(mappings, PathMapping{
-			LocalPath: strings.TrimRight(row.LocalPath, "/"),
-			ArrPath:   strings.TrimRight(row.ArrPath, "/"),
+			LocalPath: trimTrailingSep(row.LocalPath),
+			ArrPath:   trimTrailingSep(row.ArrPath),
 		})
 	}
 
@@ -68,12 +93,9 @@ func (pm *SQLPathMapper) ToArrPath(localPath string) (string, error) {
 
 	for i := range pm.mappings {
 		m := &pm.mappings[i]
-		// Check if localPath starts with m.LocalPath AND is followed by / or end of string
-		// This prevents /mnt/media/TV from matching /mnt/media/TV2
 		if strings.HasPrefix(localPath, m.LocalPath) {
 			remainder := localPath[len(m.LocalPath):]
-			// Valid match only if remainder is empty or starts with /
-			if remainder == "" || strings.HasPrefix(remainder, "/") {
+			if remainder == "" || hasSepPrefix(remainder) {
 				if len(m.LocalPath) > longestPrefixLen {
 					longestPrefixLen = len(m.LocalPath)
 					bestMatch = m
@@ -99,12 +121,9 @@ func (pm *SQLPathMapper) ToLocalPath(arrPath string) (string, error) {
 
 	for i := range pm.mappings {
 		m := &pm.mappings[i]
-		// Check if arrPath starts with m.ArrPath AND is followed by / or end of string
-		// This prevents /data/movies from matching /data/movies-archive
 		if strings.HasPrefix(arrPath, m.ArrPath) {
 			remainder := arrPath[len(m.ArrPath):]
-			// Valid match only if remainder is empty or starts with /
-			if remainder == "" || strings.HasPrefix(remainder, "/") {
+			if remainder == "" || hasSepPrefix(remainder) {
 				if len(m.ArrPath) > longestPrefixLen {
 					longestPrefixLen = len(m.ArrPath)
 					bestMatch = m
