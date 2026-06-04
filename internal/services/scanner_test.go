@@ -4619,3 +4619,172 @@ func TestScannerWorkers_EnvOverride(t *testing.T) {
 		t.Errorf("unset should yield a sane memory-aware default, got %d", got)
 	}
 }
+
+// =============================================================================
+// Watermark + bitmap correctness (#290)
+// =============================================================================
+
+// TestScannerService_ScanFilesParallel_WatermarkIsContiguous asserts that the
+// persisted current_file_index after a successful run equals total_files: the
+// watermark must have walked the full contiguous done prefix even though
+// workers committed their scan_files rows out of order. This is the load-
+// bearing invariant for resume safety after the #290 refactor.
+func TestScannerService_ScanFilesParallel_WatermarkIsContiguous(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckWithConfigFunc: func(string, integration.DetectionConfig) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+	}
+
+	scanner := &ScannerService{
+		db:              db,
+		eventBus:        eb,
+		detector:        mockHC,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+		scanWorkers:     8,
+	}
+
+	tmpDir := t.TempDir()
+	const n = 40
+	files := make([]string, n)
+	oldTime := time.Now().Add(-10 * time.Minute)
+	for i := 0; i < n; i++ {
+		f := filepath.Join(tmpDir, fmt.Sprintf("w%02d.mkv", i))
+		if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		_ = os.Chtimes(f, oldTime, oldTime)
+		files[i] = f
+	}
+
+	res, err := db.Exec(`INSERT INTO scans (path, path_id, status, total_files, files_scanned) VALUES (?, 1, 'running', ?, 0)`, tmpDir, n)
+	if err != nil {
+		t.Fatalf("create scan: %v", err)
+	}
+	scanDBID, _ := res.LastInsertId()
+
+	progress := &ScanProgress{
+		ID: "wm-scan", Type: "path", Path: tmpDir, PathID: 1,
+		TotalFiles: n, ScanDBID: scanDBID, resumeChan: make(chan struct{}),
+	}
+
+	scanner.scanFiles(context.Background(), progress, scanFilesConfig{
+		Files:           files,
+		StartIndex:      0,
+		DetectionConfig: integration.DetectionConfig{Method: "ffprobe", Mode: "quick"},
+		ScanDBID:        scanDBID,
+	})
+
+	// Persisted current_file_index must equal n (the full contiguous prefix).
+	var persistedIdx int
+	if err := db.QueryRow(`SELECT current_file_index FROM scans WHERE id = ?`, scanDBID).Scan(&persistedIdx); err != nil {
+		t.Fatalf("read current_file_index: %v", err)
+	}
+	if persistedIdx != n {
+		t.Errorf("current_file_index = %d, want %d (watermark must reach the end on full completion)", persistedIdx, n)
+	}
+}
+
+// TestScannerService_Record_IdempotentOnDoubleRecord covers the on-conflict
+// path that pairs with the watermark replay window: when a resumed scan
+// reprocesses files that have already been recorded, the second Record call
+// must be a no-op rather than producing a duplicate row or erroring.
+func TestScannerService_Record_IdempotentOnDoubleRecord(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckWithConfigFunc: func(string, integration.DetectionConfig) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+	}
+
+	scanner := &ScannerService{
+		db:              db,
+		eventBus:        eb,
+		detector:        mockHC,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+		scanWorkers:     2,
+	}
+
+	tmpDir := t.TempDir()
+	files := []string{
+		filepath.Join(tmpDir, "a.mkv"),
+		filepath.Join(tmpDir, "b.mkv"),
+		filepath.Join(tmpDir, "c.mkv"),
+	}
+	oldTime := time.Now().Add(-10 * time.Minute)
+	for _, f := range files {
+		if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
+		_ = os.Chtimes(f, oldTime, oldTime)
+	}
+
+	res, err := db.Exec(`INSERT INTO scans (path, path_id, status, total_files, files_scanned) VALUES (?, 1, 'running', ?, 0)`, tmpDir, len(files))
+	if err != nil {
+		t.Fatalf("create scan: %v", err)
+	}
+	scanDBID, _ := res.LastInsertId()
+
+	progress := &ScanProgress{
+		ID: "replay-scan", Type: "path", Path: tmpDir, PathID: 1,
+		TotalFiles: len(files), ScanDBID: scanDBID, resumeChan: make(chan struct{}),
+	}
+
+	// First pass: full scan.
+	scanner.scanFiles(context.Background(), progress, scanFilesConfig{
+		Files: files, StartIndex: 0,
+		DetectionConfig: integration.DetectionConfig{Method: "ffprobe", Mode: "quick"},
+		ScanDBID:        scanDBID,
+	})
+
+	var first int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM scan_files WHERE scan_id = ?`, scanDBID).Scan(&first); err != nil {
+		t.Fatalf("count first pass: %v", err)
+	}
+	if first != len(files) {
+		t.Fatalf("first pass rows = %d, want %d", first, len(files))
+	}
+
+	// Second pass: simulate the replay window by re-running from index 0.
+	// The ON CONFLICT(scan_id, file_path) DO NOTHING in Record must prevent
+	// duplicate rows. progress.FilesDone is bumped again, but the table
+	// row count must stay exactly len(files).
+	progress2 := &ScanProgress{
+		ID: "replay-scan-2", Type: "path", Path: tmpDir, PathID: 1,
+		TotalFiles: len(files), ScanDBID: scanDBID, resumeChan: make(chan struct{}),
+	}
+	scanner.scanFiles(context.Background(), progress2, scanFilesConfig{
+		Files: files, StartIndex: 0,
+		DetectionConfig: integration.DetectionConfig{Method: "ffprobe", Mode: "quick"},
+		ScanDBID:        scanDBID,
+	})
+
+	var second int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM scan_files WHERE scan_id = ?`, scanDBID).Scan(&second); err != nil {
+		t.Fatalf("count second pass: %v", err)
+	}
+	if second != len(files) {
+		t.Errorf("second (replay) pass rows = %d, want %d (ON CONFLICT must dedupe)", second, len(files))
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -1526,15 +1527,23 @@ type detectJob struct {
 	state  detectJobState
 }
 
-// scanFilesParallel processes files in ordered batches of scanWorkers. Within a
-// batch, the read-only detection (detectFile: stat checks + ffprobe) runs
-// concurrently across workers (fan-out); results are then applied strictly in
-// index order by this single goroutine (fan-in: recording, corruption routing,
-// progress). Because the fan-in is sequential and in order, the periodic
-// progress checkpoint stays monotonic and resume-after-interruption keeps its
-// "everything before the saved index is done" guarantee. Cancellation and pause
-// are handled at batch boundaries (and workers bail before an expensive
-// detection if the scan is already stopping).
+// watermarkPersistInterval is how often the watermark goroutine flushes the
+// contiguous-completion watermark to scans.current_file_index. Bounded so
+// per-file write amplification stays low and resume granularity stays tight.
+const watermarkPersistInterval = 2 * time.Second
+
+// scanFilesParallel processes files with a semaphore-bounded worker pool. The
+// previous design used ordered fan-out/fan-in batches of scanWorkers files
+// with a wg.Wait barrier between batches: one slow file held back every
+// other worker in the batch, and all completions clustered into the same
+// CURRENT_TIMESTAMP second. The new design dispatches one worker per file up
+// to scanWorkers in flight, lets each commit its scan_files row as it
+// finishes, and tracks completion in a per-index bitmap so the persisted
+// current_file_index can still advance monotonically as a contiguous-done
+// watermark. Idempotency on (scan_id, file_path) (migration 010) covers the
+// resume replay window where the watermark may lag behind the actual
+// highest-completed index. Cancellation and pause are checked at every
+// dispatch iteration instead of only at batch boundaries.
 func (s *ScannerService) scanFilesParallel(
 	ctx context.Context,
 	progress *ScanProgress,
@@ -1544,63 +1553,166 @@ func (s *ScannerService) scanFilesParallel(
 	files := cfg.Files
 	pathID := progress.PathID
 
-	for start := cfg.StartIndex; start < len(files); {
-		if s.checkScanCancellation(ctx, progress, progress.Path, start, len(files)) == scanReturn {
-			return
+	// done[i] flips to true once index i has been fully processed (recorded,
+	// counter bumped, or deliberately skipped). The watermark advances over
+	// the contiguous prefix of trues.
+	done := make([]atomic.Bool, len(files))
+
+	// stopped flips when a worker or the dispatch loop decides the scan must
+	// stop (cancel, pause, fatal detection error). Workers that haven't
+	// started yet bail without consuming a semaphore slot; the dispatch loop
+	// breaks on the next iteration.
+	var stopped atomic.Bool
+
+	sem := make(chan struct{}, s.scanWorkers)
+	var wg sync.WaitGroup
+
+	// Watermark persister: walks `done` from cfg.StartIndex forward over
+	// consecutive trues, advances an in-memory watermark, and flushes it to
+	// scans.current_file_index every ~watermarkPersistInterval. Owning the
+	// DB write here means workers can finish out of order without
+	// corrupting the resume floor.
+	watermarkDone := make(chan struct{})
+	safego.Run("scan-watermark", func() {
+		defer close(watermarkDone)
+		watermark := cfg.StartIndex
+		lastPersisted := -1
+		ticker := time.NewTicker(watermarkPersistInterval)
+		defer ticker.Stop()
+
+		advance := func() {
+			for watermark < len(files) && done[watermark].Load() {
+				watermark++
+			}
 		}
-		if s.handleScanPause(ctx, progress, progress.Path, start, cfg.ScanDBID) == scanReturn {
-			return
+		persistIfAdvanced := func() {
+			if cfg.ScanDBID <= 0 || watermark == lastPersisted {
+				return
+			}
+			progress.mu.Lock()
+			filesDone := progress.FilesDone
+			progress.mu.Unlock()
+			progressCtx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+			if err := s.scanRepo().UpdateProgress(progressCtx, cfg.ScanDBID, watermark, filesDone); err != nil {
+				logger.Warnf("watermark persist for scan %d (idx=%d) failed: %v", cfg.ScanDBID, watermark, err)
+			}
+			cancel()
+			lastPersisted = watermark
 		}
 
-		end := start + s.scanWorkers
-		if end > len(files) {
-			end = len(files)
+		for {
+			advance()
+			if watermark >= len(files) {
+				persistIfAdvanced()
+				return
+			}
+			select {
+			case <-ticker.C:
+				persistIfAdvanced()
+			case <-ctx.Done():
+				persistIfAdvanced()
+				return
+			}
+		}
+	})
+
+	// Dispatch loop: spawn one worker per file, capped at scanWorkers
+	// in-flight via the semaphore. Cancellation and pause are checked per
+	// iteration; if either fires we set `stopped` so already-dispatched
+	// workers can bail and we break out of the loop.
+	for i := cfg.StartIndex; i < len(files); i++ {
+		if s.checkScanCancellation(ctx, progress, progress.Path, i, len(files)) == scanReturn {
+			stopped.Store(true)
+			break
+		}
+		if s.handleScanPause(ctx, progress, progress.Path, i, cfg.ScanDBID) == scanReturn {
+			stopped.Store(true)
+			break
+		}
+		if stopped.Load() {
+			break
 		}
 
-		// Fan-out: detect each file in the batch concurrently. detectFile is
-		// read-only; the only shared state a worker mutates is filesInProgress
-		// (mutex-guarded), and each worker writes only its own jobs[k] element.
-		jobs := make([]detectJob, end-start)
-		var wg sync.WaitGroup
-		for k := range jobs {
-			idx := start + k
-			wg.Add(1)
-			safego.Run("scan-detect-worker", func() {
-				defer wg.Done()
-				s.detectInWorker(ctx, &jobs[k], files[idx], pathID, cfg, activeCorruptions)
-			})
+		// Acquire a slot (blocks if scanWorkers are already in flight). Use
+		// a select so we honor cancellation while waiting for a slot.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			stopped.Store(true)
 		}
-		wg.Wait()
+		if stopped.Load() {
+			break
+		}
 
-		// Fan-in: apply outcomes in index order, single-threaded.
-		for k := range jobs {
-			idx := start + k
-			switch jobs[k].state {
+		idx := i
+		wg.Add(1)
+		safego.Run("scan-detect-worker", func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			// Late-bail: another worker may have flipped `stopped` between
+			// our dispatch and our start. Don't mark done — resume must
+			// re-attempt this file.
+			if stopped.Load() {
+				return
+			}
+
+			var job detectJob
+			s.detectInWorker(ctx, &job, files[idx], pathID, cfg, activeCorruptions)
+
+			switch job.state {
 			case jobDedupSkipped:
 				logger.Debugf("Skipping file already being scanned: %s", files[idx])
-				s.markFileProcessed(progress, idx, cfg.ScanDBID)
+				s.markFileProcessedNoSync(progress)
+				done[idx].Store(true)
 			case jobStopped:
-				// Scan is canceling/shutting down: record the terminal status and stop.
-				s.checkScanCancellation(ctx, progress, progress.Path, idx, len(files))
+				// Worker observed ctx.Done() mid-detection. Signal so the
+				// dispatch loop stops, but leave done[idx]=false so resume
+				// retries this file.
+				stopped.Store(true)
 				return
 			case jobDone:
 				progress.mu.Lock()
 				progress.CurrentFile = files[idx]
 				progress.mu.Unlock()
 				s.emitProgress(progress)
-				if s.handleDetection(ctx, progress, cfg, idx, jobs[k].sfc, jobs[k].result) == scanReturn {
+				if s.handleDetection(ctx, progress, cfg, idx, job.sfc, job.result) == scanReturn {
+					// handleDetection already persisted the terminal scan
+					// state for this file via its own write paths. Signal
+					// shutdown but mark done so the watermark can pass this
+					// index (we don't want a stuck-forever watermark on a
+					// file the scanner has decided to terminate from).
+					stopped.Store(true)
+					done[idx].Store(true)
 					return
 				}
-			default: // jobPending — worker panicked mid-file; count it and move on.
+				done[idx].Store(true)
+			default: // jobPending — worker panicked mid-file.
 				logger.Warnf("Scan worker did not complete for %s; skipping", files[idx])
-				s.markFileProcessed(progress, idx, cfg.ScanDBID)
+				s.markFileProcessedNoSync(progress)
+				done[idx].Store(true)
 			}
-		}
-
-		start = end
+		})
 	}
 
-	progress.Status = "completed"
+	wg.Wait()
+	<-watermarkDone
+
+	if !stopped.Load() {
+		progress.Status = "completed"
+	}
+}
+
+// markFileProcessedNoSync bumps the in-memory FilesDone counter without
+// writing to the database. The parallel path uses this because the
+// watermark goroutine owns DB progress writes; the original
+// markFileProcessed (with its every-10-files persist of the worker's
+// fileIndex) is unsafe under out-of-order completion since it can write a
+// non-monotonic current_file_index.
+func (s *ScannerService) markFileProcessedNoSync(progress *ScanProgress) {
+	progress.mu.Lock()
+	progress.FilesDone++
+	progress.mu.Unlock()
 }
 
 // detectInWorker runs the read-only detection for a single file inside a worker

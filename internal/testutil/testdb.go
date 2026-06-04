@@ -19,6 +19,16 @@ func NewTestDB() (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open in-memory database: %w", err)
 	}
+	// `:memory:` is per-connection in modernc.org/sqlite: every new pool
+	// connection opens its own fresh empty database, which means the
+	// schema initialized on one connection is invisible to the next. The
+	// previous behavior happened to work because tests barely exercised
+	// concurrent DB access; the parallel scanner refactor (#290) added a
+	// watermark goroutine that writes alongside per-file workers, so the
+	// pool now hands out multiple connections and the latent issue
+	// surfaces as "no such table". Pin the pool to a single connection so
+	// the schema is the same one everyone sees.
+	db.SetMaxOpenConns(1)
 
 	if err := initializeSchema(db); err != nil {
 		_ = db.Close() // Ignore close error since we're already returning an error
@@ -98,7 +108,9 @@ func initializeSchema(db *sql.DB) error {
 		return fmt.Errorf("failed to create scans table: %w", err)
 	}
 
-	// Create scan_files table
+	// Create scan_files table. The UNIQUE index mirrors migration 010 so
+	// the ON CONFLICT(scan_id, file_path) DO NOTHING path used by the
+	// production repository works in tests too.
 	_, err = db.Exec(`
 		CREATE TABLE scan_files (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,7 +121,9 @@ func initializeSchema(db *sql.DB) error {
 			error_details TEXT,
 			file_size INTEGER,
 			scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		)
+		);
+		CREATE UNIQUE INDEX idx_scan_files_scan_id_file_path_unique
+		    ON scan_files(scan_id, file_path);
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to create scan_files table: %w", err)
