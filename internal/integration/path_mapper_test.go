@@ -557,3 +557,142 @@ func TestPathMapper_EmptyMappings(t *testing.T) {
 		t.Error("ToLocalPath should error with no mappings")
 	}
 }
+
+// =============================================================================
+// Windows UNC path tests (regression for #298)
+// =============================================================================
+//
+// When *arr is running on Windows it reports paths using backslash separators
+// and UNC roots, e.g. \\alexpr4100\media\Movies\High Strung (2016)\film.mkv.
+// The path-matching logic used to require the post-prefix remainder to start
+// with '/' which never matched on Windows, leaving every webhook stranded
+// with 'no matching scan path found'.
+
+func TestPathMapper_ToLocalPath_WindowsUNC(t *testing.T) {
+	db, err := newTestDBForPathMapper()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	// Same UNC for both local + arr is the typical Docker-Desktop-on-Windows
+	// setup: the host mount IS the *arr path, no remapping needed.
+	seedScanPath(db, 1, `\\alexpr4100\media\Movies`, `\\alexpr4100\media\Movies`, false, false)
+
+	pm, err := NewPathMapper(db)
+	if err != nil {
+		t.Fatalf("NewPathMapper() error = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		arrPath string
+		want    string
+	}{
+		{
+			"exact UNC match",
+			`\\alexpr4100\media\Movies`,
+			`\\alexpr4100\media\Movies`,
+		},
+		{
+			"UNC with file",
+			`\\alexpr4100\media\Movies\High Strung (2016)\High Strung (2016).mkv`,
+			`\\alexpr4100\media\Movies\High Strung (2016)\High Strung (2016).mkv`,
+		},
+		{
+			"UNC with nested folders",
+			`\\alexpr4100\media\Movies\A\B\C\D.mkv`,
+			`\\alexpr4100\media\Movies\A\B\C\D.mkv`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := pm.ToLocalPath(tt.arrPath)
+			if err != nil {
+				t.Errorf("ToLocalPath(%q) error = %v", tt.arrPath, err)
+			}
+			if got != tt.want {
+				t.Errorf("ToLocalPath(%q) = %q, want %q", tt.arrPath, got, tt.want)
+			}
+		})
+	}
+}
+
+// Even on Windows the boundary check must hold: a prefix that is only a
+// substring of the configured path must not match.
+func TestPathMapper_ToLocalPath_WindowsUNC_PrefixBoundary(t *testing.T) {
+	db, err := newTestDBForPathMapper()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	seedScanPath(db, 1, `\\srv\share\Movies`, `\\srv\share\Movies`, false, false)
+
+	pm, err := NewPathMapper(db)
+	if err != nil {
+		t.Fatalf("NewPathMapper() error = %v", err)
+	}
+
+	// MoviesArchive is a sibling of Movies; must not match the Movies mapping.
+	if _, err := pm.ToLocalPath(`\\srv\share\MoviesArchive\film.mkv`); err == nil {
+		t.Error("ToLocalPath should not match MoviesArchive against Movies mapping")
+	}
+}
+
+// Cross-separator: Linux mapping must not pick up a Windows-style remainder
+// (or vice versa) just because the stored prefix is a substring of the
+// reported path.
+func TestPathMapper_ToLocalPath_TrimsTrailingBackslash(t *testing.T) {
+	db, err := newTestDBForPathMapper()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	// Trailing backslash in the configured path must be stripped at load
+	// so it matches the same way as the no-slash form.
+	seedScanPath(db, 1, `\\srv\share\Movies\`, `\\srv\share\Movies\`, false, false)
+
+	pm, err := NewPathMapper(db)
+	if err != nil {
+		t.Fatalf("NewPathMapper() error = %v", err)
+	}
+
+	want := `\\srv\share\Movies\film.mkv`
+	got, err := pm.ToLocalPath(want)
+	if err != nil {
+		t.Errorf("ToLocalPath(%q) error = %v", want, err)
+	}
+	if got != want {
+		t.Errorf("ToLocalPath(%q) = %q, want %q", want, got, want)
+	}
+}
+
+// ToArrPath direction must also handle UNC paths (covers any local->arr
+// callers, e.g. the on-demand-scan trigger that maps a filesystem path
+// back to the *arr canonical form before talking to the *arr API).
+func TestPathMapper_ToArrPath_WindowsUNC(t *testing.T) {
+	db, err := newTestDBForPathMapper()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	seedScanPath(db, 1, `\\alexpr4100\media\Movies`, `\\alexpr4100\media\Movies`, false, false)
+
+	pm, err := NewPathMapper(db)
+	if err != nil {
+		t.Fatalf("NewPathMapper() error = %v", err)
+	}
+
+	in := `\\alexpr4100\media\Movies\High Strung (2016)\film.mkv`
+	got, err := pm.ToArrPath(in)
+	if err != nil {
+		t.Errorf("ToArrPath(%q) error = %v", in, err)
+	}
+	if got != in {
+		t.Errorf("ToArrPath(%q) = %q, want %q", in, got, in)
+	}
+}
