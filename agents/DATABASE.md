@@ -30,6 +30,12 @@ Migrations are stored in `internal/db/migrations/` and applied in order:
 | `002_add_status_constraints.sql` | Status constraints for corruptions/scans |
 | `003_add_file_path_index.sql` | Performance index for file_path lookups |
 | `004_corruption_summary.sql` | Materialized corruption status table with trigger-based maintenance |
+| `005_sessions.sql` | Per-user session tokens for browser auth |
+| `006_webhook_secret.sql` | Per-instance webhook secret column on `arr_instances` |
+| `007_filter_stray_corruption_summary.sql` | Cleanup + view-level guard against mis-tagged notification events leaking into the corruption summary |
+| `008_scan_path_overrides.sql` | Per-scan-path overrides for thorough decode duration / timeout / hwaccel |
+| `009_scan_presets.sql` | Reusable scan-settings presets (Zero-byte only, Quick, Fast triage, Deep scan, Paranoid, plus user-defined) |
+| `010_scan_files_unique_index.sql` | `UNIQUE(scan_id, file_path)` index so the post-#290 scanner can replay the watermark window without producing duplicate rows |
 
 **Note:** The base schema (001) was consolidated for cleaner deployments. All features (resumable scans, accessibility errors, pending rescans, per-path dry-run) are included. Migration 004 adds a materialized `corruption_summary` table that replaces the slow `corruption_status` VIEW for dramatically improved query performance.
 

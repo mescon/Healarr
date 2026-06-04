@@ -366,7 +366,7 @@ Configure per scan path in Config.
 
 ### Using Custom Binary Versions
 
-The Docker image includes ffmpeg, MediaInfo, and HandBrake from Alpine packages. If you need newer versions (e.g., for specific codec support), you have two options:
+The Docker image includes jellyfin-ffmpeg 8, MediaInfo, and HandBrake CLI from Debian packages (the image base switched from Alpine to Debian-slim in v1.3.5 so the NVIDIA Container Toolkit's library injection works out of the box). If you need newer versions or a different build, you have two options:
 
 #### Option 1: Tools Directory (Recommended)
 
@@ -482,7 +482,7 @@ services:
       - /path/to/media:/media:ro
 ```
 
-AV1 NVDEC for Intel iGPUs requires 12th-gen Core (Arc) or later. Older iGPUs handle HEVC / H.264 / VP9 fine via QSV.
+AV1 hardware decode on Intel iGPUs requires 12th-gen Core (Alder Lake) or later, or Intel Arc. Older iGPUs handle HEVC / H.264 / VP9 fine via QSV.
 
 ### Intel iGPU and AMD GPU (VAAPI)
 
