@@ -5,7 +5,7 @@
 The frontend is a **React 19** single-page application built with:
 
 - **TypeScript** for type safety
-- **Vite 7** for fast development and building
+- **Vite 8** for fast development and building
 - **Tailwind CSS v4** for styling
 - **TanStack Query** for server state management
 - **Framer Motion** for animations

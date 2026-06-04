@@ -50,7 +50,7 @@ services:
 
       # Media libraries - must match your *arr paths
       # Mount as read-only (:ro) - Healarr only needs to scan files
-      - /path/to/media:/mnt/media:ro
+      - /path/to/media:/media:ro
     
     # Optional: connect to same network as your *arr containers
     # networks:
