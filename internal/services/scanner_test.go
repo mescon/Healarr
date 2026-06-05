@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
+	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/testutil"
 )
 
@@ -4787,4 +4790,147 @@ func TestScannerService_Record_IdempotentOnDoubleRecord(t *testing.T) {
 	if second != len(files) {
 		t.Errorf("second (replay) pass rows = %d, want %d (ON CONFLICT must dedupe)", second, len(files))
 	}
+}
+
+// =============================================================================
+// Enumeration visibility / timeout / cancellation (#298 follow-up)
+// =============================================================================
+
+// scannerEnumerationTimeout reads HEALARR_SCANNER_ENUMERATION_TIMEOUT with a
+// sane default and ignores garbage.
+func TestScannerEnumerationTimeout_EnvParsing(t *testing.T) {
+	t.Run("default when unset", func(t *testing.T) {
+		t.Setenv("HEALARR_SCANNER_ENUMERATION_TIMEOUT", "")
+		if got := scannerEnumerationTimeout(); got != defaultEnumerationTimeout {
+			t.Errorf("got %s, want default %s", got, defaultEnumerationTimeout)
+		}
+	})
+	t.Run("honors valid duration", func(t *testing.T) {
+		t.Setenv("HEALARR_SCANNER_ENUMERATION_TIMEOUT", "90s")
+		if got := scannerEnumerationTimeout(); got != 90*time.Second {
+			t.Errorf("got %s, want 90s", got)
+		}
+	})
+	t.Run("falls back on garbage", func(t *testing.T) {
+		t.Setenv("HEALARR_SCANNER_ENUMERATION_TIMEOUT", "not-a-duration")
+		if got := scannerEnumerationTimeout(); got != defaultEnumerationTimeout {
+			t.Errorf("got %s, want default %s on invalid input", got, defaultEnumerationTimeout)
+		}
+	})
+}
+
+// enumerateMediaFiles must abort promptly when its context is already
+// cancelled instead of walking the whole tree — this is what makes a user
+// cancel (or a blown enumeration timeout) actually stop a slow walk.
+func TestScannerService_EnumerateMediaFiles_HonorsCancellation(t *testing.T) {
+	tmpDir := t.TempDir()
+	for i := 0; i < 20; i++ {
+		f := filepath.Join(tmpDir, fmt.Sprintf("f%02d.mkv", i))
+		if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+	}
+
+	s := &ScannerService{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before the walk starts
+
+	files, err := s.enumerateMediaFiles(ctx, tmpDir)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if len(files) != 0 {
+		t.Errorf("got %d files, want 0 (walk should abort immediately)", len(files))
+	}
+}
+
+// handleEnumerationFailure must map each failure cause to the correct terminal
+// DB state and drop the scan from the active set.
+func TestScannerService_HandleEnumerationFailure(t *testing.T) {
+	newSvc := func(t *testing.T) (*ScannerService, *sql.DB) {
+		t.Helper()
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatalf("NewTestDB: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		return &ScannerService{
+			db:          db,
+			activeScans: make(map[string]*ScanProgress),
+		}, db
+	}
+
+	seedEnumerating := func(t *testing.T, s *ScannerService) (string, int64) {
+		t.Helper()
+		scanID := "enum-" + t.Name()
+		s.mu.Lock()
+		s.activeScans[scanID] = &ScanProgress{ID: scanID}
+		s.mu.Unlock()
+		id, err := s.scanRepo().CreateEnumerating(context.Background(), repository.CreateScanParams{Path: "/media/tv", PathID: 1})
+		if err != nil {
+			t.Fatalf("CreateEnumerating: %v", err)
+		}
+		return scanID, id
+	}
+
+	statusOf := func(t *testing.T, db *sql.DB, id int64) string {
+		t.Helper()
+		var status string
+		if err := db.QueryRow(`SELECT status FROM scans WHERE id=?`, id).Scan(&status); err != nil {
+			t.Fatalf("read status: %v", err)
+		}
+		return status
+	}
+
+	t.Run("user cancel -> cancelled, no error returned", func(t *testing.T) {
+		s, db := newSvc(t)
+		scanID, id := seedEnumerating(t, s)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := s.handleEnumerationFailure(scanID, id, "/media/tv", ctx, context.Canceled)
+		if err != nil {
+			t.Errorf("err = %v, want nil for user cancel", err)
+		}
+		if got := statusOf(t, db, id); got != "cancelled" {
+			t.Errorf("status = %q, want cancelled", got)
+		}
+		s.mu.Lock()
+		_, stillActive := s.activeScans[scanID]
+		s.mu.Unlock()
+		if stillActive {
+			t.Error("scan still in activeScans after failure handling")
+		}
+	})
+
+	t.Run("timeout -> aborted with message", func(t *testing.T) {
+		s, db := newSvc(t)
+		scanID, id := seedEnumerating(t, s)
+
+		err := s.handleEnumerationFailure(scanID, id, "/media/tv", context.Background(), context.DeadlineExceeded)
+		if err == nil {
+			t.Error("want an error for enumeration timeout")
+		}
+		if got := statusOf(t, db, id); got != "aborted" {
+			t.Errorf("status = %q, want aborted", got)
+		}
+		var msg sql.NullString
+		_ = db.QueryRow(`SELECT error_message FROM scans WHERE id=?`, id).Scan(&msg)
+		if !msg.Valid || msg.String == "" {
+			t.Error("expected a non-empty error_message on timeout abort")
+		}
+	})
+
+	t.Run("generic walk error -> aborted", func(t *testing.T) {
+		s, db := newSvc(t)
+		scanID, id := seedEnumerating(t, s)
+
+		err := s.handleEnumerationFailure(scanID, id, "/media/tv", context.Background(), errors.New("readdir: input/output error"))
+		if err == nil {
+			t.Error("want the original error propagated")
+		}
+		if got := statusOf(t, db, id); got != "aborted" {
+			t.Errorf("status = %q, want aborted", got)
+		}
+	})
 }

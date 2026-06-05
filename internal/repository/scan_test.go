@@ -639,3 +639,111 @@ func TestScanRepository_MarkOrphansCancelled_CatchesZombieRows(t *testing.T) {
 	check(12, "paused")      // spared
 	check(13, "interrupted") // spared
 }
+
+// CreateEnumerating must insert a row in the 'enumerating' state with no file
+// list and zero totals, so the scan is visible the moment it starts but is
+// reconciled as cancelled (not resumed) if the process dies mid-walk.
+func TestScanRepository_CreateEnumerating(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	id, err := repo.CreateEnumerating(ctx, CreateScanParams{
+		Path: "/media/tv", PathID: 1,
+		DetectionConfigJSON: `{"method":"ffprobe"}`,
+		AutoRemediate:       true,
+	})
+	if err != nil {
+		t.Fatalf("CreateEnumerating: %v", err)
+	}
+	if id <= 0 {
+		t.Fatalf("expected a positive id, got %d", id)
+	}
+
+	var status, fileList string
+	var total, idx int
+	if err := db.QueryRow(
+		`SELECT status, total_files, current_file_index, file_list FROM scans WHERE id=?`, id,
+	).Scan(&status, &total, &idx, &fileList); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if status != "enumerating" {
+		t.Errorf("status = %q, want enumerating", status)
+	}
+	if total != 0 || idx != 0 {
+		t.Errorf("total=%d idx=%d, want 0/0 (nothing enumerated yet)", total, idx)
+	}
+	if fileList != "[]" {
+		t.Errorf("file_list = %q, want []", fileList)
+	}
+}
+
+// FinishEnumeration must flip an 'enumerating' row to 'scanning' and persist
+// the discovered file list + total so the per-file loop and resume logic have
+// the work set.
+func TestScanRepository_FinishEnumeration(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	id, err := repo.CreateEnumerating(ctx, CreateScanParams{Path: "/media/tv", PathID: 1})
+	if err != nil {
+		t.Fatalf("CreateEnumerating: %v", err)
+	}
+
+	fileList := `["/media/tv/a.mkv","/media/tv/b.mkv","/media/tv/c.mkv"]`
+	if err := repo.FinishEnumeration(ctx, id, 3, fileList); err != nil {
+		t.Fatalf("FinishEnumeration: %v", err)
+	}
+
+	var status, gotList string
+	var total int
+	if err := db.QueryRow(
+		`SELECT status, total_files, file_list FROM scans WHERE id=?`, id,
+	).Scan(&status, &total, &gotList); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if status != "scanning" {
+		t.Errorf("status = %q, want scanning", status)
+	}
+	if total != 3 {
+		t.Errorf("total_files = %d, want 3", total)
+	}
+	if gotList != fileList {
+		t.Errorf("file_list = %q, want %q", gotList, fileList)
+	}
+}
+
+// An 'enumerating' orphan (process died mid-walk: status='enumerating',
+// current_file_index=0, file_list='[]') must reconcile to 'cancelled', never
+// 'interrupted' — there is no resumable work set.
+func TestScanRepository_ReconcileOrphans_EnumeratingGoesCancelled(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	id, err := repo.CreateEnumerating(ctx, CreateScanParams{Path: "/media/tv", PathID: 1})
+	if err != nil {
+		t.Fatalf("CreateEnumerating: %v", err)
+	}
+
+	out, err := repo.ReconcileOrphans(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileOrphans: %v", err)
+	}
+	if out.Interrupted != 0 {
+		t.Errorf("Interrupted = %d, want 0 (enumeration is not resumable)", out.Interrupted)
+	}
+	if out.Cancelled != 1 {
+		t.Errorf("Cancelled = %d, want 1", out.Cancelled)
+	}
+
+	var status string
+	_ = db.QueryRow(`SELECT status FROM scans WHERE id=?`, id).Scan(&status)
+	if status != "cancelled" {
+		t.Errorf("status = %q, want cancelled", status)
+	}
+}

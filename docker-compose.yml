@@ -33,6 +33,7 @@ services:
       # - HEALARR_TRUSTED_PROXIES=172.18.0.0/16  # Your reverse proxy subnet
       # - HEALARR_SCANNER_WORKERS=4          # Files scanned in parallel; default auto-tunes to memory (1-32)
       # - HEALARR_SCANNER_SHUTDOWN_TIMEOUT=30s  # Grace period for in-flight scans on shutdown
+      # - HEALARR_SCANNER_ENUMERATION_TIMEOUT=30m  # Max directory-walk time before a scan aborts (guards a hung network mount)
 
       # Custom binary paths (optional - for newer ffmpeg/mediainfo/handbrake):
       # - HEALARR_FFPROBE_PATH=/config/tools/ffprobe
