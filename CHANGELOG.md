@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.8] - 2026-06-05
+
+Makes the scan enumeration phase visible, bounded, and cancellable. Before this, a scan whose directory walk stalled on a slow or unresponsive mount was indistinguishable from a hang.
+
+### Fixed
+- **The directory-walk (enumeration) phase of a scan is now visible, time-bounded, and responsive to cancel** ([#303](https://github.com/mescon/Healarr/pull/303)). Previously a scan that was busy enumerating a large or slow path produced a single `Starting scan` log line and then nothing: no scan row existed in the database yet (it was created only *after* enumeration finished), so `/scans` and the dashboard showed nothing while the System Overview reported "no scan"; pressing Cancel did nothing because the walk never checked for cancellation; and there was no timeout, so a genuinely hung mount hung the scan until the container was restarted. Diagnosed live on a mergerfs-over-CIFS mount whose network layer was reconnecting, making each `stat` block for seconds. Four changes: (1) the scan row is created up front in a new `enumerating` state — migration 011 extends the `scans.status` CHECK constraint to allow `enumerating` and `scanning`, two values the scanner code already referenced (`ScanStatusEnumerating`, the reconcile query) but the constraint silently rejected, so they could never persist; the row flips to `scanning` once the walk completes. (2) Enumeration emits a throttled heartbeat (`Enumerating PATH: N media files found so far (M entries scanned)`) every five seconds, so a slow mount is visibly making progress instead of looking dead. (3) The walk now takes a context and checks it on every entry, so a user cancel aborts it promptly and the scan is marked `cancelled`. (4) The walk runs under `HEALARR_SCANNER_ENUMERATION_TIMEOUT` (default 30m); on timeout the scan is marked `aborted` with an explanatory message pointing at slow or unresponsive storage. An orphaned `enumerating` row left by a hard restart reconciles to `cancelled` (its `current_file_index` is 0, so there is nothing to resume).
+
+### Added
+- **`HEALARR_SCANNER_ENUMERATION_TIMEOUT`** (default `30m`, env only). Caps the directory-walk phase so a hung network mount can't hang a scan indefinitely. Raise it for very large libraries on slow-but-working storage.
+
 ## [1.3.7] - 2026-06-04
 
 Two targeted fixes: the scanner stops doing files in lockstep batches, and Windows users can finally get webhook integration working.
