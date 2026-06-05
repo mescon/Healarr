@@ -248,6 +248,7 @@ All configuration options can be set via environment variables or command-line f
 | `--arr-rate-burst` | `HEALARR_ARR_RATE_LIMIT_BURST` | `10` | Burst size for rate limiting |
 | - | `HEALARR_SCANNER_WORKERS` | auto | Files scanned in parallel per scan. Default is tuned to available memory; set explicitly to override (1-32). env only |
 | - | `HEALARR_SCANNER_SHUTDOWN_TIMEOUT` | `30s` | Grace period for in-flight scans to finish on shutdown (env only) |
+| - | `HEALARR_SCANNER_ENUMERATION_TIMEOUT` | `30m` | Max time for the directory-walk phase before a scan aborts. Bounds a hang on a slow/unresponsive network mount; raise it for very large libraries on slow-but-working storage (env only) |
 | `--version` / `-v` | - | - | Print version and exit |
 
 **Examples:**

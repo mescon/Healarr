@@ -229,6 +229,42 @@ func (r *ScanRepository) Create(ctx context.Context, p CreateScanParams) (int64,
 	return id, nil
 }
 
+// CreateEnumerating inserts a scan row in the 'enumerating' state, before the
+// directory walk has produced a file list. This makes the scan visible in
+// /scans and the dashboard the moment it starts, instead of appearing only
+// after enumeration completes (which, on a slow/degraded network mount, can
+// be minutes). total_files is 0 and file_list is empty until
+// FinishEnumeration runs; current_file_index stays 0 so that a hard restart
+// mid-enumeration is reconciled to 'cancelled' (nothing to resume) rather
+// than 'interrupted'.
+func (r *ScanRepository) CreateEnumerating(ctx context.Context, p CreateScanParams) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `
+		INSERT INTO scans (path, path_id, status, files_scanned, corruptions_found, total_files, current_file_index, file_list, detection_config, auto_remediate, dry_run, started_at)
+		VALUES (?, ?, 'enumerating', 0, 0, 0, 0, '[]', ?, ?, ?, datetime('now'))
+	`, p.Path, p.PathID, p.DetectionConfigJSON, p.AutoRemediate, p.DryRun)
+	if err != nil {
+		return 0, fmt.Errorf("insert enumerating scan: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("last insert id: %w", err)
+	}
+	return id, nil
+}
+
+// FinishEnumeration transitions an 'enumerating' scan to 'scanning' once the
+// directory walk is done: it stores the discovered file_list and total_files
+// so the per-file scan loop (and resume-after-interruption) has the work set.
+func (r *ScanRepository) FinishEnumeration(ctx context.Context, scanID int64, totalFiles int, fileListJSON string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE scans SET status = 'scanning', total_files = ?, file_list = ? WHERE id = ?
+	`, totalFiles, fileListJSON, scanID)
+	if err != nil {
+		return fmt.Errorf("finish enumeration: %w", err)
+	}
+	return nil
+}
+
 // SetStatus updates only the status column.
 func (r *ScanRepository) SetStatus(ctx context.Context, scanID int64, status string) error {
 	if _, err := r.db.ExecContext(ctx, `UPDATE scans SET status = ? WHERE id = ?`, status, scanID); err != nil {

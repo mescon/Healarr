@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -118,6 +119,35 @@ func scannerShutdownTimeout() time.Duration {
 	}
 	return defaultShutdownTimeout
 }
+
+// defaultEnumerationTimeout bounds the directory-walk phase of a scan. A
+// media library on a healthy local disk enumerates tens of thousands of
+// files in well under a second, but a degraded network mount (mergerfs over
+// CIFS/NFS, a stalled rclone FUSE backend, etc.) can make each stat block for
+// seconds, turning enumeration into an effectively-infinite hang. Without a
+// bound the scan would sit forever with no file list and no way to recover
+// short of restarting the container. 30 minutes is generous enough for very
+// large libraries on slow-but-working storage while still capping a genuine
+// hang.
+const defaultEnumerationTimeout = 30 * time.Minute
+
+// scannerEnumerationTimeout returns the operator-configured enumeration
+// timeout from HEALARR_SCANNER_ENUMERATION_TIMEOUT (time.ParseDuration), or
+// defaultEnumerationTimeout if unset/invalid.
+func scannerEnumerationTimeout() time.Duration {
+	if v := os.Getenv("HEALARR_SCANNER_ENUMERATION_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		logger.Warnf("Invalid HEALARR_SCANNER_ENUMERATION_TIMEOUT %q; using default %s", v, defaultEnumerationTimeout)
+	}
+	return defaultEnumerationTimeout
+}
+
+// enumerationProgressInterval throttles the "enumerated N files so far" log
+// line emitted during the directory walk so a slow mount produces visible
+// heartbeat output without flooding the log on a fast one.
+const enumerationProgressInterval = 5 * time.Second
 
 // Default media file extensions to scan
 var defaultMediaExtensions = map[string]bool{
@@ -945,15 +975,27 @@ func classifyEntry(filePath string, d fs.DirEntry) (isMedia, isSkipped, isSymlin
 	return false, true, false
 }
 
-// enumerateMediaFiles walks the directory and returns a list of media files.
-// Uses filepath.WalkDir to correctly detect symlinks.
-func (s *ScannerService) enumerateMediaFiles(localPath string) ([]string, error) {
+// enumerateMediaFiles walks localPath and returns the media files found. It
+// honors ctx so a cancelled scan or a blown enumeration timeout aborts the
+// walk promptly (each directory entry checks ctx.Err()), and it emits a
+// throttled "enumerated N files" heartbeat so a slow mount is visibly making
+// progress in the logs instead of looking like a hang. Returns ctx.Err()
+// (context.Canceled / context.DeadlineExceeded) if the walk was aborted.
+func (s *ScannerService) enumerateMediaFiles(ctx context.Context, localPath string) ([]string, error) {
 	stats := walkStats{}
+	lastHeartbeat := time.Now()
+	entriesSeen := 0
 
 	err := filepath.WalkDir(localPath, func(filePath string, d fs.DirEntry, err error) error {
+		// Abort promptly on cancel / enumeration timeout. Returning the
+		// context error stops WalkDir and propagates out.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return s.handleWalkError(filePath, err)
 		}
+		entriesSeen++
 		isMedia, isSkipped, isSymlink := classifyEntry(filePath, d)
 		switch {
 		case isSymlink:
@@ -963,14 +1005,23 @@ func (s *ScannerService) enumerateMediaFiles(localPath string) ([]string, error)
 		case isMedia:
 			stats.files = append(stats.files, filePath)
 		}
+		// Heartbeat: a degraded mount makes each stat block for seconds, so
+		// without this the only log line is "Starting scan" until the walk
+		// finishes (or never does). Throttled to avoid flooding fast walks.
+		if time.Since(lastHeartbeat) >= enumerationProgressInterval {
+			logger.Infof("Enumerating %s: %d media files found so far (%d entries scanned)", localPath, len(stats.files), entriesSeen)
+			lastHeartbeat = time.Now()
+		}
 		return nil
 	})
 
-	if err == nil && (stats.skippedCount > 0 || stats.symlinkCount > 0) {
+	if err != nil {
+		return stats.files, err
+	}
+	if stats.skippedCount > 0 || stats.symlinkCount > 0 {
 		logger.Debugf("Skipped %d non-media/hidden files and %d symlinks in %s", stats.skippedCount, stats.symlinkCount, localPath)
 	}
-
-	return stats.files, err
+	return stats.files, nil
 }
 
 // handleWalkError handles errors during file system traversal
@@ -1119,21 +1170,36 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 		return s.handlePathInaccessible(scanID, localPath, err)
 	}
 
-	// Enumerate files
-	files, err := s.enumerateMediaFiles(localPath)
+	// Create the scan row up front in the 'enumerating' state so the scan is
+	// visible in /scans and the dashboard during the directory walk, instead
+	// of materializing only after enumeration finishes (which on a slow or
+	// degraded mount can take minutes and looks indistinguishable from a hang).
+	scanDBID := s.recordEnumerationStart(localPath, pathID, cfg)
+	progress.ScanDBID = scanDBID
+	s.emitProgress(progress)
+
+	// Enumerate files under a bounded, cancellable context: a user cancel
+	// (which cancels the parent ctx) or a blown enumeration timeout aborts the
+	// walk promptly instead of hanging the scan forever on stalled I/O.
+	enumCtx, enumCancel := context.WithTimeout(ctx, scannerEnumerationTimeout())
+	files, err := s.enumerateMediaFiles(enumCtx, localPath)
+	enumCancel()
 	if err != nil {
-		s.mu.Lock()
-		delete(s.activeScans, scanID)
-		s.mu.Unlock()
-		return err
+		return s.handleEnumerationFailure(scanID, scanDBID, localPath, ctx, err)
 	}
 
 	progress.TotalFiles = len(files)
 	progress.Status = ScanStatusScanning
 
-	// Record scan start
-	scanDBID := s.recordScanStart(localPath, pathID, files, cfg)
-	progress.ScanDBID = scanDBID
+	// Persist the discovered file list + total and transition to 'scanning'.
+	// If the up-front insert failed (scanDBID == 0), fall back to the legacy
+	// create-after-enumeration path so the scan is still recorded.
+	if scanDBID > 0 {
+		s.finishEnumerationRecord(scanDBID, files)
+	} else {
+		scanDBID = s.recordScanStart(localPath, pathID, files, cfg)
+		progress.ScanDBID = scanDBID
+	}
 	s.emitProgress(progress)
 
 	defer s.finalizeScan(scanID, progress, scanDBID)
@@ -1148,6 +1214,89 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 		ScanDBID:        scanDBID,
 	})
 	return nil
+}
+
+// recordEnumerationStart inserts the scan row in the 'enumerating' state
+// before the directory walk, returning the scan id (0 on failure, which the
+// caller treats as "fall back to recording after enumeration").
+func (s *ScannerService) recordEnumerationStart(localPath string, pathID int64, cfg scanPathSettings) int64 {
+	detectionConfigJSON, err := json.Marshal(cfg.DetectionConfig)
+	if err != nil {
+		logger.Errorf("Failed to serialize detection config: %v", err)
+		detectionConfigJSON = []byte("{}")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+	scanDBID, err := s.scanRepo().CreateEnumerating(ctx, repository.CreateScanParams{
+		Path:                localPath,
+		PathID:              pathID,
+		DetectionConfigJSON: string(detectionConfigJSON),
+		AutoRemediate:       cfg.AutoRemediate,
+		DryRun:              cfg.DryRun,
+	})
+	if err != nil {
+		logger.Errorf("Failed to record enumeration start: %v", err)
+		return 0
+	}
+	return scanDBID
+}
+
+// finishEnumerationRecord stores the enumerated file list + total on the scan
+// row and flips it from 'enumerating' to 'scanning'.
+func (s *ScannerService) finishEnumerationRecord(scanDBID int64, files []string) {
+	fileListJSON, err := json.Marshal(files)
+	if err != nil {
+		logger.Errorf("Failed to serialize file list: %v", err)
+		fileListJSON = []byte("[]")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+	if err := s.scanRepo().FinishEnumeration(ctx, scanDBID, len(files), string(fileListJSON)); err != nil {
+		logger.Errorf("Failed to persist enumerated file list for scan %d: %v", scanDBID, err)
+	}
+}
+
+// handleEnumerationFailure maps a failed/aborted directory walk to a terminal
+// scan state, removes the scan from the in-memory active set, and returns the
+// appropriate error. It is called instead of (not in addition to)
+// finalizeScan, because the deferred finalizeScan is only registered after a
+// successful enumeration.
+func (s *ScannerService) handleEnumerationFailure(scanID string, scanDBID int64, localPath string, ctx context.Context, err error) error {
+	s.mu.Lock()
+	delete(s.activeScans, scanID)
+	s.mu.Unlock()
+
+	qctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+
+	switch {
+	case errors.Is(err, context.Canceled) || ctx.Err() != nil:
+		// User cancel or scanner shutdown during the walk.
+		logger.Infof("Enumeration cancelled for %s", localPath)
+		if scanDBID > 0 {
+			if _, mErr := s.scanRepo().MarkCancelled(qctx, scanDBID, "cancelled during enumeration"); mErr != nil {
+				logger.Errorf("Failed to mark scan %d cancelled: %v", scanDBID, mErr)
+			}
+		}
+		return nil
+	case errors.Is(err, context.DeadlineExceeded):
+		msg := fmt.Sprintf("enumeration timed out after %s; path %s may be on a slow or unresponsive mount", scannerEnumerationTimeout(), localPath)
+		logger.Errorf("%s", msg)
+		if scanDBID > 0 {
+			if mErr := s.scanRepo().MarkAborted(qctx, scanDBID, msg); mErr != nil {
+				logger.Errorf("Failed to mark scan %d aborted: %v", scanDBID, mErr)
+			}
+		}
+		return fmt.Errorf("%s", msg)
+	default:
+		logger.Errorf("Enumeration failed for %s: %v", localPath, err)
+		if scanDBID > 0 {
+			if mErr := s.scanRepo().MarkAborted(qctx, scanDBID, err.Error()); mErr != nil {
+				logger.Errorf("Failed to mark scan %d aborted: %v", scanDBID, mErr)
+			}
+		}
+		return err
+	}
 }
 
 // =============================================================================
