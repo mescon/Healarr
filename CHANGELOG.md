@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.9] - 2026-06-08
+
+A follow-up to the Windows webhook fixes: mixed-separator paths from a Windows *arr now resolve correctly.
+
+### Fixed
+- **Windows Sonarr/Radarr webhooks no longer fail with "no matching scan path" / "invalid argument"** ([#314](https://github.com/mescon/Healarr/pull/314)). v1.3.7's #299 taught the path matcher to *accept* a backslash directory boundary, but the backslashes then survived into the mapped local path — e.g. `/media/Movies\Angels And Demons (2009)\file.mkv`. On a Linux container that broke two things downstream: the scan-path-config lookup (which only treats `/` as a boundary) reported "no matching scan path found", and the filesystem `stat` failed with `invalid argument` because `\` is a literal filename character on Linux, not a separator. Full-library scans were unaffected because they enumerate the Linux filesystem directly and get clean forward slashes; only the webhook path, sourced verbatim from the Windows *arr, carried backslashes. The path mapper now normalizes the mapped remainder to the target path's separator convention in both directions (`ToLocalPath` and `ToArrPath`): backslashes become forward slashes when the target is a Linux path (the container default), and forward slashes become backslashes for a native Windows install. Reported by alex882001 in [#305](https://github.com/mescon/Healarr/issues/305).
+
 ## [1.3.8] - 2026-06-05
 
 Makes the scan enumeration phase visible, bounded, and cancellable. Before this, a scan whose directory walk stalled on a slow or unresponsive mount was indistinguishable from a hang.
