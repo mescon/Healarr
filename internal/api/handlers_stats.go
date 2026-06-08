@@ -77,7 +77,7 @@ func (s *RESTServer) getDashboardStats(c *gin.Context) {
 	}
 
 	// Query 4: Last completed scan info
-	last, err := s.scans.GetLastCompletedScan(c.Request.Context())
+	last, err := s.scans.GetLastScan(c.Request.Context())
 	if err != nil && !errors.Is(err, repository.ErrNotFound) {
 		warnings = append(warnings, "failed to query last scan")
 		logger.Debugf("Failed to query last scan: %v", err)
@@ -197,7 +197,7 @@ func (s *RESTServer) getPathHealth(c *gin.Context) {
 
 // loadPathLastScan queries the last completed scan for a given path, returning nullable ID and time.
 func (s *RESTServer) loadPathLastScan(ctx context.Context, pathID int64) (*int, *string) {
-	last, err := s.scans.GetLastCompletedScanByPathID(ctx, pathID)
+	last, err := s.scans.GetLastScanByPathID(ctx, pathID)
 	if err != nil {
 		return nil, nil
 	}

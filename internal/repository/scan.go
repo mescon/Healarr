@@ -138,36 +138,49 @@ func (r *ScanRepository) GetScanStats(ctx context.Context) (ScanStats, error) {
 	return s, nil
 }
 
-// GetLastCompletedScan returns the most recent completed scan globally.
+// GetLastScan returns the most recent scan that processed at least one file,
+// regardless of whether it ran to completion. The dashboard "Last Scan" card
+// and per-path "last scanned" use this: a scan that checked thousands of
+// files before being cancelled or interrupted is real scan activity and
+// should be reflected, where the old completed-only query left the dashboard
+// saying "Never scanned" while /scans clearly listed the scan. The
+// files_scanned > 0 filter excludes scans cancelled during enumeration (0
+// files), which genuinely scanned nothing. Active scans (running / scanning /
+// enumerating / paused / pending) are excluded too — a scan still in flight
+// belongs in the active-scans indicator, not "last scan". The reported time
+// is completed_at when the scan reached a terminal state, otherwise
+// started_at.
 // Returns ErrNotFound when no completed scan exists.
-func (r *ScanRepository) GetLastCompletedScan(ctx context.Context) (LastScan, error) {
+func (r *ScanRepository) GetLastScan(ctx context.Context) (LastScan, error) {
 	var l LastScan
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, completed_at, path
+		SELECT id, COALESCE(completed_at, started_at), path
 		FROM scans
-		WHERE status = 'completed' AND completed_at IS NOT NULL
-		ORDER BY completed_at DESC
+		WHERE files_scanned > 0
+		  AND status NOT IN ('pending', 'running', 'scanning', 'enumerating', 'paused')
+		ORDER BY COALESCE(completed_at, started_at) DESC
 		LIMIT 1
 	`).Scan(&l.ID, &l.CompletedAt, &l.Path)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LastScan{}, ErrNotFound
 	}
 	if err != nil {
-		return LastScan{}, fmt.Errorf("query last completed scan: %w", err)
+		return LastScan{}, fmt.Errorf("query last scan: %w", err)
 	}
 	return l, nil
 }
 
-// GetLastCompletedScanByPathID returns the most recent completed scan
-// for a specific scan_path. Path is left zero-valued (the caller usually
-// knows the path already). Returns ErrNotFound when none exists.
-func (r *ScanRepository) GetLastCompletedScanByPathID(ctx context.Context, pathID int64) (LastScan, error) {
+// GetLastScanByPathID returns the most recent scan for a specific scan_path
+// that processed at least one file. Path is left zero-valued (the caller
+// usually knows the path already). Returns ErrNotFound when none exists.
+func (r *ScanRepository) GetLastScanByPathID(ctx context.Context, pathID int64) (LastScan, error) {
 	var l LastScan
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, completed_at
+		SELECT id, COALESCE(completed_at, started_at)
 		FROM scans
-		WHERE path_id = ? AND status = 'completed' AND completed_at IS NOT NULL
-		ORDER BY completed_at DESC
+		WHERE path_id = ? AND files_scanned > 0
+		  AND status NOT IN ('pending', 'running', 'scanning', 'enumerating', 'paused')
+		ORDER BY COALESCE(completed_at, started_at) DESC
 		LIMIT 1
 	`, pathID).Scan(&l.ID, &l.CompletedAt)
 	if errors.Is(err, sql.ErrNoRows) {

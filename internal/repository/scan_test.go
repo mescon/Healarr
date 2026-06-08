@@ -163,49 +163,76 @@ func TestScanRepository_GetScanStats(t *testing.T) {
 	}
 }
 
-func TestScanRepository_GetLastCompletedScan(t *testing.T) {
+func TestScanRepository_GetLastScan(t *testing.T) {
 	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
-	seedScan(t, db, "/older", "completed", 0, 0, "2026-05-01 00:00:00")
-	seedScan(t, db, "/newer", "completed", 0, 0, "2026-05-10 00:00:00")
-	seedScan(t, db, "/running", "running", 0, 0, "")
+	seedScan(t, db, "/older", "completed", 10, 0, "2026-05-01 00:00:00")
+	seedScan(t, db, "/newer", "completed", 20, 0, "2026-05-10 00:00:00")
+	seedScan(t, db, "/running", "running", 5, 0, "")
 
-	last, err := repo.GetLastCompletedScan(context.Background())
+	last, err := repo.GetLastScan(context.Background())
 	if err != nil {
-		t.Fatalf("GetLastCompletedScan: %v", err)
+		t.Fatalf("GetLastScan: %v", err)
 	}
 	if !last.Path.Valid || last.Path.String != "/newer" {
 		t.Errorf("Path = %+v, want /newer", last.Path)
 	}
 }
 
-func TestScanRepository_GetLastCompletedScan_empty(t *testing.T) {
-	t.Parallel()
-	repo := NewScanRepository(newScanTestDB(t))
-	if _, err := repo.GetLastCompletedScan(context.Background()); !errors.Is(err, ErrNotFound) {
-		t.Errorf("empty DB = %v, want ErrNotFound", err)
-	}
-}
-
-func TestScanRepository_GetLastCompletedScanByPathID(t *testing.T) {
+// The reported bug: a scan that processed thousands of files before being
+// cancelled is real scan activity, but the old completed-only query ignored
+// it, leaving the dashboard saying "Never scanned" while /scans listed it.
+// GetLastScan must return such a scan.
+func TestScanRepository_GetLastScan_CountsCancelledWithFiles(t *testing.T) {
 	t.Parallel()
 	db := newScanTestDB(t)
 	repo := NewScanRepository(db)
-	// Two paths, two completed scans each — the per-path query should pick
-	// the newer one for the queried path, not the global newest.
+	// A cancelled scan that scanned 4031 files (exactly the prod scenario).
+	seedScan(t, db, "/media/TV", "cancelled", 4031, 0, "2026-06-03 16:31:10")
+	// A later cancelled scan that scanned 0 files (cancelled during
+	// enumeration) must NOT win — it scanned nothing.
+	seedScan(t, db, "/media/Movies/HD", "cancelled", 0, 0, "2026-06-05 09:31:42")
+
+	last, err := repo.GetLastScan(context.Background())
+	if err != nil {
+		t.Fatalf("GetLastScan: %v", err)
+	}
+	if !last.Path.Valid || last.Path.String != "/media/TV" {
+		t.Errorf("Path = %+v, want /media/TV (the cancelled scan that scanned 4031 files)", last.Path)
+	}
+}
+
+func TestScanRepository_GetLastScan_empty(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	// A scan that scanned zero files does not count as scan activity.
+	seedScan(t, db, "/zero", "cancelled", 0, 0, "2026-05-01 00:00:00")
+	if _, err := repo.GetLastScan(context.Background()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("no scan with files = %v, want ErrNotFound", err)
+	}
+}
+
+func TestScanRepository_GetLastScanByPathID(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	// Two paths; the per-path query should pick the newer scan-with-files for
+	// the queried path, not the global newest. The middle row is cancelled
+	// but scanned files, so it still counts.
 	if _, err := db.Exec(`
-		INSERT INTO scans (path, path_id, status, completed_at) VALUES
-		('/a', 1, 'completed', '2026-05-01 00:00:00'),
-		('/a', 1, 'completed', '2026-05-05 00:00:00'),
-		('/b', 2, 'completed', '2026-05-10 00:00:00')
+		INSERT INTO scans (path, path_id, status, files_scanned, completed_at) VALUES
+		('/a', 1, 'completed', 100, '2026-05-01 00:00:00'),
+		('/a', 1, 'cancelled', 250, '2026-05-05 00:00:00'),
+		('/b', 2, 'completed', 300, '2026-05-10 00:00:00')
 	`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	last, err := repo.GetLastCompletedScanByPathID(context.Background(), 1)
+	last, err := repo.GetLastScanByPathID(context.Background(), 1)
 	if err != nil {
-		t.Fatalf("GetLastCompletedScanByPathID: %v", err)
+		t.Fatalf("GetLastScanByPathID: %v", err)
 	}
 	// modernc.org/sqlite normalizes timestamps to RFC3339-ish form
 	// (2026-05-05T00:00:00Z); just check the date portion to keep the test
