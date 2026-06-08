@@ -1209,15 +1209,15 @@ func TestGetPathHealth_WithScansAndCorruptions(t *testing.T) {
 	}
 
 	// Insert completed scans for each path
-	_, err = db.Exec(`INSERT INTO scans (path_id, path, status, completed_at) VALUES (1, '/healthy', 'completed', '2026-01-10 10:00:00')`)
+	_, err = db.Exec(`INSERT INTO scans (path_id, path, status, files_scanned, completed_at) VALUES (1, '/healthy', 'completed', 100, '2026-01-10 10:00:00')`)
 	if err != nil {
 		t.Fatalf("Failed to insert scan: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO scans (path_id, path, status, completed_at) VALUES (2, '/warning', 'completed', '2026-01-10 09:00:00')`)
+	_, err = db.Exec(`INSERT INTO scans (path_id, path, status, files_scanned, completed_at) VALUES (2, '/warning', 'completed', 100, '2026-01-10 09:00:00')`)
 	if err != nil {
 		t.Fatalf("Failed to insert scan: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO scans (path_id, path, status, completed_at) VALUES (3, '/critical', 'completed', '2026-01-10 08:00:00')`)
+	_, err = db.Exec(`INSERT INTO scans (path_id, path, status, files_scanned, completed_at) VALUES (3, '/critical', 'completed', 100, '2026-01-10 08:00:00')`)
 	if err != nil {
 		t.Fatalf("Failed to insert scan: %v", err)
 	}
