@@ -696,3 +696,145 @@ func TestPathMapper_ToArrPath_WindowsUNC(t *testing.T) {
 		t.Errorf("ToArrPath(%q) = %q, want %q", in, got, in)
 	}
 }
+
+// =============================================================================
+// Mixed-separator normalization (regression for #305)
+// =============================================================================
+//
+// A Windows Sonarr/Radarr reports a file path that mixes the *arr-path prefix
+// (configured in Healarr with forward slashes, e.g. /media/Movies) with a
+// backslash remainder from the Windows host:
+//
+//   /media/Movies\Angels And Demons (2009)\Angels & Demons (2009).mkv
+//
+// #299 made the prefix MATCH across separators, but the backslashes survived
+// into the mapped local path, so the scan-path-config lookup (which only
+// accepts '/' boundaries) missed and the filesystem stat failed with
+// "invalid argument". ToLocalPath must now normalize the remainder to the
+// local path's separator.
+
+func TestPathMapper_ToLocalPath_NormalizesWindowsRemainder(t *testing.T) {
+	db, err := newTestDBForPathMapper()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	// Linux-style local path, *arr path also forward-slash (Radarr remote path
+	// mapping presents /media/Movies) — but the Windows host appends a
+	// backslash remainder.
+	seedScanPath(db, 1, "/media/Movies", "/media/Movies", false, false)
+
+	pm, err := NewPathMapper(db)
+	if err != nil {
+		t.Fatalf("NewPathMapper() error = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		arrPath string
+		want    string
+	}{
+		{
+			"exact #305 case",
+			`/media/Movies\Angels And Demons (2009)\Angels & Demons (2009) {edition-Extended Cut}.mkv`,
+			"/media/Movies/Angels And Demons (2009)/Angels & Demons (2009) {edition-Extended Cut}.mkv",
+		},
+		{
+			"all backslashes after prefix",
+			`/media/Movies\A\B\C.mkv`,
+			"/media/Movies/A/B/C.mkv",
+		},
+		{
+			"already-forward-slash is unchanged",
+			"/media/Movies/Clean/file.mkv",
+			"/media/Movies/Clean/file.mkv",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := pm.ToLocalPath(tt.arrPath)
+			if err != nil {
+				t.Errorf("ToLocalPath(%q) error = %v", tt.arrPath, err)
+			}
+			if got != tt.want {
+				t.Errorf("ToLocalPath(%q)\n  = %q\n  want %q", tt.arrPath, got, tt.want)
+			}
+		})
+	}
+}
+
+// When the LOCAL side is a native Windows path (a Windows Healarr install),
+// a forward-slash remainder from a Linux-y *arr path must be normalized to
+// backslashes so the Windows filesystem can open it.
+func TestPathMapper_ToLocalPath_NormalizesToWindowsLocal(t *testing.T) {
+	db, err := newTestDBForPathMapper()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	// Local path is Windows-native; arr path is forward-slash.
+	seedScanPath(db, 1, `D:\Media\Movies`, "/data/movies", false, false)
+
+	pm, err := NewPathMapper(db)
+	if err != nil {
+		t.Fatalf("NewPathMapper() error = %v", err)
+	}
+
+	got, err := pm.ToLocalPath("/data/movies/Show/file.mkv")
+	if err != nil {
+		t.Fatalf("ToLocalPath error = %v", err)
+	}
+	want := `D:\Media\Movies\Show\file.mkv`
+	if got != want {
+		t.Errorf("ToLocalPath = %q, want %q", got, want)
+	}
+}
+
+// ToArrPath is the reverse: a Linux local path mapping to a Windows *arr must
+// present the remainder with backslashes so the Windows *arr recognizes it.
+func TestPathMapper_ToArrPath_NormalizesToWindowsArr(t *testing.T) {
+	db, err := newTestDBForPathMapper()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	seedScanPath(db, 1, "/media/Movies", `\\nas\Movies`, false, false)
+
+	pm, err := NewPathMapper(db)
+	if err != nil {
+		t.Fatalf("NewPathMapper() error = %v", err)
+	}
+
+	got, err := pm.ToArrPath("/media/Movies/Show/file.mkv")
+	if err != nil {
+		t.Fatalf("ToArrPath error = %v", err)
+	}
+	want := `\\nas\Movies\Show\file.mkv`
+	if got != want {
+		t.Errorf("ToArrPath = %q, want %q", got, want)
+	}
+}
+
+// Unit coverage for the separator helpers.
+func TestDominantSeparator(t *testing.T) {
+	cases := []struct {
+		in   string
+		want byte
+	}{
+		{"/media/Movies", '/'},
+		{`D:\Media\Movies`, '\\'},
+		{`\\nas\share`, '\\'},
+		{"", '/'},              // default
+		{`/media/My\Odd`, '/'}, // has '/', so forward slash wins
+		{"relativepath", '/'},  // no separator -> default
+	}
+	for _, c := range cases {
+		if got := dominantSeparator(c.in); got != c.want {
+			t.Errorf("dominantSeparator(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

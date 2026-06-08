@@ -63,6 +63,31 @@ func hasSepPrefix(s string) bool {
 	return strings.ContainsRune(pathSeparators, rune(s[0]))
 }
 
+// dominantSeparator returns the path separator that p is written in: backslash
+// if p uses backslashes and no forward slashes (a native Windows path like
+// D:\Media\Movies), forward slash otherwise. The forward-slash default covers
+// Linux/macOS (where Healarr containers run) and any mixed/ambiguous input.
+func dominantSeparator(p string) byte {
+	if strings.Contains(p, "\\") && !strings.Contains(p, "/") {
+		return '\\'
+	}
+	return '/'
+}
+
+// normalizeRemainder rewrites the separators in an *arr-supplied path
+// remainder to match the target path's separator convention. Sonarr/Radarr
+// running on Windows report paths with backslashes; when the mapped local
+// path is a Linux path (the container default), those backslashes must become
+// forward slashes or downstream filesystem ops (stat/open) and the scan-path
+// matcher treat the whole tail as one nonsensical filename
+// (e.g. stat "/media/Movies\Show\file.mkv": invalid argument). Closes #305.
+func normalizeRemainder(remainder string, target string) string {
+	if dominantSeparator(target) == '\\' {
+		return strings.ReplaceAll(remainder, "/", "\\")
+	}
+	return strings.ReplaceAll(remainder, "\\", "/")
+}
+
 func (pm *SQLPathMapper) Reload() error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -109,7 +134,7 @@ func (pm *SQLPathMapper) ToArrPath(localPath string) (string, error) {
 	}
 
 	relPath := strings.TrimPrefix(localPath, bestMatch.LocalPath)
-	return bestMatch.ArrPath + relPath, nil
+	return bestMatch.ArrPath + normalizeRemainder(relPath, bestMatch.ArrPath), nil
 }
 
 func (pm *SQLPathMapper) ToLocalPath(arrPath string) (string, error) {
@@ -137,5 +162,5 @@ func (pm *SQLPathMapper) ToLocalPath(arrPath string) (string, error) {
 	}
 
 	relPath := strings.TrimPrefix(arrPath, bestMatch.ArrPath)
-	return bestMatch.LocalPath + relPath, nil
+	return bestMatch.LocalPath + normalizeRemainder(relPath, bestMatch.LocalPath), nil
 }
