@@ -2070,3 +2070,96 @@ func TestResolveHwAccelVendor_AutoMatchesHostState(t *testing.T) {
 		t.Errorf("auto on non-NVIDIA host: got %q, want vaapi or empty", got)
 	}
 }
+
+// =============================================================================
+// DetectionMethod / DetectionMode parsing + sql driver round-trip
+// =============================================================================
+
+func TestParseDetectionMethod(t *testing.T) {
+	valid := []string{"zero_byte", "ffprobe", "mediainfo", "handbrake"}
+	for _, s := range valid {
+		got, err := ParseDetectionMethod(s)
+		if err != nil {
+			t.Errorf("ParseDetectionMethod(%q) unexpected error: %v", s, err)
+		}
+		if string(got) != s {
+			t.Errorf("ParseDetectionMethod(%q) = %q", s, got)
+		}
+	}
+	for _, s := range []string{"", "FFPROBE", "ffmpeg", "bogus"} {
+		if _, err := ParseDetectionMethod(s); err == nil {
+			t.Errorf("ParseDetectionMethod(%q) expected error, got nil", s)
+		}
+	}
+}
+
+func TestParseDetectionMode(t *testing.T) {
+	for _, s := range []string{"quick", "thorough"} {
+		got, err := ParseDetectionMode(s)
+		if err != nil {
+			t.Errorf("ParseDetectionMode(%q) unexpected error: %v", s, err)
+		}
+		if string(got) != s {
+			t.Errorf("ParseDetectionMode(%q) = %q", s, got)
+		}
+	}
+	for _, s := range []string{"", "Quick", "deep", "fast"} {
+		if _, err := ParseDetectionMode(s); err == nil {
+			t.Errorf("ParseDetectionMode(%q) expected error, got nil", s)
+		}
+	}
+}
+
+func TestDetectionMethod_ScanValue(t *testing.T) {
+	// Value round-trips the underlying string.
+	v, err := DetectionFFprobe.Value()
+	if err != nil || v != "ffprobe" {
+		t.Errorf("Value() = (%v, %v), want (ffprobe, nil)", v, err)
+	}
+
+	var m DetectionMethod
+	// string source
+	if err := m.Scan("mediainfo"); err != nil || m != DetectionMediaInfo {
+		t.Errorf("Scan(string) = (%q, %v), want (mediainfo, nil)", m, err)
+	}
+	// []byte source
+	if err := m.Scan([]byte("handbrake")); err != nil || m != DetectionHandBrake {
+		t.Errorf("Scan([]byte) = (%q, %v), want (handbrake, nil)", m, err)
+	}
+	// NULL
+	if err := m.Scan(nil); err == nil {
+		t.Error("Scan(nil) expected error, got nil")
+	}
+	// wrong type
+	if err := m.Scan(42); err == nil {
+		t.Error("Scan(int) expected error, got nil")
+	}
+	// invalid string value
+	if err := m.Scan("nope"); err == nil {
+		t.Error("Scan(invalid) expected error, got nil")
+	}
+}
+
+func TestDetectionMode_ScanValue(t *testing.T) {
+	v, err := DetectionMode(ModeThorough).Value()
+	if err != nil || v != "thorough" {
+		t.Errorf("Value() = (%v, %v), want (thorough, nil)", v, err)
+	}
+
+	var mode DetectionMode
+	if err := mode.Scan("quick"); err != nil || string(mode) != "quick" {
+		t.Errorf("Scan(string) = (%q, %v), want (quick, nil)", mode, err)
+	}
+	if err := mode.Scan([]byte("thorough")); err != nil || string(mode) != "thorough" {
+		t.Errorf("Scan([]byte) = (%q, %v), want (thorough, nil)", mode, err)
+	}
+	if err := mode.Scan(nil); err == nil {
+		t.Error("Scan(nil) expected error, got nil")
+	}
+	if err := mode.Scan(3.14); err == nil {
+		t.Error("Scan(float) expected error, got nil")
+	}
+	if err := mode.Scan("ultra"); err == nil {
+		t.Error("Scan(invalid) expected error, got nil")
+	}
+}
