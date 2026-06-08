@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.10] - 2026-06-08
+
+Dashboard accuracy and a webhook log-line nicety, plus a batch of dependency bumps.
+
+### Fixed
+- **The dashboard "Last Scan" and per-path "last scanned" now reflect scans that ran but didn't complete** ([#317](https://github.com/mescon/Healarr/pull/317)). The System Overview could show "Never scanned" / "No scans yet" while the `/scans` page clearly listed scans — a confusing contradiction. The cause: the dashboard queried only `status = 'completed'`, so a scan that processed thousands of files before being cancelled or interrupted was ignored. The query now returns the most recent scan that processed at least one file in any terminal state. Scans cancelled during enumeration (0 files) are still excluded since they scanned nothing, and in-flight scans are excluded since they belong in the active-scans indicator. The displayed time is the scan's completion time, or its start time if it was terminated before completing.
+
+### Added
+- **Single-file (webhook) scans now log a completion line** ([#318](https://github.com/mescon/Healarr/pull/318)). A webhook-triggered scan logged "Scan started for file" and "Scanning single file" but then ended silently on success. It now logs `Scan completed for file: <path> (healthy)` so a successful scan is visibly confirmed rather than inferred from the absence of an error. Requested in [#305](https://github.com/mescon/Healarr/issues/305).
+
+### Dependencies
+- Batch bumps ([#316](https://github.com/mescon/Healarr/pull/316)): `modernc.org/sqlite` 1.51→1.52, `github.com/mattn/go-sqlite3` 1.14.44→1.14.45, `codecov-action` 6→7, `react`/`react-dom` 19.2.6→19.2.7, `@types/react` 19.2.14→19.2.17, `react-router-dom` 7.15→7.17, `vitest` 4.1.6→4.1.8, `@tailwindcss/postcss` 4.2→4.3, `autoprefixer` 10.4→10.5. (Dependabot's react PR bumped react without react-dom; they were re-synced to the same version so the test suite kept passing.)
+
 ## [1.3.9] - 2026-06-08
 
 A follow-up to the Windows webhook fixes: mixed-separator paths from a Windows *arr now resolve correctly.
