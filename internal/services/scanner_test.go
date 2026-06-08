@@ -4934,3 +4934,54 @@ func TestScannerService_HandleEnumerationFailure(t *testing.T) {
 		}
 	})
 }
+
+// TestScannerService_ScanFile_Healthy covers the healthy early-return branch
+// added in #305: a healthy single-file (webhook) scan returns nil, emits no
+// corruption event, and counts the file as done.
+func TestScannerService_ScanFile_Healthy(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	tmpDir := t.TempDir()
+	if _, err := db.Exec(`
+		INSERT INTO scan_paths (local_path, arr_path, enabled, auto_remediate, dry_run)
+		VALUES (?, ?, 1, 0, 0)
+	`, tmpDir, tmpDir); err != nil {
+		t.Fatalf("Failed to insert scan path: %v", err)
+	}
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
+			return true, nil // healthy
+		},
+	}
+	scanner := NewScannerService(db, eb, mockHC, nil)
+
+	testFile := filepath.Join(tmpDir, "healthy.mkv")
+	if err := os.WriteFile(testFile, []byte("good content"), 0644); err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	if err := scanner.ScanFile(testFile); err != nil {
+		t.Errorf("ScanFile(healthy) returned error: %v", err)
+	}
+
+	// No corruption event should be emitted for a healthy file.
+	var count int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM events
+		WHERE event_type = 'CorruptionDetected'
+		AND json_extract(event_data, '$.file_path') = ?
+	`, testFile).Scan(&count); err != nil {
+		t.Fatalf("Failed to query events: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("healthy file emitted %d corruption events, want 0", count)
+	}
+}

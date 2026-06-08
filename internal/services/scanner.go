@@ -830,42 +830,47 @@ func (s *ScannerService) ScanFile(localPath string) error {
 	progress.FilesDone = 1
 	s.emitProgress(progress)
 
-	if !healthy {
-		// CRITICAL: Check if this is a recoverable error (mount lost, NAS offline, etc.)
-		if healthErr.IsRecoverable() {
-			logger.Infof("Recoverable error for file %s (Type: %s): %s - will NOT trigger remediation",
-				localPath, healthErr.Type, healthErr.Message)
-			// Don't emit corruption event for recoverable errors
-			return nil
-		}
+	if healthy {
+		// Explicit success line so a single-file (webhook) scan visibly
+		// confirms completion in the log, instead of ending silently after
+		// "Scanning single file". Requested in #305.
+		logger.Infof("Scan completed for file: %s (healthy)", localPath)
+		return nil
+	}
 
-		// This is TRUE corruption - emit event for remediation
-		logger.Infof("Corruption detected in file: %s (Type: %s)", localPath, healthErr.Type)
+	// CRITICAL: Check if this is a recoverable error (mount lost, NAS offline, etc.)
+	if healthErr.IsRecoverable() {
+		logger.Infof("Recoverable error for file %s (Type: %s): %s - will NOT trigger remediation",
+			localPath, healthErr.Type, healthErr.Message)
+		// Don't emit corruption event for recoverable errors
+		return nil
+	}
 
-		// DEDUPLICATION: Check if this file already has an active corruption record
-		if s.hasActiveCorruption(localPath) {
-			logger.Infof("Skipping duplicate corruption for file already being processed: %s", localPath)
-			return nil
-		}
+	// This is TRUE corruption - emit event for remediation
+	logger.Infof("Corruption detected in file: %s (Type: %s)", localPath, healthErr.Type)
 
-		// Emit event - critical entry point for remediation journey, use retry
-		err := s.eventBus.PublishWithRetry(domain.Event{
-			AggregateType: "corruption",
-			AggregateID:   uuid.New().String(),
-			EventType:     domain.CorruptionDetected,
-			EventData: map[string]interface{}{
-				"file_path":       localPath,
-				"file_size":       fileSize,
-				"corruption_type": healthErr.Type,
-				"error_details":   healthErr.Message,
-				"source":          "webhook",
-				"auto_remediate":  autoRemediate,
-				"dry_run":         dryRun,
-			},
-		})
-		if err != nil {
-			return err
-		}
+	// DEDUPLICATION: Check if this file already has an active corruption record
+	if s.hasActiveCorruption(localPath) {
+		logger.Infof("Skipping duplicate corruption for file already being processed: %s", localPath)
+		return nil
+	}
+
+	// Emit event - critical entry point for remediation journey, use retry
+	if err := s.eventBus.PublishWithRetry(domain.Event{
+		AggregateType: "corruption",
+		AggregateID:   uuid.New().String(),
+		EventType:     domain.CorruptionDetected,
+		EventData: map[string]interface{}{
+			"file_path":       localPath,
+			"file_size":       fileSize,
+			"corruption_type": healthErr.Type,
+			"error_details":   healthErr.Message,
+			"source":          "webhook",
+			"auto_remediate":  autoRemediate,
+			"dry_run":         dryRun,
+		},
+	}); err != nil {
+		return err
 	}
 	return nil
 }
