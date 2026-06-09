@@ -346,6 +346,8 @@ HEALARR_DATA_DIR=/opt/healarr/config ./healarr
 
 > **💡 Pro tip:** If you mount media with the same path as your *arr apps (e.g., Sonarr sees `/tv` and you mount `-v /host/tv:/tv:ro`), set both Local Path and *arr Path to the same value. This eliminates path translation issues.
 
+> **🪟 Windows hosts:** If your Sonarr/Radarr runs on Windows, it reports paths with backslashes and UNC roots (e.g. `\\server\media\TV Shows`). Set the **\*arr Path** to that UNC form exactly as the *arr reports it, and the **Local Path** to wherever Healarr sees the same files (e.g. `/media/TV Shows` inside a Linux container). Healarr normalizes the separators between the two, so webhook scans, path matching, and auto-remediation all work across the `\` ↔ `/` boundary — no manual conversion needed.
+
 ### Webhook Integration (Recommended)
 
 For instant scanning when downloads complete:
