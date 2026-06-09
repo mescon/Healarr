@@ -1999,6 +1999,13 @@ func TestConfigureSQLite_AllPragmas(t *testing.T) {
 	if tempStore != 2 { // 2 == MEMORY
 		t.Errorf("temp_store = %d, want 2 (MEMORY)", tempStore)
 	}
+
+	// configureSQLite converts the DB to INCREMENTAL auto_vacuum.
+	var autoVacuum int
+	db.QueryRow("PRAGMA auto_vacuum").Scan(&autoVacuum)
+	if autoVacuum != 2 {
+		t.Errorf("auto_vacuum = %d, want 2 (INCREMENTAL)", autoVacuum)
+	}
 }
 
 // =============================================================================
@@ -2910,13 +2917,11 @@ func TestConfigureSQLite_AfterClose(t *testing.T) {
 	// Close the database first
 	db.Close()
 
-	// configureSQLite now only sets the database-level auto_vacuum, which is
-	// best-effort (failures are logged, not returned) since it affects space
-	// reclamation, not correctness. The connection-level pragmas that used to
-	// be "critical" here moved to the DSN (#321). So even on a closed DB this
-	// returns nil rather than erroring — and must not panic.
-	if err := configureSQLite(db); err != nil {
-		t.Errorf("configureSQLite on closed DB = %v, want nil (best-effort)", err)
+	// configureSQLite acquires a connection (to run the auto_vacuum conversion
+	// on a single connection); on a closed pool that fails, so it returns an
+	// error rather than panicking.
+	if err := configureSQLite(db); err == nil {
+		t.Error("configureSQLite on closed DB should return an error")
 	}
 }
 
@@ -4453,5 +4458,70 @@ func TestRepository_StartPeriodicPoolStats_Stop(t *testing.T) {
 	if got := mock.poolStatsCallCount(); got > initialCalls+1 {
 		t.Errorf("Pool stats calls should stop after stop(), got %d calls after %d initial",
 			got, initialCalls)
+	}
+}
+
+// TestNewRepositoryEnablesIncrementalVacuum verifies the auto_vacuum fix: a DB
+// opened via NewRepository must be in INCREMENTAL mode so the daily
+// incremental_vacuum maintenance actually reclaims freed pages. Historically
+// auto_vacuum was set too late (after the schema existed) and silently stayed
+// at NONE, making incremental_vacuum a no-op and letting the file grow forever.
+func TestNewRepositoryEnablesIncrementalVacuum(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "healarr.db")
+	repo, err := NewRepository(dbPath)
+	if err != nil {
+		t.Fatalf("NewRepository: %v", err)
+	}
+	defer repo.DB.Close()
+
+	var mode int
+	if err := repo.DB.QueryRow("PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != 2 {
+		t.Fatalf("auto_vacuum=%d, want 2 (INCREMENTAL)", mode)
+	}
+
+	// Prove incremental_vacuum now reclaims: bloat, delete, then vacuum.
+	if _, err := repo.DB.Exec(`CREATE TABLE bloat (id INTEGER PRIMARY KEY, blob TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2000; i++ {
+		_, _ = repo.DB.Exec(`INSERT INTO bloat (blob) VALUES (printf('%01000d', ?))`, i)
+	}
+	_, _ = repo.DB.Exec(`DELETE FROM bloat`)
+
+	var freeBefore int
+	_ = repo.DB.QueryRow("PRAGMA freelist_count").Scan(&freeBefore)
+	if freeBefore == 0 {
+		t.Skip("no free pages accumulated; the auto_vacuum=2 assertion above is the core check")
+	}
+	_, _ = repo.DB.Exec("PRAGMA incremental_vacuum")
+	var freeAfter int
+	_ = repo.DB.QueryRow("PRAGMA freelist_count").Scan(&freeAfter)
+	if freeAfter >= freeBefore {
+		t.Errorf("incremental_vacuum did not reclaim: freelist %d -> %d", freeBefore, freeAfter)
+	}
+}
+
+// TestConfigureSQLite_Idempotent verifies the second call is a no-op (the DB is
+// already INCREMENTAL) and does not error.
+func TestConfigureSQLite_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "t.db")
+	db, err := sql.Open("sqlite", dbPath+pragmaDSNSuffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := configureSQLite(db); err != nil {
+		t.Fatalf("first configureSQLite: %v", err)
+	}
+	if err := configureSQLite(db); err != nil {
+		t.Fatalf("second configureSQLite (should be no-op): %v", err)
+	}
+	var mode int
+	_ = db.QueryRow("PRAGMA auto_vacuum").Scan(&mode)
+	if mode != 2 {
+		t.Errorf("auto_vacuum=%d, want 2", mode)
 	}
 }
