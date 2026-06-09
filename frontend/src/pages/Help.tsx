@@ -852,6 +852,12 @@ server {
                                     scan path has *arr Path = <span className="font-mono">/tv</span>, Local Path = <span className="font-mono">/media/tv</span>,
                                     Healarr will scan <span className="font-mono">/media/tv/MyShow/S01E01.mkv</span>. Or if you mounted with <span className="font-mono">-v /host/tv:/tv:ro</span>, just use <span className="font-mono">/tv</span> for both paths.
                                 </p>
+                                <p className="text-xs text-slate-500 mt-2">
+                                    <span className="font-semibold">🪟 Windows *arr:</span> If Sonarr/Radarr runs on Windows it reports backslash UNC paths
+                                    like <span className="font-mono">{'\\\\server\\media\\TV Shows'}</span>. Set the *arr Path to that exact UNC form and the
+                                    Local Path to where Healarr sees the files (e.g. <span className="font-mono">/media/TV Shows</span>). Healarr normalizes the
+                                    <span className="font-mono">{' \\ '}</span>↔<span className="font-mono">{' / '}</span> separators automatically, so webhooks, matching, and remediation all work — no manual conversion.
+                                </p>
                             </div>
                         </div>
 
