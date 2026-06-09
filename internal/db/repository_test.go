@@ -1955,30 +1955,49 @@ func TestConfigureSQLite_AllPragmas(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	dbPath := filepath.Join(tmpDir, "test.db")
-	db, err := sql.Open("sqlite", dbPath)
+	// Open exactly as NewRepository does: connection-level pragmas ride on the
+	// DSN so every pooled connection gets them (#321). configureSQLite then
+	// applies the database-level auto_vacuum.
+	db, err := sql.Open("sqlite", dbPath+pragmaDSNSuffix)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(4)
 
-	// Configure SQLite
-	err = configureSQLite(db)
-	if err != nil {
+	if err := configureSQLite(db); err != nil {
 		t.Errorf("configureSQLite failed: %v", err)
 	}
 
-	// Verify key pragmas
-	var busyTimeout int
-	db.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeout)
-	if busyTimeout != 30000 {
-		t.Errorf("Expected busy_timeout=30000, got %d", busyTimeout)
+	// busy_timeout must be set on every pooled connection, not just one — the
+	// crux of #321. Sample several to defeat the pool handing back the same
+	// connection each time.
+	for i := 0; i < 6; i++ {
+		var busyTimeout int
+		if err := db.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+			t.Fatalf("query busy_timeout: %v", err)
+		}
+		if busyTimeout != 30000 {
+			t.Errorf("iter %d: busy_timeout=%d, want 30000 (pragma not applied to all pool connections)", i, busyTimeout)
+		}
 	}
 
 	var syncMode string
 	db.QueryRow("PRAGMA synchronous").Scan(&syncMode)
-	// SQLite returns numeric mode (1=NORMAL)
 	if syncMode != "1" && syncMode != "NORMAL" && syncMode != "normal" {
-		t.Logf("synchronous mode: %s (expected 1 or NORMAL)", syncMode)
+		t.Errorf("synchronous = %s, want 1/NORMAL", syncMode)
+	}
+
+	var fk int
+	db.QueryRow("PRAGMA foreign_keys").Scan(&fk)
+	if fk != 1 {
+		t.Errorf("foreign_keys = %d, want 1", fk)
+	}
+
+	var tempStore int
+	db.QueryRow("PRAGMA temp_store").Scan(&tempStore)
+	if tempStore != 2 { // 2 == MEMORY
+		t.Errorf("temp_store = %d, want 2 (MEMORY)", tempStore)
 	}
 }
 
@@ -2891,10 +2910,13 @@ func TestConfigureSQLite_AfterClose(t *testing.T) {
 	// Close the database first
 	db.Close()
 
-	// configureSQLite should return an error for critical pragma failures on a closed database
-	err = configureSQLite(db)
-	if err == nil {
-		t.Error("configureSQLite should return error for closed database")
+	// configureSQLite now only sets the database-level auto_vacuum, which is
+	// best-effort (failures are logged, not returned) since it affects space
+	// reclamation, not correctness. The connection-level pragmas that used to
+	// be "critical" here moved to the DSN (#321). So even on a closed DB this
+	// returns nil rather than erroring — and must not panic.
+	if err := configureSQLite(db); err != nil {
+		t.Errorf("configureSQLite on closed DB = %v, want nil (best-effort)", err)
 	}
 }
 
