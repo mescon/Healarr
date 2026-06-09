@@ -5502,6 +5502,13 @@ func TestIsValidPathMatch(t *testing.T) {
 		{"no match prefix only", "/data/movie", "/data/movies/movie.mkv", false},
 		{"root path match", "/", "/anything/here", true},
 		{"empty file path", "/data/movies", "", false},
+		// Windows UNC paths (regression for #322): a Windows *arr reports
+		// backslash-separated UNC paths; the matcher must accept them.
+		{"UNC exact match", `\\srv\media\TV Shows`, `\\srv\media\TV Shows`, true},
+		{"UNC subpath match", `\\srv\media\TV Shows`, `\\srv\media\TV Shows\Show\S02E08.mkv`, true},
+		{"UNC trailing backslash root", `\\srv\media\TV Shows\`, `\\srv\media\TV Shows\Show\ep.mkv`, true},
+		{"UNC no match partial name", `\\srv\media\Movies`, `\\srv\media\MoviesArchive\film.mkv`, false},
+		{"UNC no match different share", `\\srv\media\Movies`, `\\srv\media\TV\show.mkv`, false},
 	}
 
 	for _, tt := range tests {

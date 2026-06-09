@@ -318,17 +318,26 @@ type HistoryResponse struct {
 // isValidPathMatch checks if filePath starts with rootPath followed by "/" or end of string.
 // This prevents "/data/movies" from matching "/data/movies-archive".
 func isValidPathMatch(rootPath, filePath string) bool {
-	rootPath = strings.TrimRight(rootPath, "/")
+	// Accept both / and \ as separators so a Windows *arr's UNC path
+	// (\\server\share\Movies\film.mkv) matches its configured root the same
+	// way a Linux path does. Without this, remediation on a Windows host
+	// fails to find the owning instance ("no instance found for path") even
+	// though detection worked. Same separator class of bug as #305, here in
+	// the instance-ownership matcher. trimTrailingSep / hasSepPrefix are the
+	// shared helpers from path_mapper.go.
+	rootPath = trimTrailingSep(rootPath)
 	if !strings.HasPrefix(filePath, rootPath) {
 		return false
 	}
 	remainder := filePath[len(rootPath):]
-	return remainder == "" || strings.HasPrefix(remainder, "/")
+	return remainder == "" || hasSepPrefix(remainder)
 }
 
-// normalizedPathLength returns the length of rootPath after trimming trailing slashes.
+// normalizedPathLength returns the length of rootPath after trimming trailing
+// separators (both / and \), so the longest-prefix tie-break is consistent
+// regardless of the path's separator style.
 func normalizedPathLength(rootPath string) int {
-	return len(strings.TrimRight(rootPath, "/"))
+	return len(trimTrailingSep(rootPath))
 }
 
 func (c *HTTPArrClient) getInstanceForPath(arrPath string) (*ArrInstance, error) {
