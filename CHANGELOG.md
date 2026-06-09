@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.11] - 2026-06-08
+
+Two fixes from a Windows user's testing: auto-remediation now works on Windows hosts, and manual scans stop logging spurious "database is locked" lines.
+
+### Fixed
+- **Auto-remediation now finds the *arr instance for Windows UNC paths** ([#323](https://github.com/mescon/Healarr/pull/323)). On a Windows host, remediation failed with `no instance found for path: \\server\share\TV Shows\...` even though the file's corruption was detected correctly. The instance-ownership matcher (`isValidPathMatch`) only trimmed trailing `/` and only treated `/` as a directory boundary, so a Windows *arr's backslash-separated UNC path never matched its configured root folder and remediation gave up. This is the same separator class of bug as the v1.3.9 webhook fix, in a different matcher; it now accepts `/` or `\` (and `\\srv\media\Movies` still doesn't false-match `\\srv\media\MoviesArchive`). Reported by alex882001 in [#322](https://github.com/mescon/Healarr/issues/322).
+- **Manual scans no longer spam "database is locked (SQLITE_BUSY)" warnings** ([#324](https://github.com/mescon/Healarr/pull/324)). Connection-level SQLite pragmas — most importantly `busy_timeout=30000` — were applied with a post-open `db.Exec`, which configures only one connection in the pool; the other three kept `busy_timeout=0` and returned `SQLITE_BUSY` immediately instead of waiting for the lock. The parallel scanner's watermark writer (which runs alongside the per-file `scan_files` inserts) hit those unconfigured connections and failed noisily. The pragmas now ride on the connection string so every pooled connection gets them, the watermark write uses the same retry wrapper as the other writers, and its best-effort failures log at debug level instead of warn (the watermark is a resume optimization; `scan_files` rows are the source of truth). Reported by alex882001 in [#321](https://github.com/mescon/Healarr/issues/321).
+
 ## [1.3.10] - 2026-06-08
 
 Dashboard accuracy and a webhook log-line nicety, plus a batch of dependency bumps.
