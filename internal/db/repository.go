@@ -134,13 +134,42 @@ const pragmaDSNSuffix = "?_pragma=busy_timeout(30000)" +
 // DSN. Connection-level pragmas (busy_timeout, journal_mode, foreign_keys,
 // synchronous, temp_store, cache_size) are applied to every pooled connection
 // via pragmaDSNSuffix instead — see #321.
+//
+// Its one job is converting the database to INCREMENTAL auto_vacuum.
+// auto_vacuum is a database-level property that only takes effect on an empty
+// database or after a VACUUM. It was historically set with a plain db.Exec
+// after the schema already existed, so it silently stayed at NONE (0) — and
+// the daily `PRAGMA incremental_vacuum` maintenance was a no-op, meaning the
+// file never reclaimed pages freed by retention pruning and only ever grew.
+//
+// We convert once: set the mode and VACUUM to apply it. The check makes it
+// idempotent (a no-op once the DB is already incremental). On a fresh DB the
+// VACUUM is trivial and the mode persists as the schema is migrated in
+// afterward; on an existing DB it is a one-time rewrite that also reclaims
+// the accumulated free space. Both pragma and VACUUM run on one dedicated
+// connection so the mode-change definitely applies to the VACUUM.
 func configureSQLite(db *sql.DB) error {
-	// auto_vacuum is a database-level property (persisted in the file header);
-	// setting it once is sufficient. INCREMENTAL reclaims freed pages on
-	// demand without the full-rewrite cost of auto_vacuum=FULL.
-	if _, err := db.Exec("PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
-		// Non-fatal: only affects space reclamation, not correctness.
-		logger.Debugf("Failed to set auto_vacuum pragma: %v", err)
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection for auto_vacuum config: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	var mode int
+	if err := conn.QueryRowContext(ctx, "PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		return fmt.Errorf("read auto_vacuum: %w", err)
+	}
+	if mode == 2 { // 2 == INCREMENTAL: already converted
+		return nil
+	}
+
+	logger.Infof("Converting database to incremental auto-vacuum (one-time; reclaims freed space going forward)...")
+	if _, err := conn.ExecContext(ctx, "PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
+		return fmt.Errorf("set auto_vacuum=INCREMENTAL: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "VACUUM"); err != nil {
+		return fmt.Errorf("vacuum to apply auto_vacuum: %w", err)
 	}
 	return nil
 }
