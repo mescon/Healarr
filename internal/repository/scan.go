@@ -451,11 +451,18 @@ func (r *ScanRepository) ReconcileOrphans(ctx context.Context) (ReconcileOrphans
 
 // UpdateProgress updates the live current_file_index and files_scanned
 // counters during a running scan.
+//
+// Uses db.ExecWithRetry (like Record and IncrementCorruptions) because the
+// parallel scan's watermark goroutine fires this concurrently with the
+// per-file scan_files inserts, so it can hit SQLite BUSY under write
+// contention. Combined with busy_timeout now being applied to every pooled
+// connection (#321), this makes the watermark write reliable instead of
+// failing and logging noise.
 func (r *ScanRepository) UpdateProgress(ctx context.Context, scanID int64, currentFileIndex, filesScanned int) error {
-	_, err := r.db.ExecContext(ctx, `
+	_ = ctx // retry wrapper operates on the pool; ctx reserved for a future ExecContext variant
+	if _, err := db.ExecWithRetry(r.db, `
 		UPDATE scans SET current_file_index = ?, files_scanned = ? WHERE id = ?
-	`, currentFileIndex, filesScanned, scanID)
-	if err != nil {
+	`, currentFileIndex, filesScanned, scanID); err != nil {
 		return fmt.Errorf("update scan progress: %w", err)
 	}
 	return nil

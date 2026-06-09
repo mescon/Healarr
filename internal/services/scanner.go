@@ -1748,7 +1748,12 @@ func (s *ScannerService) scanFilesParallel(
 			progress.mu.Unlock()
 			progressCtx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 			if err := s.scanRepo().UpdateProgress(progressCtx, cfg.ScanDBID, watermark, filesDone); err != nil {
-				logger.Warnf("watermark persist for scan %d (idx=%d) failed: %v", cfg.ScanDBID, watermark, err)
+				// Best-effort: the watermark is a resume optimization, not
+				// correctness-critical (the next tick re-attempts, and
+				// scan_files rows are the source of truth). Debug-level so a
+				// transient lock doesn't spam the log viewer as if it were an
+				// error — the symptom reported in #321.
+				logger.Debugf("watermark persist for scan %d (idx=%d) deferred: %v", cfg.ScanDBID, watermark, err)
 			}
 			cancel()
 			lastPersisted = watermark

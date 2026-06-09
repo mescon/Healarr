@@ -51,7 +51,17 @@ func NewRepository(dbPath string) (*Repository, error) {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	// Apply connection-level pragmas through the DSN so EVERY pooled
+	// connection gets them. Setting them later with db.Exec only configures
+	// the single connection that happens to serve that call; the other pool
+	// connections kept busy_timeout=0 (immediate SQLITE_BUSY instead of
+	// waiting), foreign_keys=OFF and synchronous=FULL. The busy_timeout gap
+	// is what surfaced as "database is locked" on the parallel scan's
+	// watermark writer (#321): whichever of the 4 connections it landed on
+	// usually wasn't the one configured. modernc.org/sqlite runs each
+	// _pragma on connection open. journal_mode is database-level (persists in
+	// the file) but harmless to assert here too.
+	db, err := sql.Open("sqlite", dbPath+pragmaDSNSuffix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -99,47 +109,39 @@ func NewRepository(dbPath string) (*Repository, error) {
 	return repo, nil
 }
 
-// configureSQLite sets optimal SQLite pragmas for reliability and performance
+// pragmaDSNSuffix carries the connection-level pragmas appended to the DSN so
+// modernc.org/sqlite applies them on EVERY pooled connection, not just the one
+// a later db.Exec("PRAGMA ...") happens to land on. Each pragma:
+//   - busy_timeout(30000): wait up to 30s for a lock instead of returning
+//     SQLITE_BUSY immediately. This is the #321 fix — without it on every
+//     connection, the parallel scan's watermark writer saw "database is
+//     locked".
+//   - journal_mode(WAL): concurrent readers + one writer. Database-level and
+//     persistent, but asserted here so a fresh file gets it on first open.
+//   - foreign_keys(1): enforce FK constraints (off by default per connection).
+//   - synchronous(NORMAL): WAL-safe, avoids the per-commit fsync FULL pays on
+//     the write-heavy scan path; only risks the last txn on OS crash/power
+//     loss, recoverable since scans re-run and the event store replays.
+//   - temp_store(MEMORY) / cache_size(-8000): per-connection performance knobs.
+const pragmaDSNSuffix = "?_pragma=busy_timeout(30000)" +
+	"&_pragma=journal_mode(WAL)" +
+	"&_pragma=foreign_keys(1)" +
+	"&_pragma=synchronous(NORMAL)" +
+	"&_pragma=temp_store(MEMORY)" +
+	"&_pragma=cache_size(-8000)"
+
+// configureSQLite sets the database-level pragmas that aren't carried in the
+// DSN. Connection-level pragmas (busy_timeout, journal_mode, foreign_keys,
+// synchronous, temp_store, cache_size) are applied to every pooled connection
+// via pragmaDSNSuffix instead — see #321.
 func configureSQLite(db *sql.DB) error {
-	// Critical pragmas that must succeed for proper database operation
-	criticalPragmas := []string{
-		// WAL mode for better concurrency and crash recovery
-		"PRAGMA journal_mode=WAL",
-		// Enable foreign key constraints
-		"PRAGMA foreign_keys=ON",
-		// Busy timeout of 30 seconds to handle concurrent access during heavy scans
-		"PRAGMA busy_timeout=30000",
+	// auto_vacuum is a database-level property (persisted in the file header);
+	// setting it once is sufficient. INCREMENTAL reclaims freed pages on
+	// demand without the full-rewrite cost of auto_vacuum=FULL.
+	if _, err := db.Exec("PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
+		// Non-fatal: only affects space reclamation, not correctness.
+		logger.Debugf("Failed to set auto_vacuum pragma: %v", err)
 	}
-
-	for _, pragma := range criticalPragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			return fmt.Errorf("failed to set critical pragma %s: %w", pragma, err)
-		}
-	}
-
-	// Non-critical pragmas - log failures but continue
-	optionalPragmas := []string{
-		// synchronous=NORMAL is the recommended setting with WAL: it is fully
-		// corruption-safe (WAL guarantees database integrity at NORMAL), and only
-		// risks losing the last committed transaction(s) on an OS crash / power
-		// loss — recoverable here since scans re-run and the event store replays.
-		// It avoids the per-commit fsync that FULL pays on the write-heavy scan path.
-		"PRAGMA synchronous=NORMAL",
-		// Auto-vacuum in incremental mode - reclaims space automatically
-		"PRAGMA auto_vacuum=INCREMENTAL",
-		// Store temp tables in memory for performance
-		"PRAGMA temp_store=MEMORY",
-		// Increase cache size (negative = KB, so -8000 = 8MB)
-		"PRAGMA cache_size=-8000",
-	}
-
-	for _, pragma := range optionalPragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			// Log but don't fail - some pragmas may not be supported
-			logger.Debugf("Failed to set optional pragma %s: %v", pragma, err)
-		}
-	}
-
 	return nil
 }
 
