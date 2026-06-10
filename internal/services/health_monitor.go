@@ -119,8 +119,17 @@ func (h *HealthMonitorService) checkStuckRemediations() {
 
 	// Find corruptions where:
 	// 1. CorruptionDetected exists
-	// 2. No VerificationSuccess or MaxRetriesReached
+	// 2. No terminal or deliberate-parking event exists (see below)
 	// 3. Last event was more than stuckThreshold ago
+	//
+	// The exclusion list is load-bearing for the user's veto: an aggregate
+	// with CorruptionIgnored is the operator explicitly saying "leave this
+	// file alone" (the designed escape hatch for false positives), and the
+	// other parking states (RemediationPaused, SearchExhausted,
+	// DownloadIgnored, ManuallyRemoved) are deliberate stops. Before these
+	// were excluded, the sweep flagged ignored items as "stuck" after
+	// stuckThreshold and the monitor's retry deleted files the user had
+	// vetoed.
 	query := `
 		SELECT
 			e1.aggregate_id,
@@ -133,7 +142,11 @@ func (h *HealthMonitorService) checkStuckRemediations() {
 		AND NOT EXISTS (
 			SELECT 1 FROM events e3
 			WHERE e3.aggregate_id = e1.aggregate_id
-			AND e3.event_type IN ('VerificationSuccess', 'MaxRetriesReached')
+			AND e3.event_type IN (
+				'VerificationSuccess', 'MaxRetriesReached',
+				'CorruptionIgnored', 'RemediationPaused',
+				'SearchExhausted', 'DownloadIgnored', 'ManuallyRemoved'
+			)
 		)
 		GROUP BY e1.aggregate_id
 		HAVING MAX(e2.created_at) < datetime('now', '-' || ? || ' hours')

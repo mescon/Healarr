@@ -2567,3 +2567,47 @@ func TestGetCorruptionContextWithRetry_ErrNoRowsExitsEarly(t *testing.T) {
 		t.Errorf("Expected early exit on ErrNoRows, but took %v (retries may have occurred)", elapsed)
 	}
 }
+
+// handleStuckRemediation must refuse to schedule an automated retry for an
+// aggregate the user has ignored: CorruptionIgnored is the operator's veto,
+// and the stuck path was historically able to override it and delete the
+// vetoed file.
+func TestMonitorService_HandleStuckRemediation_RespectsIgnoreVeto(t *testing.T) {
+	config.SetForTesting(config.NewTestConfig())
+
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	m := NewMonitorService(eb, db)
+
+	retryCh := make(chan domain.Event, 4)
+	eb.Subscribe(domain.RetryScheduled, func(e domain.Event) { retryCh <- e })
+
+	// Aggregate with a detection and a user veto.
+	if _, err := db.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, created_at) VALUES
+		('corruption', 'veto-1', 'CorruptionDetected', '{"file_path":"/media/tv/x.mkv","path_id":1}', datetime('now', '-48 hours')),
+		('corruption', 'veto-1', 'CorruptionIgnored', '{}', datetime('now', '-47 hours'))
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	m.handleStuckRemediation(domain.Event{
+		AggregateID:   "veto-1",
+		AggregateType: "corruption",
+		EventType:     domain.StuckRemediation,
+	})
+
+	select {
+	case ev := <-retryCh:
+		t.Errorf("automated retry scheduled despite user veto: %+v", ev.EventData)
+	case <-time.After(150 * time.Millisecond):
+		// Correct: veto respected.
+	}
+}

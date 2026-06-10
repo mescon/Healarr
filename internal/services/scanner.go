@@ -23,6 +23,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/pathutil"
 	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/safego"
 )
@@ -294,6 +295,7 @@ func (p *ScanProgress) Snapshot() ScanProgressView {
 
 // scanPathConfig holds cached scan path configuration
 type scanPathConfig struct {
+	ID            int64
 	LocalPath     string
 	AutoRemediate bool
 	DryRun        bool
@@ -805,7 +807,7 @@ func (s *ScannerService) ScanFile(localPath string) error {
 	logger.Infof("Scan started for file: %s (ID: %s)", localPath, scanID)
 
 	// Find scan path config for this file
-	autoRemediate, dryRun, err := s.getScanPathConfig(localPath)
+	autoRemediate, dryRun, pathID, err := s.getScanPathConfig(localPath)
 	if err != nil {
 		// Log warning but proceed with defaults (false, false)
 		// This is important for ops visibility - file scanned without matching path config
@@ -855,7 +857,10 @@ func (s *ScannerService) ScanFile(localPath string) error {
 		return nil
 	}
 
-	// Emit event - critical entry point for remediation journey, use retry
+	// Emit event - critical entry point for remediation journey, use retry.
+	// path_id is REQUIRED for the remediator's consent re-read: without it the
+	// recovery/retry paths cannot resolve the path's current auto_remediate /
+	// dry_run and historically invented consent (deleted files on dry-run paths).
 	if err := s.eventBus.PublishWithRetry(domain.Event{
 		AggregateType: "corruption",
 		AggregateID:   uuid.New().String(),
@@ -866,6 +871,7 @@ func (s *ScannerService) ScanFile(localPath string) error {
 			"corruption_type": healthErr.Type,
 			"error_details":   healthErr.Message,
 			"source":          "webhook",
+			"path_id":         pathID,
 			"auto_remediate":  autoRemediate,
 			"dry_run":         dryRun,
 		},
@@ -2377,6 +2383,7 @@ func (s *ScannerService) refreshScanPathCache() error {
 	cache := make([]scanPathConfig, 0, len(rows))
 	for _, p := range rows {
 		cache = append(cache, scanPathConfig{
+			ID:            p.ID,
 			LocalPath:     p.LocalPath,
 			AutoRemediate: p.AutoRemediate,
 			DryRun:        p.DryRun,
@@ -2398,11 +2405,20 @@ func (s *ScannerService) InvalidateScanPathCache() {
 
 // getScanPathConfig finds the matching scan path configuration for a file path.
 // Uses cached scan paths to avoid N+1 query problem (was: 1 query per file).
-// Returns auto_remediate, dry_run, and any error.
-func (s *ScannerService) getScanPathConfig(filePath string) (autoRemediate bool, dryRun bool, err error) {
+// Returns auto_remediate, dry_run, the matched scan path's ID, and any error.
+//
+// The returned pathID rides on the CorruptionDetected event so the remediator
+// can re-read the path's CURRENT consent at action time: without it, webhook
+// corruptions carried path_id=0 and the recovery/retry paths could invent
+// auto-remediate consent the operator never gave.
+//
+// Matching uses pathutil.IsWithinRoot, the shared separator-agnostic boundary
+// semantics, so a trailing slash in the stored local_path or a Windows-native
+// deployment does not silently drop the configured dry_run/auto_remediate.
+func (s *ScannerService) getScanPathConfig(filePath string) (autoRemediate bool, dryRun bool, pathID int64, err error) {
 	// Ensure cache is fresh
 	if err := s.refreshScanPathCache(); err != nil {
-		return false, false, err
+		return false, false, 0, err
 	}
 
 	s.scanPathCacheMu.RLock()
@@ -2412,24 +2428,20 @@ func (s *ScannerService) getScanPathConfig(filePath string) (autoRemediate bool,
 	found := false
 
 	for _, cfg := range s.scanPathCache {
-		// Check if filePath starts with rootPath AND is followed by / or end of string
-		// This prevents /mnt/media/TV from matching /mnt/media/TV2
-		if strings.HasPrefix(filePath, cfg.LocalPath) {
-			remainder := filePath[len(cfg.LocalPath):]
-			// Valid match only if remainder is empty or starts with /
-			if remainder == "" || strings.HasPrefix(remainder, "/") {
-				if len(cfg.LocalPath) > bestMatchLen {
-					bestMatchLen = len(cfg.LocalPath)
-					autoRemediate = cfg.AutoRemediate
-					dryRun = cfg.DryRun
-					found = true
-				}
-			}
+		if !pathutil.IsWithinRoot(cfg.LocalPath, filePath) {
+			continue
+		}
+		if l := pathutil.MatchedRootLen(cfg.LocalPath); l > bestMatchLen {
+			bestMatchLen = l
+			autoRemediate = cfg.AutoRemediate
+			dryRun = cfg.DryRun
+			pathID = cfg.ID
+			found = true
 		}
 	}
 
 	if !found {
-		return false, false, fmt.Errorf("no matching scan path found")
+		return false, false, 0, fmt.Errorf("no matching scan path found")
 	}
-	return autoRemediate, dryRun, nil
+	return autoRemediate, dryRun, pathID, nil
 }

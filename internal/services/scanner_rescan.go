@@ -124,7 +124,7 @@ func (s *ScannerService) updateRescanRetry(f pendingRescanFile, healthErr *integ
 
 // emitRescanCorruption emits a corruption event for a rescan that found actual corruption
 func (s *ScannerService) emitRescanCorruption(f pendingRescanFile, healthErr *integration.HealthCheckError) {
-	autoRemediate, dryRun, _ := s.getScanPathConfig(f.FilePath)
+	autoRemediate, dryRun, _, _ := s.getScanPathConfig(f.FilePath)
 
 	var fileSize int64
 	if info, err := os.Stat(f.FilePath); err == nil {

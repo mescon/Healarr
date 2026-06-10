@@ -13,6 +13,7 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/pathutil"
 	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/safego"
 )
@@ -78,20 +79,65 @@ const (
 // and an operator may have flipped a path to manual or dry-run since the scan was
 // queued. On any doubt (no path id, path deleted, lookup error) it refuses to
 // auto-remediate, so we never delete a file without a clear, current opt-in.
-func (r *RemediatorService) resolveRemediationPolicy(pathID int64, evtAuto, evtDry bool) (autoRemediate, dryRun bool) {
-	if pathID <= 0 || r.scanPaths == nil {
-		// Legacy/edge events without a path id: honor only what the event itself
-		// claimed (never invent consent), and keep dry-run if it asked for it.
+func (r *RemediatorService) resolveRemediationPolicy(pathID int64, evtAuto, evtDry bool, filePath string) (autoRemediate, dryRun bool) {
+	if r.scanPaths == nil {
+		// Test fixtures without a repository: honor the event values.
 		return evtAuto, evtDry
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), remediatorQueryTimeout)
 	defer cancel()
+
+	if pathID <= 0 {
+		// No path id on the event (legacy events, or producers that predate the
+		// path_id-on-ScanFile fix). The event's own auto_remediate is NOT
+		// trustworthy here: the recovery sweep, the stuck-remediation monitor,
+		// and the manual-retry endpoint all hardcode auto_remediate=true and
+		// drop dry_run, so honoring the event would invent consent the operator
+		// never gave (and historically deleted files on dry-run paths). Resolve
+		// the owning scan path from the file path instead; if no path matches,
+		// refuse to auto-remediate.
+		if sp, ok := r.findScanPathForFile(ctx, filePath); ok {
+			return sp.AutoRemediate, sp.DryRun
+		}
+		logger.Warnf("Remediation: no path_id on event and no scan path matches %s; refusing to auto-remediate (safe default)", filePath)
+		return false, evtDry
+	}
+
 	sp, err := r.scanPaths.GetByID(ctx, pathID)
 	if err != nil {
 		logger.Warnf("Remediation: cannot load scan path %d; refusing to auto-remediate (safe default): %v", pathID, err)
 		return false, evtDry
 	}
 	return sp.AutoRemediate, sp.DryRun
+}
+
+// findScanPathForFile resolves the enabled scan path that owns filePath using
+// the shared longest-prefix, separator-agnostic matching from pathutil. Used
+// as the consent fallback when an event carries no path_id.
+func (r *RemediatorService) findScanPathForFile(ctx context.Context, filePath string) (repository.ScanPath, bool) {
+	if filePath == "" {
+		return repository.ScanPath{}, false
+	}
+	rows, err := r.scanPaths.ListEnabled(ctx)
+	if err != nil {
+		logger.Warnf("Remediation: cannot list scan paths to resolve consent for %s: %v", filePath, err)
+		return repository.ScanPath{}, false
+	}
+	best := -1
+	bestLen := -1
+	for i := range rows {
+		if !pathutil.IsWithinRoot(rows[i].LocalPath, filePath) {
+			continue
+		}
+		if l := pathutil.MatchedRootLen(rows[i].LocalPath); l > bestLen {
+			bestLen = l
+			best = i
+		}
+	}
+	if best < 0 {
+		return repository.ScanPath{}, false
+	}
+	return rows[best], true
 }
 
 // Start subscribes to corruption and retry events to begin remediation handling.
@@ -241,7 +287,7 @@ func (r *RemediatorService) retrySearchOnly(event domain.Event, mediaID int64, m
 		// imported), remove and blocklist it so the re-search grabs a different
 		// release rather than waiting on the same dead one.
 		if !blocklisted {
-			blocklisted = r.handleStalledDownloadBeforeSearch(corruptionID, pathID, mediaID, arrPath)
+			blocklisted = r.handleStalledDownloadBeforeSearch(corruptionID, pathID, mediaID, arrPath, filePath)
 		}
 
 		// Extract episode IDs from metadata first - validates data before announcing search
@@ -353,7 +399,9 @@ func (r *RemediatorService) handleCorruptReplacementBeforeSearch(corruptionID st
 	}
 
 	// Re-read the authoritative auto-remediate / dry-run policy for this path.
-	autoRemediate, dryRun := r.resolveRemediationPolicy(pathID, true, false)
+	// The replacement's own local path doubles as the consent-resolution
+	// fallback when the event chain carried no path_id.
+	autoRemediate, dryRun := r.resolveRemediationPolicy(pathID, false, false, paths[0])
 	if !autoRemediate {
 		logger.Infof("Corrupt replacement present for %s but path is not auto-remediate; leaving for manual handling", corruptionID)
 		return false
@@ -455,7 +503,7 @@ func (r *RemediatorService) lastFailureWasDownloadTimeout(corruptionID string) b
 // the caller must NOT issue a duplicate search. On any inability to proceed
 // (not a timeout retry, nothing queued, non-auto path, dry-run, API error) it
 // returns false so the caller performs a normal search.
-func (r *RemediatorService) handleStalledDownloadBeforeSearch(corruptionID string, pathID, mediaID int64, arrPath string) bool {
+func (r *RemediatorService) handleStalledDownloadBeforeSearch(corruptionID string, pathID, mediaID int64, arrPath, localPath string) bool {
 	if !r.lastFailureWasDownloadTimeout(corruptionID) {
 		return false
 	}
@@ -465,7 +513,9 @@ func (r *RemediatorService) handleStalledDownloadBeforeSearch(corruptionID strin
 		return false
 	}
 
-	autoRemediate, dryRun := r.resolveRemediationPolicy(pathID, true, false)
+	// localPath is the consent-resolution fallback when the event chain
+	// carried no path_id.
+	autoRemediate, dryRun := r.resolveRemediationPolicy(pathID, false, false, localPath)
 	if !autoRemediate {
 		logger.Infof("Stalled download for %s but path is not auto-remediate; leaving for manual handling", corruptionID)
 		return false
@@ -633,8 +683,9 @@ func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
 	// event payload is not authoritative (recovery/monitor retries hardcode
 	// auto_remediate=true and drop dry_run, and the operator may have changed the
 	// setting), so deciding deletion from it could delete files on a manual-mode
-	// or dry-run path. This is the single enforcement point for both.
-	autoRemediate, dryRun := r.resolveRemediationPolicy(data.PathID, data.AutoRemediate, data.DryRun)
+	// or dry-run path. This is the single enforcement point for both. When the
+	// event has no path_id, the file path resolves the owning scan path instead.
+	autoRemediate, dryRun := r.resolveRemediationPolicy(data.PathID, data.AutoRemediate, data.DryRun, data.FilePath)
 
 	// Check for auto-remediation
 	if !autoRemediate {
