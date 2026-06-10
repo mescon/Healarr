@@ -40,6 +40,7 @@ func (m *webhookMockScanner) ScanFile(path string) error {
 
 func (m *webhookMockScanner) ScanPath(_ int64, _ string) error            { return nil }
 func (m *webhookMockScanner) IsPathBeingScanned(_ string) bool            { return false }
+func (m *webhookMockScanner) ScanOverlapsActive(_ string) (string, bool)  { return "", false }
 func (m *webhookMockScanner) GetActiveScans() []services.ScanProgressView { return nil }
 func (m *webhookMockScanner) CancelScan(_ string) error                   { return nil }
 func (m *webhookMockScanner) PauseScan(_ string) error                    { return nil }

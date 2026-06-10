@@ -13,6 +13,7 @@ import (
 
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/repository"
 )
 
 // dbTimeout is the maximum time to wait for database operations
@@ -20,20 +21,24 @@ const dbTimeout = 5 * time.Second
 
 // statusFilterClauses maps status filter values to SQL WHERE clauses.
 // Includes both granular technical filters (for API compatibility) and user-friendly combined filters.
+// statusFilterClauses is built from the SHARED bucket constants in the
+// repository so the /corruptions filters and the dashboard StateCounts can
+// never partition the lifecycle differently (the audit found nine states
+// visible in one view but missing from the other).
 var statusFilterClauses = map[string]string{
 	// Granular technical filters (kept for API compatibility and detail views)
-	"active":              "current_state != 'VerificationSuccess' AND current_state != 'MaxRetriesReached' AND current_state != 'CorruptionIgnored'",
-	"pending":             "current_state = 'CorruptionDetected'",
-	"in_progress":         "(current_state LIKE '%Started' OR current_state LIKE '%Queued' OR current_state LIKE '%Progress' OR current_state = 'RemediationQueued')",
-	"resolved":            "current_state = 'VerificationSuccess'",
-	"failed":              "current_state LIKE '%Failed'",
-	"orphaned":            "current_state = 'MaxRetriesReached'",
-	"ignored":             "current_state = 'CorruptionIgnored'",
-	"manual_intervention": "(current_state = 'ImportBlocked' OR current_state = 'ManuallyRemoved')",
+	"active":              "current_state NOT IN " + repository.InClause(append(append(append([]string{}, repository.BucketResolved...), repository.BucketOrphaned...), repository.BucketIgnored...)),
+	"pending":             "current_state IN " + repository.InClause(repository.BucketPending),
+	"in_progress":         "current_state IN " + repository.InClause(repository.BucketInProgress),
+	"resolved":            "current_state IN " + repository.InClause(repository.BucketResolved),
+	"failed":              "current_state IN " + repository.InClause(repository.BucketFailed),
+	"orphaned":            "current_state IN " + repository.InClause(repository.BucketOrphaned),
+	"ignored":             "current_state IN " + repository.InClause(repository.BucketIgnored),
+	"manual_intervention": "current_state IN " + repository.InClause(repository.BucketManualIntervention),
 
 	// User-friendly combined filters (for simplified UI)
-	"action_required": "(current_state = 'ImportBlocked' OR current_state = 'ManuallyRemoved' OR current_state = 'MaxRetriesReached')",
-	"working":         "(current_state = 'CorruptionDetected' OR current_state LIKE '%Started' OR current_state LIKE '%Queued' OR current_state LIKE '%Progress' OR current_state = 'RemediationQueued' OR (current_state LIKE '%Failed' AND current_state != 'MaxRetriesReached'))",
+	"action_required": "current_state IN " + repository.InClause(append(append([]string{}, repository.BucketManualIntervention...), repository.BucketOrphaned...)),
+	"working":         "current_state IN " + repository.InClause(append(append(append([]string{}, repository.BucketPending...), repository.BucketInProgress...), repository.BucketFailed...)),
 }
 
 // extractJSONString extracts a string value from a map if it exists and is non-empty.

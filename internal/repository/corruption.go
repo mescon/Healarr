@@ -293,23 +293,63 @@ type TypeCount struct {
 	Count int
 }
 
+// Corruption lifecycle buckets: the ONE state-to-bucket mapping consumed by
+// the dashboard StateCounts AND the /corruptions filter clauses, so the two
+// views can never partition states differently again. Every lifecycle event
+// type that can become corruption_summary.current_state must appear in
+// exactly one bucket; the audit found nine states falling through (and two
+// phantom types, SearchQueued/DownloadStarted, that no code publishes).
+var (
+	BucketResolved = []string{"VerificationSuccess"}
+	BucketOrphaned = []string{"MaxRetriesReached"}
+	// In flight: remediation machinery is actively working the item.
+	BucketInProgress = []string{
+		"RemediationQueued", "DeletionStarted", "DeletionCompleted",
+		"SearchStarted", "SearchCompleted", "DownloadProgress",
+		"FileDetected", "VerificationStarted", "RetryScheduled",
+		"StuckRemediation", "ReleaseBlocklisted", "MonitorOverridden",
+	}
+	// Deliberately parked: the system stopped and a human decides.
+	BucketManualIntervention = []string{
+		"ImportBlocked", "ManuallyRemoved", "SearchExhausted",
+		"RemediationPaused", "DownloadIgnored",
+	}
+	BucketPending = []string{"CorruptionDetected"}
+	// Failed-but-retryable: counts toward the retry budget.
+	BucketFailed = []string{
+		"DeletionFailed", "SearchFailed", "VerificationFailed",
+		"DownloadFailed", "DownloadTimeout",
+	}
+	BucketIgnored = []string{"CorruptionIgnored"}
+)
+
+// InClause renders a bucket as a SQL IN(...) literal. Safe by construction:
+// the inputs are the hardcoded bucket constants above, never user input.
+func InClause(states []string) string {
+	quoted := make([]string, len(states))
+	for i, st := range states {
+		quoted[i] = "'" + st + "'"
+	}
+	return "(" + strings.Join(quoted, ", ") + ")"
+}
+
 // StateCounts returns the dashboard breakdown of corruptions by lifecycle
-// bucket in a single pass over corruption_status.
+// bucket in a single pass over corruption_status. Built from the shared
+// bucket constants so it cannot drift from the /corruptions filters.
 func (r *CorruptionRepository) StateCounts(ctx context.Context) (CorruptionStateCounts, error) {
 	var c CorruptionStateCounts
-	err := r.db.QueryRowContext(ctx, `
+	query := `
 		SELECT
-			COUNT(DISTINCT CASE WHEN current_state = 'VerificationSuccess' THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state = 'MaxRetriesReached' THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state IN ('SearchStarted', 'SearchQueued', 'RemediationQueued',
-				'DownloadStarted', 'DownloadProgress', 'SearchCompleted', 'DeletionCompleted', 'FileDetected')
-				THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state IN ('ImportBlocked', 'ManuallyRemoved') THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state = 'CorruptionDetected' THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state LIKE '%Failed' AND current_state != 'MaxRetriesReached' THEN corruption_id END),
-			COUNT(DISTINCT CASE WHEN current_state = 'CorruptionIgnored' THEN corruption_id END)
+			COUNT(DISTINCT CASE WHEN current_state IN ` + InClause(BucketResolved) + ` THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state IN ` + InClause(BucketOrphaned) + ` THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state IN ` + InClause(BucketInProgress) + ` THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state IN ` + InClause(BucketManualIntervention) + ` THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state IN ` + InClause(BucketPending) + ` THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state IN ` + InClause(BucketFailed) + ` THEN corruption_id END),
+			COUNT(DISTINCT CASE WHEN current_state IN ` + InClause(BucketIgnored) + ` THEN corruption_id END)
 		FROM corruption_status
-	`).Scan(&c.Resolved, &c.Orphaned, &c.InProgress, &c.ManualIntervention, &c.Pending, &c.Failed, &c.Ignored)
+	`
+	err := r.db.QueryRowContext(ctx, query).Scan(&c.Resolved, &c.Orphaned, &c.InProgress, &c.ManualIntervention, &c.Pending, &c.Failed, &c.Ignored)
 	if err != nil {
 		return CorruptionStateCounts{}, fmt.Errorf("query corruption state counts: %w", err)
 	}

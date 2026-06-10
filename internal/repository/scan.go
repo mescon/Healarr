@@ -126,7 +126,7 @@ func (r *ScanRepository) GetScanStats(ctx context.Context) (ScanStats, error) {
 	var s ScanStats
 	err := r.db.QueryRowContext(ctx, `
 		SELECT
-			COUNT(CASE WHEN status = 'running' THEN 1 END),
+			COUNT(CASE WHEN status IN ('running', 'enumerating', 'scanning', 'paused') THEN 1 END),
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN substr(started_at, 1, 10) = date('now') THEN files_scanned END), 0),
 			COALESCE(SUM(CASE WHEN substr(started_at, 1, 10) >= date('now', '-7 days') THEN files_scanned END), 0)
@@ -287,10 +287,12 @@ func (r *ScanRepository) SetStatus(ctx context.Context, scanID int64, status str
 }
 
 // Finalize sets the terminal status, the final files_scanned count, and
-// stamps completed_at to now.
+// stamps completed_at to now. file_list is cleared: terminal scans are never
+// resumed, and the serialized list weighs ~10 MB per 100k-file scan — left
+// in place it made the scans table the dominant source of database growth.
 func (r *ScanRepository) Finalize(ctx context.Context, scanID int64, status string, filesScanned int) error {
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE scans SET status = ?, files_scanned = ?, completed_at = datetime('now')
+		UPDATE scans SET status = ?, files_scanned = ?, completed_at = datetime('now'), file_list = NULL
 		WHERE id = ?
 	`, status, filesScanned, scanID)
 	if err != nil {
@@ -356,7 +358,7 @@ func (r *ScanRepository) MarkAborted(ctx context.Context, scanID int64, errorMes
 // scan" from "scan was already done" for error reporting.
 func (r *ScanRepository) MarkCancelled(ctx context.Context, scanID int64, reason string) (bool, error) {
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE scans SET status = 'cancelled', completed_at = datetime('now'), error_message = ?
+		UPDATE scans SET status = 'cancelled', completed_at = datetime('now'), error_message = ?, file_list = NULL
 		WHERE id = ? AND status NOT IN ('cancelled', 'completed', 'aborted')
 	`, reason, scanID)
 	if err != nil {

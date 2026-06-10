@@ -11,6 +11,7 @@ import (
 	"github.com/mescon/Healarr/internal/logger"
 	"github.com/mescon/Healarr/internal/repository"
 	"github.com/mescon/Healarr/internal/safego"
+	"github.com/mescon/Healarr/internal/services"
 )
 
 func (s *RESTServer) triggerScan(c *gin.Context) {
@@ -30,9 +31,11 @@ func (s *RESTServer) triggerScan(c *gin.Context) {
 	}
 	localPath := path.LocalPath
 
-	// Check if scan is already in progress
-	if s.scanner.IsPathBeingScanned(localPath) {
-		c.JSON(http.StatusConflict, gin.H{"error": "Scan already in progress for this path"})
+	// Check for overlap with any active scan: same path, ancestor, or
+	// descendant. Exact compare let /media and /media/TV run concurrently
+	// over the same files (duplicate scan_files, duplicate journeys).
+	if conflict, overlaps := s.scanner.ScanOverlapsActive(localPath); overlaps {
+		c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("Scan already in progress for an overlapping path (%s)", conflict)})
 		return
 	}
 
@@ -143,7 +146,10 @@ func (s *RESTServer) pauseAllScans(c *gin.Context) {
 	activeScans := s.scanner.GetActiveScans()
 	paused := 0
 	for i := range activeScans {
-		if activeScans[i].Status == "running" {
+		// In-memory statuses are enumerating/scanning/paused — never
+		// "running" (a DB-only status). Filtering on "running" made
+		// pause-all a silent no-op.
+		if services.ScanStatusIsPausable(activeScans[i].Status) {
 			if s.scanner.PauseScan(activeScans[i].ID) == nil {
 				paused++
 			}
@@ -169,7 +175,7 @@ func (s *RESTServer) cancelAllScans(c *gin.Context) {
 	activeScans := s.scanner.GetActiveScans()
 	cancelled := 0
 	for i := range activeScans {
-		if activeScans[i].Status == "running" || activeScans[i].Status == "paused" {
+		if services.ScanStatusIsActive(activeScans[i].Status) {
 			if s.scanner.CancelScan(activeScans[i].ID) == nil {
 				cancelled++
 			}
@@ -198,9 +204,17 @@ func (s *RESTServer) rescanPath(c *gin.Context) {
 	}
 	path := scan.Path
 
-	// Don't allow rescanning a currently running scan
-	if scan.Status == "running" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Scan is currently running"})
+	// Don't allow rescanning a currently active scan. The DB row can be in
+	// any of the active statuses (running/enumerating/scanning/paused), and
+	// the live scanner may hold an overlapping path even when this row is
+	// terminal.
+	switch scan.Status {
+	case "running", "enumerating", "scanning", "paused":
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Scan is currently active"})
+		return
+	}
+	if conflict, overlaps := s.scanner.ScanOverlapsActive(path); overlaps {
+		c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("Scan already in progress for an overlapping path (%s)", conflict)})
 		return
 	}
 
