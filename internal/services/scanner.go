@@ -856,18 +856,42 @@ func (s *ScannerService) ScanFile(localPath string) error {
 
 	logger.Infof("Scanning single file: %s", localPath)
 
-	// NOTE: We do NOT check for recently-modified files here because webhook scans
-	// are triggered by Sonarr/Radarr AFTER import is complete - the file is done being written.
-	// The recently-modified check only applies to path scans where we might find in-progress downloads.
-
-	// Capture file size before health check (for enriched corruption data)
+	// The *arr fires the import webhook the moment ITS view of the move
+	// completes — but when *arr and Healarr see the storage through
+	// different mounts (NFS attribute caching, SMB, rclone/mergerfs),
+	// Healarr's view can lag by seconds: a stat here may show 0 bytes or a
+	// partial file, and a quick probe would flag a healthy, just-imported
+	// file as corrupt — deleting it and possibly blocklisting a good
+	// release. Gate on size stability first; an unstable file goes to the
+	// rescan queue (retried in ~5 min, when the view has settled).
 	var fileSize int64
 	if info, err := os.Stat(localPath); err == nil {
+		fileSize = info.Size()
+	}
+	time.Sleep(s.sizeStabilityDelay)
+	if info, err := os.Stat(localPath); err == nil {
+		if info.Size() != fileSize {
+			logger.Infof("Webhook scan deferred: %s is still changing size (%d -> %d bytes); queued for rescan", localPath, fileSize, info.Size())
+			s.queueForRescan(localPath, pathID, "SizeChanging", "file size still changing at webhook time")
+			return nil
+		}
 		fileSize = info.Size()
 	}
 
 	// Use quick mode for single file scans (called from webhooks)
 	healthy, healthErr := s.detector.Check(localPath, "quick")
+
+	// Two-probe confirmation: a TRUE-corruption verdict on a just-imported
+	// file gets one re-probe after a short delay before any remediation is
+	// triggered. A stale-mount artifact (0-byte stat, truncated view)
+	// clears on the second probe; genuine corruption does not.
+	if !healthy && healthErr != nil && healthErr.IsTrueCorruption() {
+		time.Sleep(s.sizeStabilityDelay)
+		healthy, healthErr = s.detector.Check(localPath, "quick")
+		if healthy {
+			logger.Infof("Webhook scan: %s healthy on re-probe (initial verdict was a stale-view artifact)", localPath)
+		}
+	}
 
 	progress.FilesDone = 1
 	s.emitProgress(progress)
@@ -1589,12 +1613,17 @@ func (s *ScannerService) handleRecoverableError(progress *ScanProgress, sfc *sca
 func (s *ScannerService) handleTrueCorruption(ctx context.Context, progress *ScanProgress, sfc *scanFileContext, healthErr *integration.HealthCheckError) scanLoopAction {
 	logger.Infof("Corruption detected in file: %s (Type: %s)", sfc.filePath, healthErr.Type)
 
-	// DEDUPLICATION: Check if already being processed
-	// Use preloaded map for path scans (O(1) lookup), fall back to query for single-file scans
-	hasActive := false
-	if sfc.activeCorruptions != nil {
-		hasActive = sfc.activeCorruptions[sfc.filePath]
-	} else {
+	// DEDUPLICATION: Check if already being processed.
+	// The preloaded snapshot is taken once at scan START; on a long scan it
+	// can be hours stale, and a webhook may have opened (and still be
+	// running) a remediation journey for this same file in the meantime.
+	// Two concurrent journeys for one file can end with the loser deleting
+	// the winner's healthy replacement. The snapshot remains the fast path
+	// for the common case (file already active at scan start); a snapshot
+	// MISS gets a live re-check before we open a new journey — corrupt
+	// files are rare, so the extra query is negligible.
+	hasActive := sfc.activeCorruptions != nil && sfc.activeCorruptions[sfc.filePath]
+	if !hasActive {
 		hasActive = s.hasActiveCorruption(sfc.filePath)
 	}
 	if hasActive {

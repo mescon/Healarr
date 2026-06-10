@@ -5175,3 +5175,160 @@ func TestScannerService_FinalizeScan_AbortedStaysAborted(t *testing.T) {
 		t.Errorf("finalized status = %q, want aborted", status)
 	}
 }
+
+// =============================================================================
+// Webhook stability gates + live dedup (audit findings 5+10)
+// =============================================================================
+
+// A webhook scan of a file whose size is still changing (cross-mount
+// visibility lag right after import) must defer to the rescan queue instead
+// of probing — a partial view yields a false corruption verdict that deletes
+// a healthy, just-downloaded file.
+func TestScannerService_ScanFile_DefersWhenSizeChanging(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	tmpDir := t.TempDir()
+	if _, err := db.Exec(`INSERT INTO scan_paths (local_path, arr_path, enabled, auto_remediate, dry_run) VALUES (?, ?, 1, 1, 0)`, tmpDir, tmpDir); err != nil {
+		t.Fatal(err)
+	}
+
+	testFile := filepath.Join(tmpDir, "growing.mkv")
+	if err := os.WriteFile(testFile, []byte("partial"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	detectorCalled := false
+	mockHC := &testutil.MockHealthChecker{
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
+			detectorCalled = true
+			return false, &integration.HealthCheckError{Type: integration.ErrorTypeZeroByte, Message: "zero"}
+		},
+	}
+
+	scanner := NewScannerService(db, eb, mockHC, nil)
+	// Give the stability window real duration and grow the file inside it.
+	scanner.sizeStabilityDelay = 150 * time.Millisecond
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_ = os.WriteFile(testFile, []byte("partial-plus-more-data"), 0644)
+	}()
+
+	if err := scanner.ScanFile(testFile); err != nil {
+		t.Fatalf("ScanFile: %v", err)
+	}
+
+	if detectorCalled {
+		t.Error("detector probed a file whose size was still changing")
+	}
+	var queued int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM pending_rescans WHERE file_path = ?`, testFile).Scan(&queued)
+	if queued != 1 {
+		t.Errorf("pending_rescans rows = %d, want 1 (deferred for rescan)", queued)
+	}
+	var corruptions int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM events WHERE event_type='CorruptionDetected'`).Scan(&corruptions)
+	if corruptions != 0 {
+		t.Errorf("CorruptionDetected published %d times for an unstable file, want 0", corruptions)
+	}
+}
+
+// A corruption verdict that clears on the re-probe (stale-view artifact)
+// must not publish CorruptionDetected.
+func TestScannerService_ScanFile_ReprobeClearsStaleVerdict(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	tmpDir := t.TempDir()
+	if _, err := db.Exec(`INSERT INTO scan_paths (local_path, arr_path, enabled, auto_remediate, dry_run) VALUES (?, ?, 1, 1, 0)`, tmpDir, tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	testFile := filepath.Join(tmpDir, "settling.mkv")
+	if err := os.WriteFile(testFile, []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	mockHC := &testutil.MockHealthChecker{
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
+			calls++
+			if calls == 1 {
+				// First probe sees the stale partial view.
+				return false, &integration.HealthCheckError{Type: integration.ErrorTypeZeroByte, Message: "0 bytes"}
+			}
+			return true, nil
+		},
+	}
+
+	scanner := NewScannerService(db, eb, mockHC, nil)
+	scanner.sizeStabilityDelay = time.Millisecond
+
+	if err := scanner.ScanFile(testFile); err != nil {
+		t.Fatalf("ScanFile: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("detector calls = %d, want 2 (probe + confirming re-probe)", calls)
+	}
+	var corruptions int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM events WHERE event_type='CorruptionDetected'`).Scan(&corruptions)
+	if corruptions != 0 {
+		t.Errorf("CorruptionDetected published %d times for a verdict that cleared on re-probe, want 0", corruptions)
+	}
+}
+
+// Live dedup: a snapshot MISS in handleTrueCorruption must re-check the
+// database before opening a second journey for the same file.
+func TestScannerService_HandleTrueCorruption_LiveDedupOnSnapshotMiss(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	// An ACTIVE corruption journey for the file (opened after the scan's
+	// snapshot was taken, e.g. by a webhook).
+	if _, err := db.Exec(`
+		INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, created_at)
+		VALUES ('corruption', 'live-1', 'CorruptionDetected', '{"file_path":"/media/tv/x.mkv"}', datetime('now', '-1 hour'))
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	scanner := NewScannerService(db, eb, &testutil.MockHealthChecker{}, nil)
+	scanner.initRepositories()
+
+	progress := &ScanProgress{ID: "dedup-scan", resumeChan: make(chan struct{})}
+	sfc := &scanFileContext{
+		filePath: "/media/tv/x.mkv",
+		// Empty (stale) snapshot: the file was NOT active at scan start.
+		activeCorruptions: map[string]bool{},
+	}
+
+	action := scanner.handleTrueCorruption(context.Background(), progress, sfc, &integration.HealthCheckError{
+		Type: integration.ErrorTypeCorruptHeader, Message: "corrupt",
+	})
+	if action != scanSkipToNext {
+		t.Fatalf("action = %v, want scanSkipToNext (the dedup skip)", action)
+	}
+
+	var n int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM events WHERE event_type='CorruptionDetected' AND json_extract(event_data,'$.file_path')='/media/tv/x.mkv'`).Scan(&n)
+	if n != 1 {
+		t.Errorf("CorruptionDetected events = %d, want 1 (live re-check must dedup the stale snapshot miss)", n)
+	}
+}
