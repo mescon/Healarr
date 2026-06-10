@@ -48,3 +48,49 @@ func TestMatchedRootLen(t *testing.T) {
 		t.Error("trailing backslash must not change comparable root length")
 	}
 }
+
+func TestBase(t *testing.T) {
+	tests := []struct {
+		name string
+		p    string
+		want string
+	}{
+		{"unix file", "/media/Movies/Film (2024)/f.mkv", "f.mkv"},
+		{"unix dir trailing slash", "/media/Movies/Film (2024)/", "Film (2024)"},
+		{"no separator", "f.mkv", "f.mkv"},
+		{"empty", "", ""},
+		// The issue #331 shape: filepath.Base on Linux returns these whole.
+		{"UNC file", `\\alexpr4100\media\Movies\Zootopia 2 (2025)\Zootopia 2 (2025).mkv`, "Zootopia 2 (2025).mkv"},
+		{"UNC dir", `\\alexpr4100\media\Movies\Zootopia 2 (2025)`, "Zootopia 2 (2025)"},
+		{"drive letter", `D:\Media\TV\Show`, "Show"},
+		{"mixed separators", `/media/Movies\Film (2024)\f.mkv`, "f.mkv"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Base(tt.p); got != tt.want {
+				t.Errorf("Base(%q) = %q, want %q", tt.p, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDir(t *testing.T) {
+	tests := []struct {
+		name string
+		p    string
+		want string
+	}{
+		{"unix file", "/media/Movies/f.mkv", "/media/Movies"},
+		{"top level", "/media", ""},
+		{"no separator", "f.mkv", ""},
+		{"UNC file", `\\srv\media\Movies\Film\f.mkv`, `\\srv\media\Movies\Film`},
+		{"drive letter", `D:\Media\TV`, `D:\Media`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Dir(tt.p); got != tt.want {
+				t.Errorf("Dir(%q) = %q, want %q", tt.p, got, tt.want)
+			}
+		})
+	}
+}
