@@ -356,6 +356,24 @@ func (r *CorruptionRepository) StateCounts(ctx context.Context) (CorruptionState
 	return c, nil
 }
 
+// CountUnresolved returns the number of corruptions that still need
+// something: everything except resolved and user-ignored. This is the
+// "should I look at Healarr?" number for /api/health - counting only
+// CorruptionDetected there meant a corruption stuck in DeletionFailed
+// reported pending_corruptions: 0 and external dashboards showed all-clear
+// while remediation was failing (issue #331).
+func (r *CorruptionRepository) CountUnresolved(ctx context.Context) (int, error) {
+	settled := append(append([]string{}, BucketResolved...), BucketIgnored...)
+	var n int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT corruption_id) FROM corruption_status
+		WHERE current_state NOT IN `+InClause(settled)).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count unresolved corruptions: %w", err)
+	}
+	return n, nil
+}
+
 // CountDetectedToday returns the number of CorruptionDetected events created
 // today, excluding aggregates the user has ignored.
 func (r *CorruptionRepository) CountDetectedToday(ctx context.Context) (int, error) {

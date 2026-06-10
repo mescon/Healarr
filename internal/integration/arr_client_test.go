@@ -316,6 +316,44 @@ func TestHTTPArrClient_FindMediaByPath_Fallback(t *testing.T) {
 	}
 }
 
+// TestHTTPArrClient_FindMediaByPath_WindowsArrPaths reproduces issue #331:
+// Radarr on Windows reports UNC backslash paths verbatim. The listing
+// fallback split them with filepath (which on Linux treats backslash as an
+// ordinary character) and a hardcoded "/" prefix check, so the lookup always
+// ended in "media not found" and remediation died as DeletionFailed.
+func TestHTTPArrClient_FindMediaByPath_WindowsArrPaths(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/parse":
+			// Parse can't resolve the path - forces the listing fallback.
+			json.NewEncoder(w).Encode(ParseResult{})
+		case "/api/v3/movie":
+			json.NewEncoder(w).Encode([]MediaItem{
+				{ID: 1, Title: "Other Movie", Path: `\\alexpr4100\media\Movies\Other Movie (2023)`},
+				{ID: 2, Title: "Zootopia 2", Path: `\\alexpr4100\media\Movies\Zootopia 2 (2025)`},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	encryptedKey, _ := crypto.Encrypt("api-key")
+	db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key, enabled) VALUES (1, 'Win Radarr', 'radarr', ?, ?, 1)`, server.URL, encryptedKey)
+	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/media/Movies', '\\alexpr4100\media\Movies', 1, 0, 0)`)
+
+	mediaID, err := client.FindMediaByPath(`\\alexpr4100\media\Movies\Zootopia 2 (2025)\Zootopia 2 (2025).mkv`)
+	if err != nil {
+		t.Fatalf("FindMediaByPath with Windows arr paths failed: %v", err)
+	}
+	if mediaID != 2 {
+		t.Errorf("Expected mediaID=2, got %d", mediaID)
+	}
+}
+
 func TestHTTPArrClient_FindMediaByPath_NotFound(t *testing.T) {
 	client, db := setupTestClient(t)
 	defer db.Close()
@@ -6256,6 +6294,20 @@ func TestFindFileID(t *testing.T) {
 		id, err := findFileID(files, "/data/tv/Other/ep99.mkv")
 		if err != nil || id != 0 {
 			t.Fatalf("got (%d, %v), want (0, nil)", id, err)
+		}
+	})
+
+	t.Run("unique basename match with Windows arr paths", func(t *testing.T) {
+		// A Windows *arr reports backslash paths; filepath.Base on a Linux
+		// host treated the whole path as the basename, so this fallback
+		// never fired (issue #331).
+		winFiles := []genericFile{
+			{ID: 10, Path: `\\srv\media\Movies\Film (2024)\Film (2024).mkv`},
+			{ID: 11, Path: `\\srv\media\Movies\Other (2023)\Other (2023).mkv`},
+		}
+		id, err := findFileID(winFiles, "/media/Movies/Film (2024)/Film (2024).mkv")
+		if err != nil || id != 10 {
+			t.Fatalf("got (%d, %v), want (10, nil)", id, err)
 		}
 	})
 }

@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +20,7 @@ import (
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/crypto"
 	"github.com/mescon/Healarr/internal/logger"
+	"github.com/mescon/Healarr/internal/pathutil"
 	"github.com/mescon/Healarr/internal/repository"
 )
 
@@ -581,9 +581,15 @@ func (c *HTTPArrClient) tryParseMedia(instance *ArrInstance, path string) (int64
 	return 0, false
 }
 
-// matchMediaItem checks if a media item matches the given file path
+// matchMediaItem checks if a media item matches the given file path.
+//
+// All splitting and prefix logic goes through pathutil: item.Path comes from
+// the *arr verbatim, so a Windows Sonarr/Radarr reports backslash/UNC paths
+// (\\server\share\Movies\Title) that filepath and hardcoded "/" can never
+// match on a Linux host - every lookup ended in "media not found" and the
+// remediation died as DeletionFailed (issue #331).
 func matchMediaItem(item MediaItem, path, fileDirBase, showDirBase string) bool {
-	mediaFolder := filepath.Base(item.Path)
+	mediaFolder := pathutil.Base(item.Path)
 
 	// Exact folder match (case-insensitive)
 	if strings.EqualFold(mediaFolder, fileDirBase) {
@@ -593,10 +599,9 @@ func matchMediaItem(item MediaItem, path, fileDirBase, showDirBase string) bool 
 	if strings.EqualFold(mediaFolder, showDirBase) {
 		return true
 	}
-	// Check if the media path is a prefix of the file path
-	normalizedMediaPath := strings.ToLower(strings.TrimSuffix(item.Path, "/"))
-	normalizedFilePath := strings.ToLower(path)
-	return strings.HasPrefix(normalizedFilePath, normalizedMediaPath+"/")
+	// Check if the media path contains the file path, boundary-aware and
+	// case-insensitive (Windows paths compare case-insensitively).
+	return pathutil.IsWithinRoot(strings.ToLower(item.Path), strings.ToLower(path))
 }
 
 // findMediaByListing lists all media and finds a match by path
@@ -625,11 +630,12 @@ func (c *HTTPArrClient) findMediaByListing(instance *ArrInstance, path string) (
 		return 0, err
 	}
 
-	// Precompute path components for matching
-	fileDir := filepath.Dir(path)
-	fileDirBase := filepath.Base(fileDir)
-	showDir := filepath.Dir(fileDir)
-	showDirBase := filepath.Base(showDir)
+	// Precompute path components for matching (pathutil: path may be a
+	// Windows-style *arr path even when Healarr runs on Linux)
+	fileDir := pathutil.Dir(path)
+	fileDirBase := pathutil.Base(fileDir)
+	showDir := pathutil.Dir(fileDir)
+	showDirBase := pathutil.Base(showDir)
 
 	for _, item := range items {
 		if matchMediaItem(item, path, fileDirBase, showDirBase) {
@@ -720,12 +726,16 @@ func findFileID(files []genericFile, path string) (int64, error) {
 			return f.ID, nil
 		}
 	}
-	// 2. Unique basename match.
-	targetBase := filepath.Base(path)
+	// 2. Unique basename match. pathutil.Base, not filepath.Base: f.Path is
+	// the *arr's own path and may use backslashes, in which case
+	// filepath.Base on Linux returns the whole path and this fallback never
+	// fires. Comparison stays case-SENSITIVE on purpose - loosening the
+	// delete path is not worth the marginal match rate.
+	targetBase := pathutil.Base(path)
 	var id int64
 	matches := 0
 	for _, f := range files {
-		if filepath.Base(f.Path) == targetBase {
+		if pathutil.Base(f.Path) == targetBase {
 			id = f.ID
 			matches++
 		}

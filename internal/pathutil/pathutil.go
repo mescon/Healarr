@@ -58,3 +58,28 @@ func IsWithinRoot(root, path string) bool {
 func MatchedRootLen(root string) int {
 	return len(TrimTrailingSep(root))
 }
+
+// Base returns the last element of p, recognizing both separator styles.
+// filepath.Base is platform-locked: on a Linux host it treats backslash as
+// an ordinary character, so the "basename" of a Windows path a *arr
+// reported verbatim (\\server\share\Movies\Title) is the entire path and
+// every basename comparison silently fails (issue #331).
+func Base(p string) string {
+	p = TrimTrailingSep(p)
+	if i := strings.LastIndexAny(p, Separators); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
+// Dir returns the parent of p with the same dual-separator semantics as
+// Base. Unlike filepath.Dir it returns "" (not ".") when p has no
+// separator, and never invents a separator: callers here only feed the
+// result back into Base for folder-name comparisons.
+func Dir(p string) string {
+	p = TrimTrailingSep(p)
+	if i := strings.LastIndexAny(p, Separators); i >= 0 {
+		return TrimTrailingSep(p[:i])
+	}
+	return ""
+}

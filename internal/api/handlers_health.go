@@ -148,10 +148,13 @@ func (s *RESTServer) handleHealth(c *gin.Context) {
 	// Check arr instances health
 	arrHealth := s.checkArrInstancesHealth(ctx)
 
-	// Get pending corruptions count
-	pending, err := s.corruptions.CountByState(ctx, "CorruptionDetected")
+	// Count every corruption that still needs something (not resolved, not
+	// ignored) - this is what external dashboards poll to decide whether to
+	// surface Healarr. Counting only CorruptionDetected here hid corruptions
+	// stuck mid-remediation (e.g. DeletionFailed) behind a zero.
+	pending, err := s.corruptions.CountUnresolved(ctx)
 	if err != nil {
-		logger.Debugf("Failed to query pending corruptions: %v", err)
+		logger.Debugf("Failed to query unresolved corruptions: %v", err)
 	}
 
 	// Determine overall status
