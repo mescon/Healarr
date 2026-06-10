@@ -248,7 +248,12 @@ func (hc *CmdHealthChecker) runHandBrakeWithArgs(path string, customArgs []strin
 		return fmt.Errorf("HandBrake scan timed out after %v", timeout)
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("HandBrake failed: %s", stderr.String())
+			// Include the wait/exec error itself (%v), not just stderr: a
+			// missing binary or signal death has empty stderr, and the
+			// classifier needs the "fork/exec ..." / "signal: ..." text to
+			// map the failure to a recoverable ToolFailure instead of
+			// corruption.
+			return fmt.Errorf("HandBrake failed (%v): %s", err, stderr.String())
 		}
 	}
 
@@ -305,7 +310,10 @@ func runCommandWithTimeout(cmd *exec.Cmd, timeout time.Duration, toolName string
 		return nil, fmt.Errorf("%s timed out after %v", toolName, timeout)
 	case err := <-done:
 		if err != nil {
-			return nil, fmt.Errorf("%s failed: %s", toolName, stderr.String())
+			// Include the wait/exec error (%v) alongside stderr so signal
+			// deaths and launch failures (empty stderr) carry the text the
+			// classifier maps to recoverable ToolFailure.
+			return nil, fmt.Errorf("%s failed (%v): %s", toolName, err, stderr.String())
 		}
 	}
 	return stdout.Bytes(), nil
