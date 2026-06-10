@@ -23,6 +23,7 @@ type HealthMonitorService struct {
 	db         *sql.DB
 	eventBus   eventbus.Publisher
 	arrClient  integration.ArrClient
+	pathMapper integration.PathMapper
 	shutdownCh chan struct{}
 	wg         sync.WaitGroup
 
@@ -36,6 +37,25 @@ type HealthMonitorService struct {
 	repeatedFailureCount   int
 	instanceHealthInterval time.Duration
 	arrSyncInterval        time.Duration
+}
+
+// SetPathMapper wires the local-to-arr path translation used for arr-side
+// API lookups. Optional: without it, lookups fall back to the raw local
+// path, which only matches on same-path setups.
+func (h *HealthMonitorService) SetPathMapper(pm integration.PathMapper) {
+	h.pathMapper = pm
+}
+
+// arrPathFor maps a local path to the *arr's path form for arr-side API
+// lookups; falls back to the raw path when no mapping applies.
+func (h *HealthMonitorService) arrPathFor(localPath string) string {
+	if h.pathMapper == nil {
+		return localPath
+	}
+	if mapped, err := h.pathMapper.ToArrPath(localPath); err == nil && mapped != "" {
+		return mapped
+	}
+	return localPath
 }
 
 // NewHealthMonitorService creates a new health monitoring service
@@ -675,7 +695,7 @@ func (h *HealthMonitorService) scanSyncRow(rows *sql.Rows) (arrSyncItem, bool) {
 func (h *HealthMonitorService) checkArrHasFile(filePath string, mediaID int64) (bool, error) {
 	// Use GetAllFilePaths to check if arr has file(s) for this media
 	// Pass nil metadata since we're just checking existence
-	allPaths, err := h.arrClient.GetAllFilePaths(mediaID, nil, filePath)
+	allPaths, err := h.arrClient.GetAllFilePaths(mediaID, nil, h.arrPathFor(filePath))
 	if err != nil {
 		return false, err
 	}
@@ -684,7 +704,7 @@ func (h *HealthMonitorService) checkArrHasFile(filePath string, mediaID int64) (
 
 // isInArrQueue checks if there's an active download for this file path
 func (h *HealthMonitorService) isInArrQueue(filePath string) (bool, error) {
-	queueItems, err := h.arrClient.GetQueueForPath(filePath)
+	queueItems, err := h.arrClient.GetQueueForPath(h.arrPathFor(filePath))
 	if err != nil {
 		return false, err
 	}

@@ -269,6 +269,7 @@ func initCoreServices(
 	logger.Infof("✓ Monitor Service (tracks corruption lifecycle)")
 
 	healthMonitorService := services.NewHealthMonitorService(sqlDB, eb, arrClient, cfg.StaleThreshold)
+	healthMonitorService.SetPathMapper(pathMapper)
 	logger.Infof("✓ Health Monitor Service (detects stuck remediations)")
 
 	recoveryService := services.NewRecoveryService(sqlDB, eb, arrClient, pathMapper, healthChecker, cfg.StaleThreshold)

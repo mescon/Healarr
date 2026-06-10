@@ -1043,7 +1043,10 @@ func TestVerifyAndComplete_CorruptFile(t *testing.T) {
 
 	mockDetector := &testutil.MockHealthChecker{
 		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
-			return false, &integration.HealthCheckError{Message: "video stream corrupt"}
+			// A typed TRUE-CORRUPTION error: the recoverable-vs-corrupt
+			// triage (audit finding 6) inspects the type, and the category
+			// registry panics in test binaries on untyped errors.
+			return false, &integration.HealthCheckError{Type: integration.ErrorTypeCorruptStream, Message: "video stream corrupt"}
 		},
 	}
 
@@ -2402,5 +2405,39 @@ func TestParseTimestamp(t *testing.T) {
 				t.Errorf("parseTimestamp(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// Recovery's verification must defer (no terminal event) on a RECOVERABLE
+// detector error: concluding SearchExhausted from a mount glitch parks a
+// healthy item in a needs-attention state and burns operator time.
+func TestRecovery_VerifyAndComplete_DefersOnRecoverableError(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	eb := testutil.NewMockEventBus()
+	det := &testutil.MockHealthChecker{
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
+			return false, &integration.HealthCheckError{
+				Type:    integration.ErrorTypeMountLost,
+				Message: "mount appears lost",
+			}
+		},
+	}
+	r := NewRecoveryService(db, eb, &testutil.MockArrClient{}, &testutil.MockPathMapper{}, det, time.Hour)
+
+	state := r.verifyAndComplete(staleItem{CorruptionID: "rec-1", FilePath: "/media/tv/x.mkv"}, "/media/tv/x.mkv")
+
+	if state != "" {
+		t.Errorf("verifyAndComplete = %q, want empty (deferred)", state)
+	}
+	if n := eb.EventCount(domain.SearchExhausted); n != 0 {
+		t.Errorf("SearchExhausted published %d times for recoverable error, want 0", n)
+	}
+	if n := eb.EventCount(domain.VerificationSuccess); n != 0 {
+		t.Errorf("VerificationSuccess published %d times, want 0", n)
 	}
 }
