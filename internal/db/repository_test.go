@@ -4525,3 +4525,55 @@ func TestConfigureSQLite_Idempotent(t *testing.T) {
 		t.Errorf("auto_vacuum=%d, want 2", mode)
 	}
 }
+
+// Migration 012: notification bookkeeping must not clobber the corruption
+// state machine. NotificationSent must not become current_state, and
+// NotificationFailed must not count toward the retry budget.
+func TestCorruptionSummary_IgnoresNotificationBookkeeping(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+	db := repo.DB
+
+	insert := func(eventType string) {
+		t.Helper()
+		if _, err := db.Exec(`
+			INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data)
+			VALUES ('corruption', 'notif-1', ?, '{"file_path":"/media/x.mkv"}')
+		`, eventType); err != nil {
+			t.Fatalf("insert %s: %v", eventType, err)
+		}
+	}
+
+	insert("CorruptionDetected")
+	insert("RemediationQueued")
+	insert("VerificationSuccess")
+	// The "remediation complete" notification fires AFTER resolution: it must
+	// not knock the item out of the resolved state.
+	insert("NotificationSent")
+	// A broken provider appends failures: they must not burn the retry budget.
+	insert("NotificationFailed")
+	insert("NotificationFailed")
+	insert("NotificationFailed")
+
+	var state string
+	var retries int
+	if err := db.QueryRow(`SELECT current_state, retry_count FROM corruption_summary WHERE corruption_id = 'notif-1'`).Scan(&state, &retries); err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if state != "VerificationSuccess" {
+		t.Errorf("current_state = %q, want VerificationSuccess (notification events must not clobber)", state)
+	}
+	if retries != 0 {
+		t.Errorf("retry_count = %d, want 0 (NotificationFailed must not count)", retries)
+	}
+
+	// Real failures DO count, including DownloadTimeout (unified definition).
+	insert("DeletionFailed")
+	insert("DownloadTimeout")
+	if err := db.QueryRow(`SELECT retry_count FROM corruption_summary WHERE corruption_id = 'notif-1'`).Scan(&retries); err != nil {
+		t.Fatal(err)
+	}
+	if retries != 2 {
+		t.Errorf("retry_count = %d, want 2 (DeletionFailed + DownloadTimeout)", retries)
+	}
+}

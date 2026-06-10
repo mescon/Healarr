@@ -976,7 +976,7 @@ func TestRemediatorService_ExecuteRemediation_FindMediaFails(t *testing.T) {
 	remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
 
 	// Call executeRemediation directly
-	remediator.executeRemediation("test-id", "/test/path.mkv", "/arr/path.mkv", 1)
+	remediator.executeRemediation("test-id", "/test/path.mkv", "/arr/path.mkv", 1, false)
 
 	// Should only have DeletionFailed (no DeletionStarted since we fail before starting)
 	// DeletionStarted is now emitted AFTER FindMediaByPath succeeds to avoid false "started" events
@@ -1008,7 +1008,7 @@ func TestRemediatorService_ExecuteRemediation_DeleteFileFails(t *testing.T) {
 
 	remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
 
-	remediator.executeRemediation("test-id", "/test/path.mkv", "/arr/path.mkv", 1)
+	remediator.executeRemediation("test-id", "/test/path.mkv", "/arr/path.mkv", 1, false)
 
 	// Should have DeletionFailed
 	if mockEventBus.EventCount(domain.DeletionFailed) != 1 {
@@ -1669,7 +1669,7 @@ func TestRemediatorService_ExecuteRemediation_SkipsWhenShuttingDown(t *testing.T
 	remediator.Stop()
 
 	// Now call executeRemediation - should return early due to shutdown
-	remediator.executeRemediation("test-id", "/media/test.mkv", "/movies/test.mkv", 1)
+	remediator.executeRemediation("test-id", "/media/test.mkv", "/movies/test.mkv", 1, false)
 
 	// Verify that no events were published (service skipped due to shutdown)
 	if mockEventBus.EventCount(domain.DeletionStarted) != 0 {
@@ -1713,6 +1713,7 @@ func TestRemediatorService_ExecuteRemediation_ShutdownWhileWaitingForSemaphore(t
 				"/media/blocking.mkv",
 				"/movies/blocking.mkv",
 				1,
+				false,
 			)
 		}(i)
 	}
@@ -1724,7 +1725,7 @@ func TestRemediatorService_ExecuteRemediation_ShutdownWhileWaitingForSemaphore(t
 	var testCompleted bool
 	var testMu sync.Mutex
 	go func() {
-		remediator.executeRemediation("waiting-test", "/media/test.mkv", "/movies/test.mkv", 1)
+		remediator.executeRemediation("waiting-test", "/media/test.mkv", "/movies/test.mkv", 1, false)
 		testMu.Lock()
 		testCompleted = true
 		testMu.Unlock()
@@ -2456,4 +2457,103 @@ func TestRemediator_RecoveryRetryCannotInventConsent(t *testing.T) {
 	t.Run("dry-run path: no delete", func(t *testing.T) { run(t, true, true, false) })
 	t.Run("manual path: no delete", func(t *testing.T) { run(t, false, false, false) })
 	t.Run("auto path: delete proceeds", func(t *testing.T) { run(t, true, false, true) })
+}
+
+// seedSuccessfulRemediationForMedia seeds a full journey (detected ->
+// deletion-completed with media_id -> verification success) under a UNIQUE
+// file path per aggregate, simulating the rename-per-round reality that
+// bypassed the path-keyed loop-breaker.
+func seedSuccessfulRemediationForMedia(t *testing.T, db *sql.DB, aggregateID, filePath string, mediaID int64) {
+	t.Helper()
+	seedSuccessfulRemediation(t, db, aggregateID, filePath)
+	dc, _ := json.Marshal(map[string]interface{}{"media_id": mediaID})
+	if _, err := db.Exec(`INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, event_version, created_at)
+		VALUES ('corruption', ?, 'DeletionCompleted', ?, 1, datetime('now'))`, aggregateID, string(dc)); err != nil {
+		t.Fatalf("seed DeletionCompleted: %v", err)
+	}
+}
+
+// The loop-breaker must trip on MEDIA identity even when every round
+// imported the replacement under a new filename (audit finding 14: the
+// rename bypass made the path-keyed counter useless for exactly the
+// Tdarr/silent-data-loss scenario it was built for).
+func TestRemediator_LoopBreaker_MediaKeyedSurvivesRenames(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	seedRemediationPath(t, db, "/local/movies", true, false)
+
+	// Three successful rounds, each under a DIFFERENT path, same media.
+	seedSuccessfulRemediationForMedia(t, db, "m1", "/local/movies/Film.Release-A.mkv", 55)
+	seedSuccessfulRemediationForMedia(t, db, "m2", "/local/movies/Film.Release-B.mkv", 55)
+	seedSuccessfulRemediationForMedia(t, db, "m3", "/local/movies/Film.Release-C.mkv", 55)
+
+	eb := testutil.NewMockEventBus()
+	arr := &testutil.MockArrClient{
+		FindMediaByPathFunc: func(string) (int64, error) { return 55, nil },
+		DeleteFileFunc:      func(int64, string) (map[string]interface{}, error) { return map[string]interface{}{}, nil },
+	}
+	pm := &testutil.MockPathMapper{ToArrPathFunc: func(p string) (string, error) { return p, nil }}
+	r := NewRemediatorService(eb, arr, pm, db)
+
+	// Round 4 arrives under yet another new filename.
+	event := testutil.NewCorruptionEventWithType("/local/movies/Film.Release-D.mkv", integration.ErrorTypeCorruptHeader, testutil.WithAutoRemediate(true))
+	r.handleCorruptionDetected(event)
+	time.Sleep(200 * time.Millisecond)
+
+	if eb.EventCount(domain.RemediationPaused) != 1 {
+		t.Errorf("RemediationPaused = %d, want 1 (media-keyed loop-breaker must survive renames)", eb.EventCount(domain.RemediationPaused))
+	}
+	if arr.CallCount("DeleteFile") != 0 {
+		t.Error("a paused remediation must not delete the file")
+	}
+}
+
+// manual_retry=true is the user's explicit consent to bypass a loop-breaker
+// pause after fixing the root cause; previously the flag was written by the
+// UI handler and read by nothing, leaving the user stuck for up to 30 days.
+func TestRemediator_ManualRetryBypassesLoopBreakerPause(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	seedRemediationPath(t, db, "/local/movies", true, false)
+
+	// Trip the path-keyed loop-breaker.
+	const fp = "/local/movies/loop.mkv"
+	for _, agg := range []string{"b1", "b2", "b3"} {
+		seedSuccessfulRemediation(t, db, agg, fp)
+	}
+
+	eb := testutil.NewMockEventBus()
+	arr := &testutil.MockArrClient{
+		FindMediaByPathFunc: func(string) (int64, error) { return 77, nil },
+		DeleteFileFunc:      func(int64, string) (map[string]interface{}, error) { return map[string]interface{}{}, nil },
+		TriggerSearchFunc:   func(int64, string, []int64) error { return nil },
+	}
+	pm := &testutil.MockPathMapper{ToArrPathFunc: func(p string) (string, error) { return p, nil }}
+	r := NewRemediatorService(eb, arr, pm, db)
+
+	// Without the flag: paused, no delete.
+	r.handleRetry(domain.Event{
+		AggregateID: "b-noflag", AggregateType: "corruption", EventType: domain.RetryScheduled,
+		EventData: map[string]interface{}{"file_path": fp, "auto_remediate": true},
+	})
+	time.Sleep(150 * time.Millisecond)
+	if arr.CallCount("DeleteFile") != 0 {
+		t.Fatal("retry without manual_retry must stay paused")
+	}
+
+	// With manual_retry=true: the user's one-cycle consent proceeds.
+	r.handleRetry(domain.Event{
+		AggregateID: "b-flag", AggregateType: "corruption", EventType: domain.RetryScheduled,
+		EventData: map[string]interface{}{"file_path": fp, "auto_remediate": true, "manual_retry": true},
+	})
+	time.Sleep(150 * time.Millisecond)
+	if arr.CallCount("DeleteFile") != 1 {
+		t.Errorf("DeleteFile calls = %d, want 1 (manual retry bypasses the pause)", arr.CallCount("DeleteFile"))
+	}
 }

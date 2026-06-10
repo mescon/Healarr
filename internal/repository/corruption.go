@@ -481,3 +481,54 @@ func (r *CorruptionRepository) ListActiveFilePathsUnderRoot(ctx context.Context,
 	}
 	return result, nil
 }
+
+// CountSuccessfulRemediationsForMedia counts VerificationSuccess events in
+// the window whose remediation journey handled the given *arr media id
+// (identified via the journey's DeletionCompleted event). This is the
+// rename-proof sibling of CountSuccessfulRemediationsForPath: each
+// remediation round typically imports the replacement under a NEW release
+// filename, so a per-path counter never accumulates for exactly the
+// recurring-corruption scenario the loop-breaker exists for.
+func (r *CorruptionRepository) CountSuccessfulRemediationsForMedia(ctx context.Context, mediaID int64, windowDays int) (int, error) {
+	var n int
+	modifier := fmt.Sprintf("-%d days", windowDays)
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM events vs
+		WHERE vs.event_type = 'VerificationSuccess'
+		  AND vs.created_at > datetime('now', ?)
+		  AND vs.aggregate_id IN (
+		      SELECT dc.aggregate_id FROM events dc
+		      WHERE dc.event_type = 'DeletionCompleted'
+		        AND json_extract(dc.event_data, '$.media_id') = ?
+		  )
+	`, modifier, mediaID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count successful remediations for media: %w", err)
+	}
+	return n, nil
+}
+
+// CountExhaustedRemediationsForMedia counts MaxRetriesReached events in the
+// window for journeys that handled the given media id. Covers the
+// never-succeeds loop: when remediation never produces a verified
+// replacement there are no VerificationSuccess events to count, but each
+// exhausted journey burned deletes, searches, and timeouts on the same
+// media — that recurrence must also trip the loop-breaker.
+func (r *CorruptionRepository) CountExhaustedRemediationsForMedia(ctx context.Context, mediaID int64, windowDays int) (int, error) {
+	var n int
+	modifier := fmt.Sprintf("-%d days", windowDays)
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM events mr
+		WHERE mr.event_type = 'MaxRetriesReached'
+		  AND mr.created_at > datetime('now', ?)
+		  AND mr.aggregate_id IN (
+		      SELECT dc.aggregate_id FROM events dc
+		      WHERE dc.event_type = 'DeletionCompleted'
+		        AND json_extract(dc.event_data, '$.media_id') = ?
+		  )
+	`, modifier, mediaID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count exhausted remediations for media: %w", err)
+	}
+	return n, nil
+}
