@@ -1900,3 +1900,59 @@ func TestHealthMonitorService_checkInstanceHealth_MultipleInstanceRecovery(t *te
 		t.Error("Expected Radarr to recover")
 	}
 }
+
+// The stuck sweep must NOT flag aggregates the user has ignored (or that sit
+// in another deliberate parking state): before the exclusion, an ignored
+// false positive on an auto-remediate path was resurrected after
+// stuckThreshold and the monitor's consented retry deleted the file the user
+// explicitly vetoed.
+func TestHealthMonitorService_checkStuckRemediations_SkipsIgnoredAndParked(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test db: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	h := NewHealthMonitorService(db, eb, nil, 24*time.Hour)
+	h.stuckThreshold = 1 * time.Millisecond
+
+	eventCh := make(chan domain.Event, 10)
+	eb.Subscribe(domain.StuckRemediation, func(e domain.Event) {
+		eventCh <- e
+	})
+
+	seed := func(aggID, parkEvent string) {
+		t.Helper()
+		if _, err := db.Exec(`
+			INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, created_at)
+			VALUES ('corruption', ?, 'CorruptionDetected', '{"file_path":"/test/x.mkv"}', datetime('now', '-48 hours'))
+		`, aggID); err != nil {
+			t.Fatalf("seed detected: %v", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO events (aggregate_type, aggregate_id, event_type, event_data, created_at)
+			VALUES ('corruption', ?, ?, '{}', datetime('now', '-47 hours'))
+		`, aggID, parkEvent); err != nil {
+			t.Fatalf("seed park event: %v", err)
+		}
+	}
+
+	// Every deliberate stop must be excluded from the sweep.
+	seed("ignored-1", "CorruptionIgnored")
+	seed("paused-1", "RemediationPaused")
+	seed("exhausted-1", "SearchExhausted")
+	seed("dl-ignored-1", "DownloadIgnored")
+	seed("removed-1", "ManuallyRemoved")
+
+	h.checkStuckRemediations()
+
+	select {
+	case ev := <-eventCh:
+		t.Errorf("Sweep flagged a parked/ignored aggregate as stuck: %s", ev.AggregateID)
+	case <-time.After(150 * time.Millisecond):
+		// Correct: nothing flagged.
+	}
+}

@@ -206,6 +206,16 @@ func (m *MonitorService) scheduleRetry(corruptionID, filePath string, pathID int
 func (m *MonitorService) handleStuckRemediation(event domain.Event) {
 	corruptionID := event.AggregateID
 
+	// Belt-and-braces against resurrecting a user veto: the stuck sweep
+	// excludes ignored aggregates at the query level, but this handler is the
+	// last automated gate before a consented retry, so it independently
+	// refuses if the user ever ignored this corruption. (A manual UI retry
+	// does not pass through here, so the user can still un-park explicitly.)
+	if m.hasUserVeto(corruptionID) {
+		logger.Infof("Stuck remediation %s was ignored by the user; not scheduling automated retry", corruptionID)
+		return
+	}
+
 	// Check if we've already hit max retries
 	retryCount, maxRetries, err := m.getRetryCount(corruptionID)
 	if err != nil {
@@ -341,6 +351,24 @@ func (m *MonitorService) getRetryCount(corruptionID string) (int, int, error) {
 	// If user sets 0, they want 0 retries.
 
 	return count, limit, nil
+}
+
+// hasUserVeto reports whether the user has ever ignored this corruption.
+// CorruptionIgnored is the operator's explicit "leave this file alone" (the
+// designed escape hatch for false positives), so no automated path may
+// schedule a retry past it. Errors fail open to "vetoed" — refusing an
+// automated destructive retry on a query failure is the safe direction.
+func (m *MonitorService) hasUserVeto(corruptionID string) bool {
+	var n int
+	err := m.db.QueryRow(`
+		SELECT COUNT(*) FROM events
+		WHERE aggregate_id = ? AND event_type = 'CorruptionIgnored'
+	`, corruptionID).Scan(&n)
+	if err != nil {
+		logger.Warnf("Cannot check ignore-veto for %s; refusing automated retry: %v", corruptionID, err)
+		return true
+	}
+	return n > 0
 }
 
 // handleNeedsAttention handles events that require manual intervention.

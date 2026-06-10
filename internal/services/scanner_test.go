@@ -1093,7 +1093,7 @@ func TestScannerService_GetScanPathConfig(t *testing.T) {
 	scanner.initRepositories()
 
 	t.Run("returns error for no matching path", func(t *testing.T) {
-		_, _, err := scanner.getScanPathConfig("/non/existent/path/file.mkv")
+		_, _, _, err := scanner.getScanPathConfig("/non/existent/path/file.mkv")
 		if err == nil {
 			t.Error("Expected error for non-matching path")
 		}
@@ -1110,7 +1110,7 @@ func TestScannerService_GetScanPathConfig(t *testing.T) {
 		}
 		scanner.InvalidateScanPathCache()
 
-		autoRemediate, dryRun, err := scanner.getScanPathConfig("/media/movies/test.mkv")
+		autoRemediate, dryRun, pathID, err := scanner.getScanPathConfig("/media/movies/test.mkv")
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
@@ -1119,6 +1119,9 @@ func TestScannerService_GetScanPathConfig(t *testing.T) {
 		}
 		if dryRun {
 			t.Error("Expected dryRun to be false")
+		}
+		if pathID != 1 {
+			t.Errorf("Expected pathID=1 (for the consent re-read chain), got %d", pathID)
 		}
 	})
 
@@ -1133,7 +1136,7 @@ func TestScannerService_GetScanPathConfig(t *testing.T) {
 		}
 		scanner.InvalidateScanPathCache()
 
-		autoRemediate, dryRun, err := scanner.getScanPathConfig("/media/movies/4k/test.mkv")
+		autoRemediate, dryRun, pathID, err := scanner.getScanPathConfig("/media/movies/4k/test.mkv")
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
@@ -1142,6 +1145,9 @@ func TestScannerService_GetScanPathConfig(t *testing.T) {
 		}
 		if !dryRun {
 			t.Error("Expected dryRun to be true (from more specific path)")
+		}
+		if pathID != 2 {
+			t.Errorf("Expected pathID=2 (the more specific path), got %d", pathID)
 		}
 	})
 
@@ -1160,7 +1166,7 @@ func TestScannerService_GetScanPathConfig(t *testing.T) {
 		}
 		scanner.InvalidateScanPathCache()
 
-		_, _, err = scanner.getScanPathConfig("/media/movies2/test.mkv")
+		_, _, _, err = scanner.getScanPathConfig("/media/movies2/test.mkv")
 		if err == nil {
 			t.Error("Expected error for partial prefix match")
 		}
@@ -2755,7 +2761,7 @@ func BenchmarkScannerService_GetScanPathConfig(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scanner.getScanPathConfig("/media/patha/movies/test.mkv")
+		_, _, _, _ = scanner.getScanPathConfig("/media/patha/movies/test.mkv")
 	}
 }
 
@@ -3235,6 +3241,22 @@ func TestScannerService_ScanFile_WithCorruption(t *testing.T) {
 		}
 		if count == 0 {
 			t.Error("Expected corruption event to be created")
+		}
+
+		// The event must carry the owning scan path's id: the remediator's
+		// consent re-read depends on it, and webhook corruptions historically
+		// published path_id=0, letting recovery/retry paths invent consent.
+		var pathID int64
+		err = db.QueryRow(`
+			SELECT json_extract(event_data, '$.path_id') FROM events
+			WHERE event_type = 'CorruptionDetected'
+			AND json_extract(event_data, '$.file_path') = ?
+		`, testFile).Scan(&pathID)
+		if err != nil {
+			t.Fatalf("Failed to read path_id: %v", err)
+		}
+		if pathID <= 0 {
+			t.Errorf("CorruptionDetected from ScanFile must carry the scan path id, got %d", pathID)
 		}
 	})
 }

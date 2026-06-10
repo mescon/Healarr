@@ -21,6 +21,21 @@ import (
 // errPathNotConfigured is a test error for path mapping failures.
 var errPathNotConfigured = errors.New("path not configured")
 
+// seedRemediationPath inserts an enabled scan path so the remediator's
+// consent re-read (resolveRemediationPolicy) finds a configured opt-in.
+// Tests that expect remediation to PROCEED must seed the owning path: the
+// remediator never trusts the event's own auto_remediate claim, so an
+// unseeded DB means "no consent" and the flow stops before any delete.
+func seedRemediationPath(t *testing.T, db *sql.DB, localPath string, autoRemediate, dryRun bool) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO scan_paths (local_path, arr_path, enabled, auto_remediate, dry_run)
+		VALUES (?, ?, 1, ?, ?)
+	`, localPath, localPath, autoRemediate, dryRun); err != nil {
+		t.Fatalf("seed scan path %s: %v", localPath, err)
+	}
+}
+
 // TestMain sets up test configuration before running tests.
 func TestMain(m *testing.M) {
 	// Initialize config for tests that require it
@@ -49,6 +64,9 @@ func TestRemediatorService_SafetyCheck(t *testing.T) {
 				t.Fatalf("Failed to create test DB: %v", err)
 			}
 			defer db.Close()
+			// Seed an auto-remediate path: the category gate, not missing
+			// consent, must be what blocks these recoverable errors.
+			seedRemediationPath(t, db, "/media/movies", true, false)
 
 			mockEventBus := testutil.NewMockEventBus()
 			mockArrClient := &testutil.MockArrClient{}
@@ -123,6 +141,16 @@ func TestRemediatorService_HandleCorruptionDetected(t *testing.T) {
 		}
 
 		remediator := NewRemediatorService(mockEventBus, mockArrClient, mockPathMapper, db)
+
+		// Seed the owning scan path with auto_remediate enabled: the remediator
+		// re-reads consent from the path config (resolved by file path when the
+		// event has no path_id) and never trusts the event's own claim.
+		if _, err := db.Exec(`
+			INSERT INTO scan_paths (local_path, arr_path, enabled, auto_remediate, dry_run)
+			VALUES ('/media/movies', '/media/movies', 1, 1, 0)
+		`); err != nil {
+			t.Fatalf("seed scan path: %v", err)
+		}
 
 		// Create corruption event with TRUE corruption type
 		event := testutil.NewCorruptionEventWithType(
@@ -210,6 +238,7 @@ func TestRemediatorService_HandleCorruptionDetected(t *testing.T) {
 			t.Fatalf("Failed to create test DB: %v", err)
 		}
 		defer db.Close()
+		seedRemediationPath(t, db, "/media/movies", true, false)
 
 		mockEventBus := testutil.NewMockEventBus()
 		mockArrClient := &testutil.MockArrClient{}
@@ -285,6 +314,8 @@ func TestRemediatorService_DryRunMode(t *testing.T) {
 			t.Fatalf("Failed to create test DB: %v", err)
 		}
 		defer db.Close()
+		// Path config carries the dry-run; the event payload is not trusted.
+		seedRemediationPath(t, db, "/media/movies", true, true)
 
 		mockEventBus := testutil.NewMockEventBus()
 		mockArrClient := &testutil.MockArrClient{
@@ -383,6 +414,7 @@ func TestRemediatorService_RetryLogic(t *testing.T) {
 			t.Fatalf("Failed to create test DB: %v", err)
 		}
 		defer db.Close()
+		seedRemediationPath(t, db, "/media/movies", true, false)
 
 		mockEventBus := testutil.NewMockEventBus()
 		mockArrClient := &testutil.MockArrClient{
@@ -445,6 +477,7 @@ func TestRemediatorService_Concurrency(t *testing.T) {
 			t.Fatalf("Failed to create test DB: %v", err)
 		}
 		defer db.Close()
+		seedRemediationPath(t, db, "/media/movies", true, false)
 
 		mockEventBus := testutil.NewMockEventBus()
 
@@ -1379,6 +1412,7 @@ func TestRemediatorService_Stop(t *testing.T) {
 			t.Fatalf("Failed to create test DB: %v", err)
 		}
 		defer db.Close()
+		seedRemediationPath(t, db, "/media/movies", true, false)
 
 		mockEventBus := testutil.NewMockEventBus()
 		remediationStarted := make(chan struct{})
@@ -1447,6 +1481,7 @@ func TestRemediatorService_Stop(t *testing.T) {
 			t.Fatalf("Failed to create test DB: %v", err)
 		}
 		defer db.Close()
+		seedRemediationPath(t, db, "/media/movies", true, false)
 
 		mockEventBus := testutil.NewMockEventBus()
 		blockingDone := make(chan struct{})
@@ -1801,20 +1836,30 @@ func TestRemediator_ResolveRemediationPolicy_RespectsCurrentPathConfig(t *testin
 
 	// Manual path: event claims auto_remediate=true (as recovery hardcodes), but the
 	// live config says false, so we must NOT auto-remediate.
-	if auto, _ := r.resolveRemediationPolicy(manualID, true, false); auto {
+	if auto, _ := r.resolveRemediationPolicy(manualID, true, false, "/media/manual/file.mkv"); auto {
 		t.Error("manual-mode path must not auto-remediate even when the event claims true")
 	}
 	// Dry-run path: live dry_run=true wins even though the (retry) event omits it.
-	if auto, dry := r.resolveRemediationPolicy(dryID, true, false); !auto || !dry {
+	if auto, dry := r.resolveRemediationPolicy(dryID, true, false, "/media/dry/file.mkv"); !auto || !dry {
 		t.Errorf("dry-run path: got auto=%v dry=%v, want auto=true dry=true", auto, dry)
 	}
-	// Unknown/deleted path: refuse to auto-remediate (safe default).
-	if auto, _ := r.resolveRemediationPolicy(999999, true, false); auto {
+	// Unknown/deleted path id: refuse to auto-remediate (safe default). The file
+	// path is outside every configured root, so the fallback cannot resolve it.
+	if auto, _ := r.resolveRemediationPolicy(999999, true, false, "/elsewhere/file.mkv"); auto {
 		t.Error("unknown path must not auto-remediate")
 	}
-	// Legacy event without a path id: fall back to what the event claimed.
-	if auto, dry := r.resolveRemediationPolicy(0, true, true); !auto || !dry {
-		t.Errorf("pathID=0 fallback: got auto=%v dry=%v, want true/true", auto, dry)
+	// Event without a path id (webhook corruptions pre-fix, recovery/monitor
+	// retries): the file path resolves the owning scan path, whose CURRENT
+	// config wins over the event's invented auto_remediate=true.
+	if auto, dry := r.resolveRemediationPolicy(0, true, false, "/media/dry/Show/ep.mkv"); !auto || !dry {
+		t.Errorf("pathID=0 + resolvable file: got auto=%v dry=%v, want auto=true dry=true (path config)", auto, dry)
+	}
+	if auto, _ := r.resolveRemediationPolicy(0, true, false, "/media/manual/Show/ep.mkv"); auto {
+		t.Error("pathID=0 + manual-mode path: must not auto-remediate despite event claiming true")
+	}
+	// pathID=0 and the file matches NO configured path: never invent consent.
+	if auto, _ := r.resolveRemediationPolicy(0, true, true, "/unmatched/file.mkv"); auto {
+		t.Error("pathID=0 + unmatched file: must refuse to auto-remediate")
 	}
 }
 
@@ -2095,7 +2140,7 @@ func TestRemediator_HandleStalledDownloadBeforeSearch(t *testing.T) {
 		}
 		r := NewRemediatorService(eb, arr, &testutil.MockPathMapper{}, db)
 
-		if !r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv") {
+		if !r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv", "/media/tv/x.mkv") {
 			t.Fatal("expected blocklisted=true")
 		}
 		if removed != 1 {
@@ -2121,7 +2166,7 @@ func TestRemediator_HandleStalledDownloadBeforeSearch(t *testing.T) {
 		arr := &testutil.MockArrClient{FindQueueItemsByMediaIDForPathFunc: stalledQueueFunc()}
 		r := NewRemediatorService(testutil.NewMockEventBus(), arr, &testutil.MockPathMapper{}, db)
 
-		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv") {
+		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv", "/media/tv/x.mkv") {
 			t.Fatal("expected false when the latest failure is not a download timeout")
 		}
 		if arr.CallCount("RemoveFromQueueByPath") != 0 {
@@ -2143,7 +2188,7 @@ func TestRemediator_HandleStalledDownloadBeforeSearch(t *testing.T) {
 		arr := &testutil.MockArrClient{}
 		r := NewRemediatorService(testutil.NewMockEventBus(), arr, &testutil.MockPathMapper{}, db)
 
-		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv") {
+		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv", "/media/tv/x.mkv") {
 			t.Fatal("expected false when nothing is queued")
 		}
 		if arr.CallCount("RemoveFromQueueByPath") != 0 {
@@ -2165,7 +2210,7 @@ func TestRemediator_HandleStalledDownloadBeforeSearch(t *testing.T) {
 		arr := &testutil.MockArrClient{FindQueueItemsByMediaIDForPathFunc: stalledQueueFunc()}
 		r := NewRemediatorService(eb, arr, &testutil.MockPathMapper{}, db)
 
-		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv") {
+		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv", "/media/tv/x.mkv") {
 			t.Fatal("expected false in dry-run")
 		}
 		if arr.CallCount("RemoveFromQueueByPath") != 0 || eb.EventCount(domain.ReleaseBlocklisted) != 0 {
@@ -2186,7 +2231,7 @@ func TestRemediator_HandleStalledDownloadBeforeSearch(t *testing.T) {
 		arr := &testutil.MockArrClient{FindQueueItemsByMediaIDForPathFunc: stalledQueueFunc()}
 		r := NewRemediatorService(testutil.NewMockEventBus(), arr, &testutil.MockPathMapper{}, db)
 
-		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv") {
+		if r.handleStalledDownloadBeforeSearch("agg1", pathID, 123, "/data/tv/x.mkv", "/media/tv/x.mkv") {
 			t.Fatal("expected false on non-auto path")
 		}
 		if arr.CallCount("RemoveFromQueueByPath") != 0 {
@@ -2335,6 +2380,7 @@ func TestRemediator_LoopBreaker_PausesAndDoesNotDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	seedRemediationPath(t, db, "/local/movies", true, false)
 
 	const fp = "/local/movies/loop.mkv"
 	for _, agg := range []string{"a1", "a2", "a3"} {
@@ -2359,4 +2405,55 @@ func TestRemediator_LoopBreaker_PausesAndDoesNotDelete(t *testing.T) {
 	if arr.CallCount("DeleteFile") != 0 {
 		t.Error("a paused remediation must not delete the file")
 	}
+}
+
+// TestRemediator_RecoveryRetryCannotInventConsent reproduces the audit's
+// CRITICAL finding 1: a RetryScheduled event shaped exactly like the recovery
+// sweep / stuck monitor emit it (auto_remediate hardcoded true, no dry_run
+// key, path_id absent) must NOT delete anything on a dry-run or manual path.
+// Consent comes from the path config, resolved by file path when the event
+// carries no path_id.
+func TestRemediator_RecoveryRetryCannotInventConsent(t *testing.T) {
+	run := func(t *testing.T, autoRemediate, dryRun bool, wantDelete bool) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		seedRemediationPath(t, db, "/media/tv", autoRemediate, dryRun)
+
+		eb := testutil.NewMockEventBus()
+		arr := &testutil.MockArrClient{
+			FindMediaByPathFunc: func(string) (int64, error) { return 7, nil },
+			DeleteFileFunc: func(int64, string) (map[string]interface{}, error) {
+				return map[string]interface{}{}, nil
+			},
+			TriggerSearchFunc: func(int64, string, []int64) error { return nil },
+		}
+		pm := &testutil.MockPathMapper{ToArrPathFunc: func(p string) (string, error) { return p, nil }}
+		r := NewRemediatorService(eb, arr, pm, db)
+
+		// Exactly the recovery/monitor payload shape: hardcoded consent, no
+		// path_id, no dry_run key.
+		r.handleRetry(domain.Event{
+			AggregateID:   "recovered-1",
+			AggregateType: "corruption",
+			EventType:     domain.RetryScheduled,
+			EventData: map[string]interface{}{
+				"file_path":       "/media/tv/Show/S01E01.mkv",
+				"auto_remediate":  true,
+				"recovery_action": "startup_recovery",
+			},
+		})
+		time.Sleep(200 * time.Millisecond)
+
+		got := arr.CallCount("DeleteFile") > 0
+		if got != wantDelete {
+			t.Errorf("auto=%v dry=%v: DeleteFile called=%v, want %v", autoRemediate, dryRun, got, wantDelete)
+		}
+	}
+
+	t.Run("dry-run path: no delete", func(t *testing.T) { run(t, true, true, false) })
+	t.Run("manual path: no delete", func(t *testing.T) { run(t, false, false, false) })
+	t.Run("auto path: delete proceeds", func(t *testing.T) { run(t, true, false, true) })
 }
