@@ -203,6 +203,7 @@ const (
 	ErrorTypeIOError       = "IOError"       // Generic I/O error (network, disk)
 	ErrorTypeTimeout       = "Timeout"       // Operation timed out
 	ErrorTypeInvalidConfig = "InvalidConfig" // Bad detection configuration
+	ErrorTypeToolFailure   = "ToolFailure"   // Detector tool failed to launch or crashed (fork/exec, signal death) - never evidence of file corruption
 )
 
 // HealthCheckError contains details about why a file is unhealthy
@@ -259,6 +260,7 @@ var errorCategories = map[string]ErrorCategory{
 	ErrorTypeIOError:       CategoryRecoverable,
 	ErrorTypeTimeout:       CategoryRecoverable,
 	ErrorTypeInvalidConfig: CategoryRecoverable,
+	ErrorTypeToolFailure:   CategoryRecoverable,
 }
 
 // category returns the registered category for this error type. Missing

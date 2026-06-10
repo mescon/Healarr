@@ -2163,3 +2163,107 @@ func TestDetectionMode_ScanValue(t *testing.T) {
 		t.Error("Scan(invalid) expected error, got nil")
 	}
 }
+
+// =============================================================================
+// Detector-failure classification table (audit findings 2+3)
+// =============================================================================
+//
+// The structural invariant: a detector TOOL failing (missing binary, signal
+// death, timeout, exec error) is never evidence of FILE corruption. Before
+// this table existed, three inputs slipped through to CorruptHeader (exec
+// failures on absolute custom tool paths, signal deaths, empty-stderr
+// mediainfo crashes) and the HandBrake branch declared everything
+// CorruptStream — each a mass-flag-then-mass-delete hazard under
+// auto_remediate.
+
+func TestClassifyDetectorError_ToolFailuresNeverCorruption(t *testing.T) {
+	hc := NewHealthChecker()
+
+	// The media file exists and is readable: the fallthrough accessibility
+	// re-check must NOT be what saves these cases.
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "healthy.mkv")
+	if err := os.WriteFile(path, []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name     string
+		errText  string
+		wantType string
+	}{
+		// Go exec failures (lowercase!) from absolute custom tool paths
+		{"missing absolute-path binary", "fork/exec /config/tools/ffprobe: no such file or directory", ErrorTypeToolFailure},
+		{"non-executable binary", "fork/exec /config/tools/ffprobe: permission denied", ErrorTypeToolFailure},
+		{"bare name not in PATH", `exec: "ffprobe": executable file not found in $PATH`, ErrorTypeToolFailure},
+		// Signal deaths (text embedded by the tool runner for hwaccel retry)
+		{"SIGSEGV decoder crash", "ffmpeg failed (signal: segmentation fault): ", ErrorTypeToolFailure},
+		{"OOM-killed tool", "ffmpeg failed (signal: killed): ", ErrorTypeToolFailure},
+		{"mediainfo crash empty stderr", "mediainfo failed (signal: segmentation fault): ", ErrorTypeToolFailure},
+		{"handbrake exec failure", "HandBrake failed (fork/exec /usr/bin/HandBrakeCLI: no such file or directory): ", ErrorTypeToolFailure},
+		// Timeouts (any casing)
+		{"ffprobe timeout", "ffprobe timed out after 30s", ErrorTypeTimeout},
+		{"handbrake timeout", "HandBrake scan timed out after 5m0s", ErrorTypeTimeout},
+		// Path/permission/I/O in tool-stderr sentence case AND syscall lowercase
+		{"sentence-case missing file", "No such file or directory", ErrorTypePathNotFound},
+		{"lowercase missing file", "stat /media/x.mkv: no such file or directory", ErrorTypePathNotFound},
+		{"sentence-case permission", "Permission denied", ErrorTypeAccessDenied},
+		{"lowercase permission", "open /media/x.mkv: permission denied", ErrorTypeAccessDenied},
+		{"io error", "Input/output error", ErrorTypeIOError},
+		{"lowercase io error", "read /media/x.mkv: input/output error", ErrorTypeIOError},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hc.classifyDetectorError(errors.New(tc.errText), path)
+			if got.Type != tc.wantType {
+				t.Errorf("classifyDetectorError(%q) = %s, want %s", tc.errText, got.Type, tc.wantType)
+			}
+			if got.IsTrueCorruption() {
+				t.Errorf("classifyDetectorError(%q) classified as TRUE CORRUPTION (%s) — a tool/infra failure must never route to deletion", tc.errText, got.Type)
+			}
+		})
+	}
+
+	// The fallthrough still works: an unrecognized detector error on an
+	// accessible file IS content corruption (this is what catches genuinely
+	// corrupt files whose stderr we don't pattern-match).
+	t.Run("unrecognized error on accessible file stays corruption", func(t *testing.T) {
+		got := hc.classifyDetectorError(errors.New("ffmpeg failed (exit status 183): EBML header parsing failed"), path)
+		if got.Type != ErrorTypeCorruptHeader {
+			t.Errorf("got %s, want CorruptHeader for unrecognized content error", got.Type)
+		}
+	})
+}
+
+// CheckWithConfig's HandBrake branch must route errors through the shared
+// classifier: a timeout or exec failure is recoverable, never CorruptStream.
+func TestCheckWithConfig_HandBrakeFailuresAreRecoverable(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "file.mkv")
+	if err := os.WriteFile(path, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Point the HandBrake binary at something that cannot exist so the run
+	// fails with an exec error rather than a real scan.
+	t.Setenv("HEALARR_HANDBRAKE_PATH", filepath.Join(tmp, "no-such-handbrake"))
+
+	hc := NewHealthChecker()
+	healthy, hcErr := hc.CheckWithConfig(path, DetectionConfig{
+		Method: DetectionHandBrake,
+		Mode:   ModeQuick,
+	})
+	if healthy {
+		t.Fatal("expected unhealthy result for failed handbrake run")
+	}
+	if hcErr == nil {
+		t.Fatal("expected a HealthCheckError")
+	}
+	if hcErr.IsTrueCorruption() {
+		t.Errorf("HandBrake exec failure classified as corruption (%s); must be recoverable", hcErr.Type)
+	}
+	if !hcErr.IsRecoverable() {
+		t.Errorf("HandBrake exec failure not recoverable (%s)", hcErr.Type)
+	}
+}

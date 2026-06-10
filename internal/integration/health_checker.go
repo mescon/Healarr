@@ -630,13 +630,22 @@ func (hc *CmdHealthChecker) CheckWithConfig(path string, config DetectionConfig)
 	case DetectionHandBrake:
 		err := hc.runHandBrakeWithArgs(path, config.Args, mode, config.Overrides)
 		if err != nil {
-			// HandBrake errors are typically stream-level corruption
-			errStr := err.Error()
-			if strings.Contains(errStr, "No such file or directory") ||
-				strings.Contains(errStr, "does not exist") {
-				return false, &HealthCheckError{Type: ErrorTypePathNotFound, Message: errStr}
+			// Route through the shared classifier like the other detectors:
+			// the old HandBrake-only branch matched two path patterns and
+			// then declared EVERYTHING else CorruptStream, so a scan
+			// timeout, a missing HandBrakeCLI binary, or a mount failure
+			// mass-flagged whole libraries as corrupt under the Paranoid
+			// preset. The classifier maps tool/infra failures to
+			// recoverable types and re-checks accessibility before any
+			// corruption verdict.
+			hcErr := hc.classifyDetectorError(err, path)
+			if hcErr.Type == ErrorTypeCorruptHeader {
+				// Preserve HandBrake's corruption flavor: when the
+				// classifier's fallthrough concludes genuine content
+				// corruption, HandBrake failures are stream-level.
+				hcErr.Type = ErrorTypeCorruptStream
 			}
-			return false, &HealthCheckError{Type: ErrorTypeCorruptStream, Message: errStr}
+			return false, hcErr
 		}
 	default:
 		return false, &HealthCheckError{Type: ErrorTypeInvalidConfig, Message: "unknown detection method"}
@@ -782,11 +791,31 @@ func (hc *CmdHealthChecker) classifyOSError(err error, path string, isParent boo
 // infra error is classified recoverable rather than as a corrupt file.
 func (hc *CmdHealthChecker) classifyDetectorError(err error, path string) *HealthCheckError {
 	errStr := err.Error()
+	// Match case-insensitively: tool stderr uses sentence case ("No such
+	// file or directory") while Go's os/exec errors are lowercase
+	// ("fork/exec /x/ffprobe: no such file or directory"). The old
+	// case-sensitive patterns let exec failures fall through to the
+	// corruption fallthrough below, so a missing custom-path binary
+	// mass-flagged every scanned file as CorruptHeader.
+	errLower := strings.ToLower(errStr)
+
+	// Tool launch failures and tool crashes come FIRST: "fork/exec ...: no
+	// such file or directory" must not be mistaken for the media file being
+	// missing, and a detector dying to a signal (SIGSEGV decoder crash,
+	// OOM kill) is a statement about the tool, never about the file.
+	if strings.Contains(errLower, "fork/exec") ||
+		strings.Contains(errLower, "executable file not found") ||
+		strings.Contains(errLower, "signal:") {
+		return &HealthCheckError{
+			Type:    ErrorTypeToolFailure,
+			Message: errStr,
+		}
+	}
 
 	// Check for path-related errors (file disappeared, wrong path, symlink issues)
-	if strings.Contains(errStr, "No such file or directory") ||
-		strings.Contains(errStr, "does not exist") ||
-		strings.Contains(errStr, "not found") {
+	if strings.Contains(errLower, "no such file or directory") ||
+		strings.Contains(errLower, "does not exist") ||
+		strings.Contains(errLower, "not found") {
 		return &HealthCheckError{
 			Type:    ErrorTypePathNotFound,
 			Message: errStr,
@@ -794,8 +823,8 @@ func (hc *CmdHealthChecker) classifyDetectorError(err error, path string) *Healt
 	}
 
 	// Check for permission errors
-	if strings.Contains(errStr, "Permission denied") ||
-		strings.Contains(errStr, "access denied") {
+	if strings.Contains(errLower, "permission denied") ||
+		strings.Contains(errLower, "access denied") {
 		return &HealthCheckError{
 			Type:    ErrorTypeAccessDenied,
 			Message: errStr,
@@ -803,10 +832,10 @@ func (hc *CmdHealthChecker) classifyDetectorError(err error, path string) *Healt
 	}
 
 	// Check for I/O errors (network/mount issues that manifest during read)
-	if strings.Contains(errStr, "Input/output error") ||
-		strings.Contains(errStr, "Connection refused") ||
-		strings.Contains(errStr, "Network is unreachable") ||
-		strings.Contains(errStr, "transport endpoint") {
+	if strings.Contains(errLower, "input/output error") ||
+		strings.Contains(errLower, "connection refused") ||
+		strings.Contains(errLower, "network is unreachable") ||
+		strings.Contains(errLower, "transport endpoint") {
 		return &HealthCheckError{
 			Type:    ErrorTypeIOError,
 			Message: errStr,
@@ -814,7 +843,7 @@ func (hc *CmdHealthChecker) classifyDetectorError(err error, path string) *Healt
 	}
 
 	// Check for timeout
-	if strings.Contains(errStr, "timed out") {
+	if strings.Contains(errLower, "timed out") {
 		return &HealthCheckError{
 			Type:    ErrorTypeTimeout,
 			Message: errStr,
