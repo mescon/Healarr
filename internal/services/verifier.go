@@ -78,6 +78,10 @@ type VerifierService struct {
 	// the production values in NewVerifierService.
 	historyRetryInterval time.Duration
 	retryBackoffBase     time.Duration
+	// infraRetryDelay spaces re-attempts when verification hits a
+	// RECOVERABLE detector error (mount glitch, timeout): the replacement
+	// is not failed, the check is just retried.
+	infraRetryDelay time.Duration
 
 	// Graceful shutdown support
 	shutdownCh chan struct{}
@@ -121,6 +125,7 @@ func NewVerifierService(eb eventbus.Publisher, detector integration.HealthChecke
 	}
 	v.historyRetryInterval = defaultHistoryRetryInterval
 	v.retryBackoffBase = defaultRetryBackoffBase
+	v.infraRetryDelay = 30 * time.Second
 	if testing.Testing() {
 		// Shrink retry waits to ~0 under test binaries: the retry COUNT logic
 		// is unchanged, but the history/file-path retry helpers no longer pay
@@ -129,6 +134,7 @@ func NewVerifierService(eb eventbus.Publisher, detector integration.HealthChecke
 		// crypto.go / integration.interfaces.go.
 		v.historyRetryInterval = time.Millisecond
 		v.retryBackoffBase = time.Millisecond
+		v.infraRetryDelay = time.Millisecond
 	}
 	if db != nil {
 		v.scanPaths = repository.NewScanPathRepository(db)
@@ -895,7 +901,7 @@ func (v *VerifierService) checkAndEmitFilesFromArrAPI(corruptionID, filePath str
 		return false
 	}
 
-	allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, filePath)
+	allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, v.arrPathFor(filePath))
 	if err != nil || len(allPaths) == 0 {
 		return false
 	}
@@ -1019,7 +1025,7 @@ func (v *VerifierService) getFilePathsWithRetry(mediaID int64, metadata map[stri
 			return nil, errors.New(errMsgShutdownInProgress)
 		}
 
-		allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, referencePath)
+		allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, v.arrPathFor(referencePath))
 		if err == nil {
 			return allPaths, nil
 		}
@@ -1154,7 +1160,7 @@ func (v *VerifierService) logFilesDetected(corruptionID string, attempt int, fou
 // findFilesForVerification looks for files via *arr API or direct path check.
 func (v *VerifierService) findFilesForVerification(mediaID int64, metadata map[string]interface{}, referencePath string, useSmartVerification bool) []string {
 	if useSmartVerification && v.arrClient != nil {
-		allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, referencePath)
+		allPaths, err := v.arrClient.GetAllFilePaths(mediaID, metadata, v.arrPathFor(referencePath))
 		if err == nil && len(allPaths) > 0 {
 			foundPaths := v.convertAndVerifyPaths(allPaths)
 			// Only return if ALL files exist
@@ -1265,8 +1271,28 @@ func (v *VerifierService) emitFilesDetected(corruptionID string, filePaths []str
 	v.verifyHealthMultiple(corruptionID, filePaths)
 }
 
-// verifyFilesHealth checks all files and returns failed paths and last error.
-func (v *VerifierService) verifyFilesHealth(filePaths []string) (failedPaths []string, lastError string) {
+// arrPathFor maps a local path to the *arr's own path form for arr-side API
+// lookups (queue checks, GetAllFilePaths): the instance-ownership matcher
+// compares against the instance's ARR root folder, so feeding it a local
+// path silently fails on every mapped or Windows setup. Falls back to the
+// raw path when no mapping exists (same-path setups).
+func (v *VerifierService) arrPathFor(localPath string) string {
+	if v.pathMapper == nil {
+		return localPath
+	}
+	if mapped, err := v.pathMapper.ToArrPath(localPath); err == nil && mapped != "" {
+		return mapped
+	}
+	return localPath
+}
+
+// verifyFilesHealth checks all files and returns failed paths, the last
+// error, and whether every failure was a RECOVERABLE infra error (mount
+// glitch, timeout, tool failure) rather than file corruption. Recoverable
+// failures must never fail a verification: that verdict re-deletes the
+// replacement and can blocklist a perfectly good release.
+func (v *VerifierService) verifyFilesHealth(filePaths []string) (failedPaths []string, lastError string, recoverableOnly bool) {
+	recoverableOnly = true
 	for _, filePath := range filePaths {
 		healthy, err := v.detector.Check(filePath, "thorough")
 		if healthy {
@@ -1275,12 +1301,16 @@ func (v *VerifierService) verifyFilesHealth(filePaths []string) (failedPaths []s
 		failedPaths = append(failedPaths, filePath)
 		if err != nil {
 			lastError = err.Message
+			if !err.IsRecoverable() {
+				recoverableOnly = false
+			}
 		} else {
 			lastError = "unknown error"
+			recoverableOnly = false
 		}
 		logger.Infof("Verification failed for %s: %s", filePath, lastError)
 	}
-	return failedPaths, lastError
+	return failedPaths, lastError, recoverableOnly
 }
 
 // buildSuccessEventData builds event data for a successful verification.
@@ -1310,7 +1340,32 @@ func (v *VerifierService) verifyHealthMultiple(corruptionID string, filePaths []
 		logger.Errorf("Failed to publish VerificationStarted event: %v", err)
 	}
 
-	failedPaths, lastError := v.verifyFilesHealth(filePaths)
+	// Up to maxInfraVerifyRetries re-attempts when ALL failures are
+	// recoverable infra errors (NAS hiccup exactly when the thorough check
+	// runs). If the infra problem persists, return WITHOUT a terminal
+	// event: the aggregate stays in its in-progress state and the recovery
+	// sweep re-attempts verification later. Failing it instead would
+	// re-delete a healthy replacement and could blocklist a good release.
+	const maxInfraVerifyRetries = 3
+	var failedPaths []string
+	var lastError string
+	var recoverableOnly bool
+	for attempt := 0; ; attempt++ {
+		failedPaths, lastError, recoverableOnly = v.verifyFilesHealth(filePaths)
+		if len(failedPaths) == 0 || !recoverableOnly {
+			break
+		}
+		if attempt >= maxInfraVerifyRetries {
+			logger.Warnf("Verification for %s deferred: %d file(s) unreachable due to recoverable infra errors (%s); leaving for recovery to re-attempt", corruptionID, len(failedPaths), lastError)
+			return
+		}
+		logger.Infof("Verification for %s hit a recoverable infra error (%s); retrying in %s (attempt %d/%d)", corruptionID, lastError, v.infraRetryDelay, attempt+1, maxInfraVerifyRetries)
+		select {
+		case <-v.shutdownCh:
+			return
+		case <-time.After(v.infraRetryDelay):
+		}
+	}
 	v.clearVerifyMeta(corruptionID)
 
 	if len(failedPaths) == 0 {

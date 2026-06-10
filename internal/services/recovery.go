@@ -523,7 +523,7 @@ func (r *RecoveryService) isInArrQueue(item staleItem) (bool, error) {
 		return false, nil
 	}
 
-	queueItems, err := r.arrClient.GetQueueForPath(item.FilePath)
+	queueItems, err := r.arrClient.GetQueueForPath(r.arrPathFor(item.FilePath))
 	if err != nil {
 		return false, err
 	}
@@ -546,7 +546,7 @@ func (r *RecoveryService) checkArrHasFile(item staleItem) (hasFile bool, filePat
 
 	// Use GetAllFilePaths to check if arr has file(s) for this media
 	// Pass nil metadata since we're just checking existence
-	allPaths, err := r.arrClient.GetAllFilePaths(item.MediaID, nil, item.FilePath)
+	allPaths, err := r.arrClient.GetAllFilePaths(item.MediaID, nil, r.arrPathFor(item.FilePath))
 	if err != nil {
 		return false, "", err
 	}
@@ -557,6 +557,20 @@ func (r *RecoveryService) checkArrHasFile(item staleItem) (hasFile bool, filePat
 	}
 
 	return false, "", nil
+}
+
+// arrPathFor maps a local path to the *arr's path form for arr-side API
+// lookups; falls back to the raw path for same-path setups. Queue and
+// file-path checks match against the instance's ARR root folder, so a local
+// path silently never matches on mapped or Windows setups.
+func (r *RecoveryService) arrPathFor(localPath string) string {
+	if r.pathMapper == nil {
+		return localPath
+	}
+	if mapped, err := r.pathMapper.ToArrPath(localPath); err == nil && mapped != "" {
+		return mapped
+	}
+	return localPath
 }
 
 // verifyAndComplete verifies the file health and emits success or exhausted.
@@ -572,6 +586,13 @@ func (r *RecoveryService) verifyAndComplete(item staleItem, filePath string) str
 		healthy, healthErr := r.detector.Check(localPath, "thorough")
 		if healthy {
 			return r.emitVerificationSuccess(item, localPath)
+		}
+		// A RECOVERABLE failure (mount glitch, timeout, tool failure) says
+		// nothing about the file: defer, do not conclude. The item stays in
+		// its current state and the next recovery sweep re-attempts.
+		if healthErr != nil && healthErr.IsRecoverable() {
+			logger.Infof("Recovery: health check for %s hit a recoverable infra error (%s); deferring verification", localPath, healthErr.Message)
+			return ""
 		}
 		// File exists but is corrupt - emit SearchExhausted (user needs to retry)
 		errMsg := "unknown error"

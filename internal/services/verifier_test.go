@@ -3153,3 +3153,97 @@ func TestVerifierService_StartVerificationWithSemaphore(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// Recoverable-error triage + arr-path mapping (audit findings 6+11)
+// =============================================================================
+
+// A RECOVERABLE detector error during verification (mount glitch, timeout,
+// tool failure) must never publish VerificationFailed: that verdict
+// re-deletes the replacement and can blocklist a good release. The
+// verification is deferred (no terminal event) for recovery to re-attempt.
+func TestVerifier_RecoverableErrorDefersInsteadOfFailing(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	eb := testutil.NewMockEventBus()
+	mockHC := &testutil.MockHealthChecker{
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
+			return false, &integration.HealthCheckError{
+				Type:    integration.ErrorTypeIOError,
+				Message: "read /media/tv/x.mkv: input/output error",
+			}
+		},
+	}
+	v := NewVerifierService(eb, mockHC, &testutil.MockPathMapper{}, &testutil.MockArrClient{}, db)
+
+	v.verifyHealthMultiple("defer-1", []string{"/media/tv/x.mkv"})
+
+	if n := eb.EventCount(domain.VerificationFailed); n != 0 {
+		t.Errorf("VerificationFailed published %d times for a recoverable error, want 0 (defer)", n)
+	}
+	if n := eb.EventCount(domain.VerificationSuccess); n != 0 {
+		t.Errorf("VerificationSuccess published %d times, want 0", n)
+	}
+}
+
+// True corruption during verification must still fail it (the corrupt
+// replacement is handled by the retry path: delete + blocklist + re-search).
+func TestVerifier_TrueCorruptionStillFailsVerification(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	eb := testutil.NewMockEventBus()
+	mockHC := &testutil.MockHealthChecker{
+		CheckFunc: func(path, mode string) (bool, *integration.HealthCheckError) {
+			return false, &integration.HealthCheckError{
+				Type:    integration.ErrorTypeCorruptHeader,
+				Message: "EBML header parsing failed",
+			}
+		},
+	}
+	v := NewVerifierService(eb, mockHC, &testutil.MockPathMapper{}, &testutil.MockArrClient{}, db)
+
+	v.verifyHealthMultiple("corrupt-1", []string{"/media/tv/x.mkv"})
+
+	if n := eb.EventCount(domain.VerificationFailed); n != 1 {
+		t.Errorf("VerificationFailed published %d times for true corruption, want 1", n)
+	}
+}
+
+// arr-side lookups must receive the ARR path, not the local path: the
+// instance-ownership matcher compares against the instance's arr root
+// folder, so a local path silently never matches on mapped/Windows setups.
+func TestVerifier_ArrLookupsUseMappedPath(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var gotReference string
+	arr := &testutil.MockArrClient{
+		GetAllFilePathsFunc: func(mediaID int64, metadata map[string]interface{}, referencePath string) ([]string, error) {
+			gotReference = referencePath
+			return []string{`D:\Media\TV\Show\S01E01.mkv`}, nil
+		},
+	}
+	pm := &testutil.MockPathMapper{
+		ToArrPathFunc: func(localPath string) (string, error) {
+			return `D:\Media\TV\Show\S01E01.mkv`, nil
+		},
+	}
+	v := NewVerifierService(testutil.NewMockEventBus(), &testutil.MockHealthChecker{}, pm, arr, db)
+
+	_, _ = v.getFilePathsWithRetry(7, nil, "/media/tv/Show/S01E01.mkv", 1)
+
+	if gotReference != `D:\Media\TV\Show\S01E01.mkv` {
+		t.Errorf("GetAllFilePaths received %q, want the mapped arr path", gotReference)
+	}
+}
