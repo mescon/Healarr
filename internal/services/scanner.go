@@ -251,6 +251,16 @@ type ScanProgress struct {
 	isPaused        bool               `json:"-"` // Track pause state
 	corruptionCount int                `json:"-"` // Track corruptions found in this scan for throttling
 	isThrottled     bool               `json:"-"` // Whether this scan is being throttled
+
+	// usesWatermark + resumeIndex carry the parallel scan's contiguous-done
+	// watermark (maintained by the watermark goroutine in scanFilesParallel,
+	// under mu). When usesWatermark is true, shutdown/pause persistence MUST
+	// use resumeIndex: workers complete out of order, so both FilesDone (a
+	// count) and the dispatch frontier OVERSHOOT the highest index for which
+	// everything before it is done — persisting either would make a resumed
+	// scan silently skip the unfinished gap.
+	usesWatermark bool `json:"-"`
+	resumeIndex   int  `json:"-"`
 }
 
 // ScanProgressView is a race-free value-type snapshot of a ScanProgress.
@@ -322,6 +332,15 @@ type scanFilesConfig struct {
 	AutoRemediate   bool
 	DryRun          bool
 	ScanDBID        int64
+
+	// persistProgressInline gates markFileProcessed's every-10-files
+	// UpdateProgress write. True only on the serial path, where files
+	// complete in order and the worker's own index IS the resume point. In
+	// parallel mode the watermark goroutine owns all progress persistence:
+	// an out-of-order worker writing its own index would overshoot the
+	// contiguous watermark and make resume skip unfinished files. Set by
+	// scanFiles when it picks the execution mode.
+	persistProgressInline bool
 }
 
 // Scanner defines the interface for scan operations.
@@ -577,12 +596,21 @@ func (s *ScannerService) Shutdown() {
 			filesDone := scan.FilesDone
 			totalFiles := scan.TotalFiles
 			scanDBID := scan.ScanDBID
+			resumeAt := filesDone
+			if scan.usesWatermark {
+				// Parallel scan: FilesDone is a completion COUNT, not an
+				// index, and workers finish out of order — persisting it
+				// would overshoot the contiguous watermark and make resume
+				// skip unfinished files. The watermark goroutine keeps
+				// resumeIndex at the highest safe replay point.
+				resumeAt = scan.resumeIndex
+			}
 			scan.mu.Unlock()
 
-			logger.Infof("Scanner: saving state for scan %s (file %d/%d)", scanID, filesDone, totalFiles)
+			logger.Infof("Scanner: saving state for scan %s (resume at %d, %d/%d files done)", scanID, resumeAt, filesDone, totalFiles)
 			// Mark as interrupted in database - state is already saved during scanning
 			ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-			err := s.scanRepo().MarkInterrupted(ctx, scanDBID, filesDone)
+			err := s.scanRepo().MarkInterrupted(ctx, scanDBID, resumeAt)
 			cancel()
 			if err != nil {
 				logger.Errorf("Failed to save scan state for %s: %v", scanID, err)
@@ -705,8 +733,20 @@ func (s *ScannerService) resumeScan(cfg resumeScanConfig) {
 	}
 
 	defer func() {
+		// Mirror finalizeScan: an INTERRUPTED scan must NOT be finalized.
+		// Finalize unconditionally stamps completed_at, and ListInterrupted
+		// requires completed_at IS NULL — so finalizing here made any scan
+		// that was resumed once and interrupted again permanently
+		// unresumable. Shutdown's MarkInterrupted already persisted the
+		// resume state; leave the row alone.
+		if progress.Status == ScanStatusInterrupted {
+			s.mu.Lock()
+			delete(s.activeScans, scanID)
+			s.mu.Unlock()
+			return
+		}
 		finalStatus := ScanStatusCompleted
-		if progress.Status == ScanStatusCancelled || progress.Status == ScanStatusInterrupted {
+		if progress.Status == ScanStatusCancelled || progress.Status == ScanStatusAborted {
 			finalStatus = progress.Status
 		}
 		deferCtx, deferCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
@@ -1103,8 +1143,14 @@ func (s *ScannerService) handlePathInaccessible(scanID, localPath string, access
 func (s *ScannerService) finalizeScan(scanID string, progress *ScanProgress, scanDBID int64) {
 	if progress.Status != ScanStatusInterrupted {
 		finalStatus := ScanStatusCompleted
-		if progress.Status == ScanStatusCancelled {
+		switch progress.Status {
+		case ScanStatusCancelled:
 			finalStatus = ScanStatusCancelled
+		case ScanStatusAborted:
+			// A mount-failure abort must stay ABORTED: finalizing it as
+			// completed made a failed scan masquerade as a successful one in
+			// "Last Scan" and the dashboard.
+			finalStatus = ScanStatusAborted
 		}
 		if scanDBID > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
@@ -1340,15 +1386,25 @@ const (
 // checkScanCancellation checks if the scan should be cancelled due to context cancellation or shutdown.
 // Returns scanReturn if cancelled, scanContinue otherwise.
 func (s *ScannerService) checkScanCancellation(ctx context.Context, progress *ScanProgress, localPath string, fileIndex, totalFiles int) scanLoopAction {
+	// Check shutdown FIRST and on its own: Shutdown closes shutdownCh, marks
+	// the scan interrupted in the DB, then cancels the ctx — so by the time
+	// a goroutine sees ctx.Done(), shutdownCh is also closed. A combined
+	// select picks pseudo-randomly between two ready channels, which made
+	// roughly half of all graceful shutdowns finalize the scan as
+	// "cancelled" (terminal, never resumed) instead of "interrupted",
+	// silently discarding hours of progress per docker restart.
+	select {
+	case <-s.shutdownCh:
+		logger.Infof("Scan interrupted for graceful shutdown: %s (at file %d/%d)", localPath, fileIndex, totalFiles)
+		progress.Status = ScanStatusInterrupted
+		s.emitProgress(progress)
+		return scanReturn
+	default:
+	}
 	select {
 	case <-ctx.Done():
 		logger.Infof("Scan cancelled: %s", localPath)
 		progress.Status = ScanStatusCancelled
-		s.emitProgress(progress)
-		return scanReturn
-	case <-s.shutdownCh:
-		logger.Infof("Scan interrupted for graceful shutdown: %s (at file %d/%d)", localPath, fileIndex, totalFiles)
-		progress.Status = ScanStatusInterrupted
 		s.emitProgress(progress)
 		return scanReturn
 	default:
@@ -1370,10 +1426,19 @@ func (s *ScannerService) handleScanPause(ctx context.Context, progress *ScanProg
 
 	logger.Infof("Scan paused: %s (at file %d/%d)", localPath, fileIndex+1, progress.TotalFiles)
 
-	// Save current position
+	// Save current position. For parallel scans, fileIndex is the DISPATCH
+	// frontier (files handed to workers), which overshoots the contiguous
+	// watermark; persist the watermark so a resume after pause+restart
+	// cannot skip files still in flight at pause time.
+	resumeAt := fileIndex
+	progress.mu.Lock()
+	if progress.usesWatermark {
+		resumeAt = progress.resumeIndex
+	}
+	progress.mu.Unlock()
 	if scanDBID > 0 {
 		pauseCtx, pauseCancel := context.WithTimeout(ctx, scannerQueryTimeout)
-		if err := s.scanRepo().MarkPaused(pauseCtx, scanDBID, fileIndex); err != nil {
+		if err := s.scanRepo().MarkPaused(pauseCtx, scanDBID, resumeAt); err != nil {
 			logger.Warnf("Failed to update scan pause state for scan %d: %v", scanDBID, err)
 		}
 		pauseCancel()
@@ -1656,10 +1721,16 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 	// (default for &ScannerService{}-direct test fixtures) keeps the original
 	// single-file-at-a-time path untouched.
 	if s.scanWorkers > 1 {
+		// Parallel mode: the watermark goroutine owns ALL progress
+		// persistence; workers must not write their own out-of-order index.
+		cfg.persistProgressInline = false
 		s.scanFilesParallel(ctx, progress, cfg, activeCorruptions)
 		return
 	}
 
+	// Serial mode: files complete in order, so the inline every-10-files
+	// checkpoint in markFileProcessed is the correct resume point.
+	cfg.persistProgressInline = true
 	for i := cfg.StartIndex; i < len(cfg.Files); i++ {
 		action := s.processFileInScan(ctx, progress, cfg, i, activeCorruptions)
 		if action == scanReturn {
@@ -1727,12 +1798,28 @@ func (s *ScannerService) scanFilesParallel(
 	sem := make(chan struct{}, s.scanWorkers)
 	var wg sync.WaitGroup
 
+	// Mark this scan watermark-managed: shutdown/pause persistence must use
+	// progress.resumeIndex (the contiguous-done watermark) instead of
+	// FilesDone or the dispatch frontier, both of which overshoot under
+	// out-of-order completion.
+	progress.mu.Lock()
+	progress.usesWatermark = true
+	progress.resumeIndex = cfg.StartIndex
+	progress.mu.Unlock()
+
 	// Watermark persister: walks `done` from cfg.StartIndex forward over
 	// consecutive trues, advances an in-memory watermark, and flushes it to
 	// scans.current_file_index every ~watermarkPersistInterval. Owning the
 	// DB write here means workers can finish out of order without
 	// corrupting the resume floor.
+	//
+	// workersDone closes after wg.Wait() so the goroutine always terminates
+	// even when the scan stops early WITHOUT a ctx cancel (worker panic,
+	// mount-lost abort): before this exit path existed, scanFilesParallel
+	// blocked forever on <-watermarkDone, the deferred ctx cancel in
+	// ScanPath never ran, and the path stayed "being scanned" until restart.
 	watermarkDone := make(chan struct{})
+	workersDone := make(chan struct{})
 	safego.Run("scan-watermark", func() {
 		defer close(watermarkDone)
 		watermark := cfg.StartIndex
@@ -1744,6 +1831,9 @@ func (s *ScannerService) scanFilesParallel(
 			for watermark < len(files) && done[watermark].Load() {
 				watermark++
 			}
+			progress.mu.Lock()
+			progress.resumeIndex = watermark
+			progress.mu.Unlock()
 		}
 		persistIfAdvanced := func() {
 			if cfg.ScanDBID <= 0 || watermark == lastPersisted {
@@ -1775,6 +1865,13 @@ func (s *ScannerService) scanFilesParallel(
 			case <-ticker.C:
 				persistIfAdvanced()
 			case <-ctx.Done():
+				persistIfAdvanced()
+				return
+			case <-workersDone:
+				// All workers finished but the watermark did not reach the
+				// end (early stop). Persist the final contiguous position
+				// and exit so scanFilesParallel can return.
+				advance()
 				persistIfAdvanced()
 				return
 			}
@@ -1814,6 +1911,21 @@ func (s *ScannerService) scanFilesParallel(
 		safego.Run("scan-detect-worker", func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// A panic inside detection/handling must not wedge the scan:
+			// without this recover, done[idx] stayed false forever, the
+			// watermark never reached len(files), and the whole scan
+			// deadlocked on <-watermarkDone with the path locked until
+			// restart. Recover locally, count the file as processed
+			// (skipped), and let the scan continue. (safego's top-level
+			// recover never fires for this closure anymore, which is fine —
+			// it exists as the generic backstop.)
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Errorf("Scan worker panicked on %s (file skipped): %v", files[idx], r)
+					s.markFileProcessedNoSync(progress)
+					done[idx].Store(true)
+				}
+			}()
 
 			// Late-bail: another worker may have flipped `stopped` between
 			// our dispatch and our start. Don't mark done — resume must
@@ -1861,6 +1973,7 @@ func (s *ScannerService) scanFilesParallel(
 	}
 
 	wg.Wait()
+	close(workersDone)
 	<-watermarkDone
 
 	if !stopped.Load() {
@@ -1940,7 +2053,7 @@ func (s *ScannerService) processFileInScan(
 	if s.filesInProgress[filePath] {
 		s.filesMu.Unlock()
 		logger.Debugf("Skipping file already being scanned: %s", filePath)
-		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
+		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID, cfg.persistProgressInline)
 		return scanContinue
 	}
 	s.filesInProgress[filePath] = true
@@ -2090,7 +2203,7 @@ func (s *ScannerService) handleDetection(
 		return s.handleHealthCheckResult(ctx, progress, cfg, fileIndex, sfc, result.healthErr)
 	}
 
-	s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
+	s.markFileProcessed(progress, fileIndex, cfg.ScanDBID, cfg.persistProgressInline)
 	return scanContinue
 }
 
@@ -2108,7 +2221,7 @@ func (s *ScannerService) handleHealthCheckResult(
 		if s.handleRecoverableError(progress, sfc, healthErr) == scanReturn {
 			return scanReturn
 		}
-		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
+		s.markFileProcessed(progress, fileIndex, cfg.ScanDBID, cfg.persistProgressInline)
 		return scanContinue
 	}
 
@@ -2116,12 +2229,15 @@ func (s *ScannerService) handleHealthCheckResult(
 	if s.handleTrueCorruption(ctx, progress, sfc, healthErr) == scanReturn {
 		return scanReturn
 	}
-	s.markFileProcessed(progress, fileIndex, cfg.ScanDBID)
+	s.markFileProcessed(progress, fileIndex, cfg.ScanDBID, cfg.persistProgressInline)
 	return scanContinue
 }
 
-// markFileProcessed increments the file counter and saves progress periodically
-func (s *ScannerService) markFileProcessed(progress *ScanProgress, fileIndex int, scanDBID int64) {
+// markFileProcessed increments the file counter and, on the serial path
+// (persistInline), saves progress periodically. Parallel-mode callers pass
+// persistInline=false: their fileIndex is out of order and the watermark
+// goroutine owns progress persistence.
+func (s *ScannerService) markFileProcessed(progress *ScanProgress, fileIndex int, scanDBID int64, persistInline bool) {
 	// Lock to safely update mutable fields (fixes data race with GetActiveScans/Shutdown)
 	progress.mu.Lock()
 	progress.FilesDone++
@@ -2129,7 +2245,7 @@ func (s *ScannerService) markFileProcessed(progress *ScanProgress, fileIndex int
 	progress.mu.Unlock()
 
 	// Save state to database periodically (every 10 files) to avoid excessive I/O
-	if fileIndex%10 == 0 {
+	if persistInline && fileIndex%10 == 0 {
 		if scanDBID > 0 {
 			progressCtx, progressCancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
 			if err := s.scanRepo().UpdateProgress(progressCtx, scanDBID, fileIndex, filesDone); err != nil {

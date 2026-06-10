@@ -301,9 +301,16 @@ func (r *ScanRepository) Finalize(ctx context.Context, scanID int64, status stri
 
 // MarkInterrupted records a shutdown-time interruption, saving the file
 // index reached so the scan can resume there.
+//
+// The status guard keeps it from resurrecting terminal scans: Shutdown calls
+// this for every entry still in activeScans, and a scan that just aborted
+// (dead mount) or was cancelled mid-shutdown must not be flipped back to
+// 'interrupted' — resume would then replay it against a possibly still-dead
+// mount on the next startup.
 func (r *ScanRepository) MarkInterrupted(ctx context.Context, scanID int64, currentFileIndex int) error {
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE scans SET status = 'interrupted', current_file_index = ? WHERE id = ?
+		UPDATE scans SET status = 'interrupted', current_file_index = ?
+		WHERE id = ? AND status NOT IN ('cancelled', 'completed', 'aborted')
 	`, currentFileIndex, scanID)
 	if err != nil {
 		return fmt.Errorf("mark scan interrupted: %w", err)
@@ -408,6 +415,12 @@ func (r *ScanRepository) MarkOrphansCancelled(ctx context.Context) (int64, error
 // (the #274 zombie pattern) IS exactly what this query is supposed to
 // reap. activeScans is empty at startup, so any row in an active status
 // is by definition an orphan.
+//
+// 'paused' is included: the pause lives in process memory (pauseChan /
+// isPaused on the in-memory ScanProgress), so after a restart no code path
+// can ever resume a paused row — it used to survive reconcile as a
+// permanently stranded "paused" scan. A paused row with progress is exactly
+// as resumable as an interrupted one; one without progress scanned nothing.
 func (r *ScanRepository) ReconcileOrphans(ctx context.Context) (ReconcileOrphansResult, error) {
 	var out ReconcileOrphansResult
 
@@ -421,7 +434,7 @@ func (r *ScanRepository) ReconcileOrphans(ctx context.Context) (ReconcileOrphans
 		UPDATE scans
 		SET status = 'interrupted',
 		    error_message = 'auto-marked interrupted on Healarr restart'
-		WHERE status IN ('running', 'scanning')
+		WHERE status IN ('running', 'scanning', 'paused')
 		  AND current_file_index > 0
 		  AND total_files > 0
 		  AND file_list IS NOT NULL
@@ -436,7 +449,7 @@ func (r *ScanRepository) ReconcileOrphans(ctx context.Context) (ReconcileOrphans
 		SET status = 'cancelled',
 		    completed_at = datetime('now'),
 		    error_message = 'abandoned on Healarr restart'
-		WHERE status IN ('running', 'enumerating', 'scanning')
+		WHERE status IN ('running', 'enumerating', 'scanning', 'paused')
 	`)
 	if err != nil {
 		return out, fmt.Errorf("mark orphan scans cancelled: %w", err)

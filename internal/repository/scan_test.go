@@ -449,9 +449,12 @@ func TestScanRepository_MarkOrphansCancelled(t *testing.T) {
 		t.Fatalf("Finalize setup: %v", err)
 	}
 
+	// running + enumerating cancel; the paused row (it has progress via
+	// MarkPaused) demotes to interrupted — pause state cannot survive a
+	// restart, so a paused-with-progress row is resumable, not spared.
 	n, err := repo.MarkOrphansCancelled(ctx)
-	if err != nil || n != 2 {
-		t.Fatalf("MarkOrphansCancelled: got (%d, %v), want (2, nil)", n, err)
+	if err != nil || n != 3 {
+		t.Fatalf("MarkOrphansCancelled: got (%d, %v), want (3, nil)", n, err)
 	}
 
 	check := func(id int64, want string) {
@@ -463,7 +466,7 @@ func TestScanRepository_MarkOrphansCancelled(t *testing.T) {
 	}
 	check(running, "cancelled")
 	check(enumerating, "cancelled")
-	check(paused, "paused")           // spared
+	check(paused, "interrupted")      // paused with progress: demoted for resume
 	check(interrupted, "interrupted") // spared
 	check(completed, "completed")     // untouched
 
@@ -511,8 +514,8 @@ func TestScanRepository_ReconcileOrphans_ResumesProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileOrphans: %v", err)
 	}
-	if out.Interrupted != 1 {
-		t.Errorf("Interrupted count: got %d, want 1 (only the row with progress)", out.Interrupted)
+	if out.Interrupted != 2 {
+		t.Errorf("Interrupted count: got %d, want 2 (running-with-progress + paused-with-progress)", out.Interrupted)
 	}
 	if out.Cancelled != 2 {
 		t.Errorf("Cancelled count: got %d, want 2 (zero-progress running + enumerating)", out.Cancelled)
@@ -528,7 +531,7 @@ func TestScanRepository_ReconcileOrphans_ResumesProgress(t *testing.T) {
 	check(resumable, "interrupted") // demoted, resume will pick up
 	check(zero, "cancelled")        // no progress to resume
 	check(enumerating, "cancelled") // file list not built
-	check(paused, "paused")         // spared
+	check(paused, "interrupted")    // paused with progress: resumable after restart
 	check(completed, "completed")   // untouched
 
 	// Resumable row's progress fields must survive so resume can use them.
@@ -630,7 +633,9 @@ func TestScanRepository_MarkCancelled_NoOpOnTerminalStates(t *testing.T) {
 }
 
 // MarkOrphansCancelled must catch zombie active-with-completed_at rows
-// at startup (the #274 fix). Paused and interrupted are still spared.
+// at startup (the #274 fix). Interrupted is still spared; paused is now an
+// orphan too (pause state lives in process memory and cannot survive a
+// restart) — without progress it cancels, with progress it resumes.
 func TestScanRepository_MarkOrphansCancelled_CatchesZombieRows(t *testing.T) {
 	t.Parallel()
 	db := newScanTestDB(t)
@@ -644,14 +649,14 @@ func TestScanRepository_MarkOrphansCancelled_CatchesZombieRows(t *testing.T) {
 	`)
 	// A clean orphan: status='running', completed_at NULL.
 	mustExecScan(t, db, `INSERT INTO scans (id, path, status) VALUES (11, '/clean', 'running')`)
-	// Paused: must NOT be touched.
+	// Paused without progress: orphaned by restart, nothing to resume -> cancelled.
 	mustExecScan(t, db, `INSERT INTO scans (id, path, status) VALUES (12, '/p', 'paused')`)
 	// Interrupted: must NOT be touched.
 	mustExecScan(t, db, `INSERT INTO scans (id, path, status) VALUES (13, '/i', 'interrupted')`)
 
 	n, err := repo.MarkOrphansCancelled(ctx)
-	if err != nil || n != 2 {
-		t.Fatalf("MarkOrphansCancelled: got (%d, %v), want (2, nil)", n, err)
+	if err != nil || n != 3 {
+		t.Fatalf("MarkOrphansCancelled: got (%d, %v), want (3, nil)", n, err)
 	}
 
 	check := func(id int64, want string) {
@@ -663,7 +668,7 @@ func TestScanRepository_MarkOrphansCancelled_CatchesZombieRows(t *testing.T) {
 	}
 	check(10, "cancelled")   // zombie reaped
 	check(11, "cancelled")   // clean orphan reaped
-	check(12, "paused")      // spared
+	check(12, "cancelled")   // paused without progress: nothing to resume
 	check(13, "interrupted") // spared
 }
 
@@ -772,5 +777,39 @@ func TestScanRepository_ReconcileOrphans_EnumeratingGoesCancelled(t *testing.T) 
 	_ = db.QueryRow(`SELECT status FROM scans WHERE id=?`, id).Scan(&status)
 	if status != "cancelled" {
 		t.Errorf("status = %q, want cancelled", status)
+	}
+}
+
+// MarkInterrupted must not resurrect terminal scans: Shutdown calls it for
+// everything still in activeScans, and flipping a just-aborted scan to
+// 'interrupted' would resume it on next startup against a possibly
+// still-dead mount.
+func TestScanRepository_MarkInterrupted_DoesNotResurrectTerminal(t *testing.T) {
+	t.Parallel()
+	db := newScanTestDB(t)
+	repo := NewScanRepository(db)
+	ctx := context.Background()
+
+	for _, status := range []string{"aborted", "cancelled", "completed"} {
+		id := seedScan(t, db, "/t-"+status, status, 10, 0, "")
+		if err := repo.MarkInterrupted(ctx, id, 5); err != nil {
+			t.Fatalf("MarkInterrupted(%s): %v", status, err)
+		}
+		var got string
+		_ = db.QueryRow(`SELECT status FROM scans WHERE id=?`, id).Scan(&got)
+		if got != status {
+			t.Errorf("terminal %q row flipped to %q by MarkInterrupted", status, got)
+		}
+	}
+
+	// And an active scan IS marked interrupted (the normal shutdown path).
+	id := seedScan(t, db, "/active", "running", 10, 0, "")
+	if err := repo.MarkInterrupted(ctx, id, 5); err != nil {
+		t.Fatalf("MarkInterrupted(running): %v", err)
+	}
+	var got string
+	_ = db.QueryRow(`SELECT status FROM scans WHERE id=?`, id).Scan(&got)
+	if got != "interrupted" {
+		t.Errorf("running row = %q, want interrupted", got)
 	}
 }
