@@ -4145,7 +4145,7 @@ func TestScannerService_MarkFileProcessed(t *testing.T) {
 			FilesDone: 10,
 		}
 
-		scanner.markFileProcessed(progress, 5, 0)
+		scanner.markFileProcessed(progress, 5, 0, true)
 
 		if progress.FilesDone != 11 {
 			t.Errorf("Expected FilesDone 11, got %d", progress.FilesDone)
@@ -4167,7 +4167,7 @@ func TestScannerService_MarkFileProcessed(t *testing.T) {
 		}
 
 		// Index 20 should trigger save (20 % 10 == 0)
-		scanner.markFileProcessed(progress, 20, scanDBID)
+		scanner.markFileProcessed(progress, 20, scanDBID, true)
 
 		// Verify database was updated
 		var currentIndex, filesScanned int
@@ -4189,7 +4189,7 @@ func TestScannerService_MarkFileProcessed(t *testing.T) {
 		}
 
 		// Should not panic with scanDBID 0
-		scanner.markFileProcessed(progress, 10, 0)
+		scanner.markFileProcessed(progress, 10, 0, true)
 
 		if progress.FilesDone != 10 {
 			t.Errorf("Expected FilesDone 10, got %d", progress.FilesDone)
@@ -5005,5 +5005,173 @@ func TestScannerService_ScanFile_Healthy(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("healthy file emitted %d corruption events, want 0", count)
+	}
+}
+
+// =============================================================================
+// Scan lifecycle integrity (audit findings 7+8+9)
+// =============================================================================
+
+// A worker panic must not wedge the parallel scan: before the in-worker
+// recover, done[idx] stayed false forever, the watermark never reached the
+// end, and scanFilesParallel deadlocked on <-watermarkDone with the path
+// locked until restart.
+func TestScannerService_ScanFilesParallel_SurvivesWorkerPanic(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("NewTestDB: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckWithConfigFunc: func(path string, _ integration.DetectionConfig) (bool, *integration.HealthCheckError) {
+			if strings.Contains(path, "f05") {
+				panic("simulated detection panic")
+			}
+			return true, nil
+		},
+	}
+
+	scanner := &ScannerService{
+		db:              db,
+		eventBus:        eb,
+		detector:        mockHC,
+		activeScans:     make(map[string]*ScanProgress),
+		filesInProgress: make(map[string]bool),
+		shutdownCh:      make(chan struct{}),
+		scanWorkers:     4,
+	}
+
+	tmpDir := t.TempDir()
+	const n = 20
+	files := make([]string, n)
+	oldTime := time.Now().Add(-10 * time.Minute)
+	for i := 0; i < n; i++ {
+		f := filepath.Join(tmpDir, fmt.Sprintf("f%02d.mkv", i))
+		if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.Chtimes(f, oldTime, oldTime)
+		files[i] = f
+	}
+
+	res, err := db.Exec(`INSERT INTO scans (path, path_id, status, total_files, files_scanned) VALUES (?, 1, 'running', ?, 0)`, tmpDir, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanDBID, _ := res.LastInsertId()
+
+	progress := &ScanProgress{
+		ID: "panic-scan", Type: "path", Path: tmpDir, PathID: 1,
+		TotalFiles: n, ScanDBID: scanDBID, resumeChan: make(chan struct{}),
+	}
+
+	doneCh := make(chan struct{})
+	go func() {
+		scanner.scanFiles(context.Background(), progress, scanFilesConfig{
+			Files: files, StartIndex: 0,
+			DetectionConfig: integration.DetectionConfig{Method: "ffprobe", Mode: "quick"},
+			ScanDBID:        scanDBID,
+		})
+		close(doneCh)
+	}()
+
+	select {
+	case <-doneCh:
+		// Scan returned: no deadlock.
+	case <-time.After(15 * time.Second):
+		t.Fatal("parallel scan deadlocked after worker panic (watermark never released)")
+	}
+
+	if progress.Status != "completed" {
+		t.Errorf("Status = %q, want completed (panicked file is skipped, not fatal)", progress.Status)
+	}
+	// 19 healthy rows; the panicked file has no row but was counted processed.
+	var healthy int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM scan_files WHERE scan_id = ? AND status='healthy'`, scanDBID).Scan(&healthy)
+	if healthy != n-1 {
+		t.Errorf("healthy rows = %d, want %d", healthy, n-1)
+	}
+	// Watermark must have reached the end so resume cannot skip anything.
+	var idx int
+	_ = db.QueryRow(`SELECT current_file_index FROM scans WHERE id = ?`, scanDBID).Scan(&idx)
+	if idx != n {
+		t.Errorf("current_file_index = %d, want %d", idx, n)
+	}
+}
+
+// During graceful shutdown both shutdownCh and the scan ctx become ready;
+// the old combined select picked pseudo-randomly, finalizing ~half of all
+// scans as cancelled (terminal) instead of interrupted (resumable). The
+// check must be deterministic: shutdown wins.
+func TestScannerService_CheckScanCancellation_ShutdownWinsDeterministically(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	scanner := &ScannerService{
+		db:          db,
+		eventBus:    eb,
+		activeScans: make(map[string]*ScanProgress),
+		shutdownCh:  make(chan struct{}),
+	}
+	close(scanner.shutdownCh)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for i := 0; i < 100; i++ {
+		progress := &ScanProgress{ID: "s", resumeChan: make(chan struct{})}
+		action := scanner.checkScanCancellation(ctx, progress, "/p", 1, 10)
+		if action != scanReturn {
+			t.Fatal("expected scanReturn")
+		}
+		if progress.Status != ScanStatusInterrupted {
+			t.Fatalf("iteration %d: Status = %q, want interrupted (select race regressed)", i, progress.Status)
+		}
+	}
+}
+
+// finalizeScan must keep an aborted scan ABORTED: mapping it to completed
+// made a mount-failure scan masquerade as a successful one in "Last Scan".
+func TestScannerService_FinalizeScan_AbortedStaysAborted(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	res, err := db.Exec(`INSERT INTO scans (path, path_id, status, total_files) VALUES ('/p', 1, 'running', 10)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanDBID, _ := res.LastInsertId()
+
+	scanner := &ScannerService{
+		db:          db,
+		activeScans: make(map[string]*ScanProgress),
+		shutdownCh:  make(chan struct{}),
+	}
+	scanner.initRepositories()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+	scanner.eventBus = eb
+
+	progress := &ScanProgress{ID: "abort-scan", Status: ScanStatusAborted, FilesDone: 3}
+	scanner.activeScans["abort-scan"] = progress
+
+	scanner.finalizeScan("abort-scan", progress, scanDBID)
+
+	var status string
+	_ = db.QueryRow(`SELECT status FROM scans WHERE id = ?`, scanDBID).Scan(&status)
+	if status != "aborted" {
+		t.Errorf("finalized status = %q, want aborted", status)
 	}
 }
