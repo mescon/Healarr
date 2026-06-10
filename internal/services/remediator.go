@@ -569,6 +569,51 @@ func (r *RemediatorService) shouldPauseForRecurringCorruption(filePath string) b
 	return n >= maxRemediationsBeforePause
 }
 
+// shouldPauseForRecurringMedia is the rename-proof sibling of
+// shouldPauseForRecurringCorruption: keyed on the *arr media id (via each
+// journey's DeletionCompleted event) instead of the exact file path, so a
+// replacement imported under a new release filename still counts toward the
+// loop. It also trips on repeated MaxRetriesReached for the same media (the
+// never-succeeds loop, where there are no successes to count but each round
+// still burns deletes, searches, and possibly blocklists).
+func (r *RemediatorService) shouldPauseForRecurringMedia(mediaID int64) bool {
+	if r.corruptions == nil || mediaID <= 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remediatorQueryTimeout)
+	defer cancel()
+	successes, err := r.corruptions.CountSuccessfulRemediationsForMedia(ctx, mediaID, remediationLoopWindowDays)
+	if err != nil {
+		logger.Warnf("Loop-breaker: cannot count prior remediations for media %d; proceeding: %v", mediaID, err)
+		return false
+	}
+	if successes >= maxRemediationsBeforePause {
+		return true
+	}
+	exhausted, err := r.corruptions.CountExhaustedRemediationsForMedia(ctx, mediaID, remediationLoopWindowDays)
+	if err != nil {
+		logger.Warnf("Loop-breaker: cannot count exhausted remediations for media %d; proceeding: %v", mediaID, err)
+		return false
+	}
+	return exhausted >= maxRemediationsBeforePause
+}
+
+// pauseRemediation publishes RemediationPaused and logs the reason.
+func (r *RemediatorService) pauseRemediation(corruptionID, filePath, reason string) {
+	logger.Warnf("Remediation paused for %s (%s): recurring corruption — re-downloading will not fix a file that keeps re-corrupting", filePath, reason)
+	if err := r.eventBus.Publish(domain.Event{
+		AggregateID:   corruptionID,
+		AggregateType: "corruption",
+		EventType:     domain.RemediationPaused,
+		EventData: map[string]interface{}{
+			"file_path": filePath,
+			"reason":    reason,
+		},
+	}); err != nil {
+		logger.Errorf("Failed to publish RemediationPaused event: %v", err)
+	}
+}
+
 // ensureMonitoredForRemediation temporarily monitors an unmonitored item so the
 // *arr will grab a replacement, recording the original state (a MonitorOverridden
 // event) so handleRemediationTerminal can restore it later. Failing to read or
@@ -704,10 +749,18 @@ func (r *RemediatorService) handleCorruptionDetected(event domain.Event) {
 		})
 	} else {
 		logger.Infof("Auto-remediation enabled for %s, proceeding immediately", data.FilePath)
+		// manual_retry=true is the user's explicit one-cycle consent (the UI
+		// retry button) to bypass a RemediationPaused loop-breaker pause —
+		// previously the flag was written by the handler and read by nothing,
+		// so a user who fixed the root cause was stuck for up to 30 days.
+		manualRetry := false
+		if v, ok := event.EventData["manual_retry"].(bool); ok {
+			manualRetry = v
+		}
 		r.wg.Add(1)
 		safego.Run("remediator-execute", func() {
 			defer r.wg.Done()
-			r.executeRemediation(corruptionID, data.FilePath, arrPath, data.PathID)
+			r.executeRemediation(corruptionID, data.FilePath, arrPath, data.PathID, manualRetry)
 		})
 	}
 }
@@ -754,7 +807,7 @@ func (r *RemediatorService) executeDryRun(corruptionID, filePath, arrPath string
 }
 
 // executeRemediation performs the actual deletion and search trigger
-func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath string, pathID int64) {
+func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath string, pathID int64, bypassLoopBreaker bool) {
 	// Check if shutting down before starting work
 	if r.isShuttingDown() {
 		logger.Debugf("Remediator shutting down, skipping remediation for %s", corruptionID)
@@ -781,19 +834,10 @@ func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath s
 	// (a transcode pipeline or failing storage is re-corrupting it). Pause and
 	// surface it rather than thrash - and crucially do NOT delete, since deleting
 	// would just lose the file with no way to re-acquire a good one.
-	if r.shouldPauseForRecurringCorruption(filePath) {
-		logger.Warnf("Remediation paused for %s: still corrupt after %d successful restores in %d days", filePath, maxRemediationsBeforePause, remediationLoopWindowDays)
-		if err := r.eventBus.Publish(domain.Event{
-			AggregateID:   corruptionID,
-			AggregateType: "corruption",
-			EventType:     domain.RemediationPaused,
-			EventData: map[string]interface{}{
-				"file_path": filePath,
-				"reason":    "recurring_corruption",
-			},
-		}); err != nil {
-			logger.Errorf("Failed to publish RemediationPaused event: %v", err)
-		}
+	// bypassLoopBreaker is the user's explicit one-cycle consent (manual retry
+	// from the UI after fixing the root cause) to run despite the pause.
+	if !bypassLoopBreaker && r.shouldPauseForRecurringCorruption(filePath) {
+		r.pauseRemediation(corruptionID, filePath, "recurring_corruption")
 		return
 	}
 
@@ -802,6 +846,15 @@ func (r *RemediatorService) executeRemediation(corruptionID, filePath, arrPath s
 	if err != nil {
 		logger.Errorf("Failed to find media for path %s: %v", arrPath, err)
 		r.publishError(corruptionID, domain.DeletionFailed, err.Error())
+		return
+	}
+
+	// Media-keyed loop-breaker: each remediation round typically imports the
+	// replacement under a NEW filename, so the path-keyed check above never
+	// accumulates for exactly the recurring-corruption scenario it exists
+	// for. The media id is rename-proof.
+	if !bypassLoopBreaker && r.shouldPauseForRecurringMedia(mediaID) {
+		r.pauseRemediation(corruptionID, filePath, "recurring_corruption_media")
 		return
 	}
 

@@ -323,11 +323,15 @@ func (m *MonitorService) getRetryCount(corruptionID string) (int, int, error) {
 
 	// Count failures and timeouts directly from the event stream; join scan_paths
 	// (LEFT JOIN, so a missing/deleted path falls back to the default limit).
+	// The explicit list matches the migration-012 trigger definition exactly,
+	// so the monitor's cap check and the summary's retry_count agree. The old
+	// LIKE '%Failed' also matched NotificationFailed, letting a broken
+	// notification provider burn the retry budget with zero real attempts.
 	query := `
 		SELECT
 			(SELECT COUNT(*) FROM events e
 			 WHERE e.aggregate_id = cs.corruption_id
-			   AND (e.event_type LIKE '%Failed' OR e.event_type = 'DownloadTimeout')),
+			   AND e.event_type IN ('DeletionFailed', 'SearchFailed', 'VerificationFailed', 'DownloadFailed', 'DownloadTimeout')),
 			sp.max_retries
 		FROM corruption_status cs
 		LEFT JOIN scan_paths sp ON sp.id = cs.path_id
