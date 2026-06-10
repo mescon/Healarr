@@ -565,8 +565,14 @@ func (r *Repository) RunMaintenance(retentionDays int) error {
 				format: "Pruned %d old events",
 			},
 			{
-				name:   "prune old scans",
-				query:  "DELETE FROM scans WHERE status IN ('completed', 'cancelled', 'error') AND completed_at < ?",
+				name: "prune old scans",
+				// aborted/interrupted are included: an aborted scan is
+				// terminal, and an interrupted one older than the retention
+				// window will never be resumed. COALESCE covers rows whose
+				// terminal write never stamped completed_at (MarkAborted /
+				// MarkInterrupted) — they previously never matched and the
+				// table only grew.
+				query:  "DELETE FROM scans WHERE status IN ('completed', 'cancelled', 'error', 'aborted', 'interrupted') AND COALESCE(completed_at, started_at) < ?",
 				args:   []interface{}{cutoff},
 				format: "Pruned %d old scan records",
 			},

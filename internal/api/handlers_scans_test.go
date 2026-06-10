@@ -1171,6 +1171,13 @@ func (m *scansMockScanner) IsPathBeingScanned(_ string) bool {
 	return m.isPathScanning
 }
 
+func (m *scansMockScanner) ScanOverlapsActive(path string) (string, bool) {
+	if m.isPathScanning {
+		return path, true
+	}
+	return "", false
+}
+
 func (m *scansMockScanner) GetActiveScans() []services.ScanProgressView {
 	return m.activeScans
 }
@@ -1220,9 +1227,12 @@ func TestPauseAllScans_WithActiveScans(t *testing.T) {
 	defer eb.Shutdown()
 
 	mockScanner := newScansMockScanner()
+	// In-memory scan statuses are "enumerating"/"scanning"/"paused" - never
+	// "running" (a DB-only status). These fixtures pin that pause-all matches
+	// the statuses the scanner actually reports.
 	mockScanner.activeScans = []services.ScanProgressView{
-		{ID: "scan-1", Status: "running", Path: "/test/path1"},
-		{ID: "scan-2", Status: "running", Path: "/test/path2"},
+		{ID: "scan-1", Status: "scanning", Path: "/test/path1"},
+		{ID: "scan-2", Status: "enumerating", Path: "/test/path2"},
 		{ID: "scan-3", Status: "paused", Path: "/test/path3"}, // Should not be paused (already paused)
 	}
 
@@ -1271,7 +1281,7 @@ func TestResumeAllScans_WithActiveScans(t *testing.T) {
 	mockScanner.activeScans = []services.ScanProgressView{
 		{ID: "scan-1", Status: "paused", Path: "/test/path1"},
 		{ID: "scan-2", Status: "paused", Path: "/test/path2"},
-		{ID: "scan-3", Status: "running", Path: "/test/path3"}, // Should not be resumed (already running)
+		{ID: "scan-3", Status: "scanning", Path: "/test/path3"}, // Should not be resumed (still scanning)
 	}
 
 	server := createMockScanServer(t, db, eb, mockScanner)
@@ -1317,7 +1327,7 @@ func TestCancelAllScans_WithActiveScans(t *testing.T) {
 
 	mockScanner := newScansMockScanner()
 	mockScanner.activeScans = []services.ScanProgressView{
-		{ID: "scan-1", Status: "running", Path: "/test/path1"},
+		{ID: "scan-1", Status: "scanning", Path: "/test/path1"},
 		{ID: "scan-2", Status: "paused", Path: "/test/path2"},
 		{ID: "scan-3", Status: "completed", Path: "/test/path3"}, // Should not be cancelled
 	}
@@ -1540,6 +1550,13 @@ type scansMockScannerWithPathCheck struct {
 
 func (m *scansMockScannerWithPathCheck) IsPathBeingScanned(path string) bool {
 	return m.scanningPaths[path]
+}
+
+func (m *scansMockScannerWithPathCheck) ScanOverlapsActive(path string) (string, bool) {
+	if m.scanningPaths[path] {
+		return path, true
+	}
+	return "", false
 }
 
 func createMockScanServerWithPathCheck(t *testing.T, db *sql.DB, eb *eventbus.EventBus, scanner *scansMockScannerWithPathCheck) *RESTServer {

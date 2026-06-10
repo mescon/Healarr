@@ -58,14 +58,22 @@ func (rl *RateLimiter) Allow(ip string) bool {
 		return true
 	}
 
-	// Refill tokens based on elapsed time
+	// Refill tokens based on elapsed time. lastCheck advances ONLY by the
+	// whole intervals actually consumed: resetting it to now on every
+	// request meant any stream with sub-interval arrivals never refilled at
+	// all (each request restarted the clock), so a burst — e.g. a season-
+	// pack import firing webhooks — drained the bucket and then starved it
+	// forever, with the *arrs never retrying the 429'd webhooks and those
+	// files silently going unscanned.
 	elapsed := now.Sub(bucket.lastCheck)
-	tokensToAdd := int(elapsed/rl.interval) * rl.rate
-	bucket.tokens += tokensToAdd
-	if bucket.tokens > rl.burst {
-		bucket.tokens = rl.burst
+	intervals := int(elapsed / rl.interval)
+	if intervals > 0 {
+		bucket.tokens += intervals * rl.rate
+		if bucket.tokens > rl.burst {
+			bucket.tokens = rl.burst
+		}
+		bucket.lastCheck = bucket.lastCheck.Add(time.Duration(intervals) * rl.interval)
 	}
-	bucket.lastCheck = now
 
 	if bucket.tokens > 0 {
 		bucket.tokens--

@@ -350,6 +350,7 @@ type Scanner interface {
 	ScanFile(localPath string) error
 	ScanPath(pathID int64, localPath string) error
 	IsPathBeingScanned(path string) bool
+	ScanOverlapsActive(path string) (string, bool)
 	GetActiveScans() []ScanProgressView
 	CancelScan(scanID string) error
 	PauseScan(scanID string) error
@@ -1235,7 +1236,22 @@ func (s *ScannerService) ScanPath(pathID int64, localPath string) error {
 	}
 	progress.cancel = cancel
 
+	// Overlap guard INSIDE the registration lock (no TOCTOU): refuse to
+	// start when any active path scan covers the same tree (same path,
+	// ancestor, or descendant). This is the single enforcement point — it
+	// protects the scheduler (which never checked) and any direct caller,
+	// not just the HTTP trigger handler.
 	s.mu.Lock()
+	for _, active := range s.activeScans {
+		if active.Type != "path" {
+			continue
+		}
+		if pathutil.IsWithinRoot(active.Path, localPath) || pathutil.IsWithinRoot(localPath, active.Path) {
+			conflict := active.Path
+			s.mu.Unlock()
+			return fmt.Errorf("scan already in progress for overlapping path %s", conflict)
+		}
+	}
 	s.activeScans[scanID] = progress
 	s.mu.Unlock()
 
@@ -2324,6 +2340,41 @@ func (s *ScannerService) GetActiveScans() []ScanProgressView {
 		views = append(views, scan.Snapshot())
 	}
 	return views
+}
+
+// ScanStatusIsPausable reports whether an in-memory scan status can be
+// paused. The in-memory Status field is only ever "enumerating", "scanning",
+// "paused", or a terminal value — never "running" (that is a DB-only
+// status). The pause-all/cancel-all handlers used to filter on "running"
+// and therefore matched nothing.
+func ScanStatusIsPausable(status string) bool {
+	return status == ScanStatusEnumerating || status == ScanStatusScanning
+}
+
+// ScanStatusIsActive reports whether an in-memory scan status represents a
+// scan that is still alive (pausable or paused) and therefore cancellable.
+func ScanStatusIsActive(status string) bool {
+	return ScanStatusIsPausable(status) || status == ScanStatusPaused
+}
+
+// ScanOverlapsActive reports whether path overlaps any active path scan:
+// the same path, an ancestor of it, or a descendant — boundary-aware via
+// pathutil, so /media and /media/TV conflict but /media/TV and /media/TV2
+// do not. Returns the conflicting scan's path. The exact-compare
+// IsPathBeingScanned missed ancestor/descendant overlap, letting two scans
+// race over the same files (duplicate scan_files, duplicate journeys).
+func (s *ScannerService) ScanOverlapsActive(path string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, scan := range s.activeScans {
+		if scan.Type != "path" {
+			continue
+		}
+		if pathutil.IsWithinRoot(scan.Path, path) || pathutil.IsWithinRoot(path, scan.Path) {
+			return scan.Path, true
+		}
+	}
+	return "", false
 }
 
 // IsPathBeingScanned checks if a scan is already in progress for the given path
