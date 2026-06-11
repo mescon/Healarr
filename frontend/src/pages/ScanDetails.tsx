@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, FileCheck, FileX, Loader2, Filter, HardDrive, Clock, FolderOpen, AlertCircle, X, RefreshCw, ClockArrowDown, ExternalLink, Radio, SkipForward, ShieldAlert, HelpCircle } from 'lucide-react';
+import { ArrowLeft, FileCheck, FileX, Loader2, Filter, HardDrive, Clock, FolderOpen, AlertCircle, X, RefreshCw, ClockArrowDown, ExternalLink, Radio, SkipForward, ShieldAlert, HelpCircle, Pause, Play } from 'lucide-react';
 import clsx from 'clsx';
-import { getScanDetails, getScanFiles, cancelScan, rescanPath, type ScanFile, type ScanProgress } from '../lib/api';
+import { getScanDetails, getScanFiles, cancelScan, rescanPath, pauseScan, resumeScan, type ScanFile, type ScanProgress } from '../lib/api';
+import { scanStatusIsActive, scanStatusLabel } from '../lib/scanStatus';
 import DataGrid from '../components/ui/DataGrid';
 import { useDateFormat } from '../lib/useDateFormat';
 import { useToast } from '../contexts/ToastContext';
@@ -30,12 +31,15 @@ const ScanDetails = () => {
         queryFn: () => getScanDetails(scanId),
         enabled: scanId > 0,
         refetchInterval: (query) => {
-            // Refetch every 2s if scan is running
-            return query.state.data?.status === 'running' ? 2000 : false;
+            // Refetch every 2s while the scan is alive. The DB status moves
+            // running -> scanning (and can sit at paused), so checking only
+            // 'running' stopped the live refresh moments after start.
+            return scanStatusIsActive(query.state.data?.status ?? '') ? 2000 : false;
         },
     });
 
-    const isRunning = scanDetails?.status === 'running';
+    const isRunning = scanStatusIsActive(scanDetails?.status ?? '');
+    const isPaused = scanDetails?.status === 'paused';
 
     const { data: filesData, isLoading: isLoadingFiles } = useQuery({
         queryKey: ['scan-files', scanId, page, statusFilter],
@@ -83,6 +87,25 @@ const ScanDetails = () => {
         }
     };
 
+    const handlePauseResume = async () => {
+        setIsActionLoading(true);
+        try {
+            if (isPaused) {
+                await resumeScan(String(scanId));
+                toast.success('Scan resumed');
+            } else {
+                await pauseScan(String(scanId));
+                toast.success('Scan paused');
+            }
+            queryClient.invalidateQueries({ queryKey: ['scan-details', scanId] });
+            queryClient.invalidateQueries({ queryKey: ['scans'] });
+        } catch {
+            toast.error(isPaused ? 'Failed to resume scan' : 'Failed to pause scan');
+        } finally {
+            setIsActionLoading(false);
+        }
+    };
+
     const handleRescan = async () => {
         setIsActionLoading(true);
         try {
@@ -107,12 +130,26 @@ const ScanDetails = () => {
                     </span>
                 );
             case 'running':
+            case 'enumerating':
+            case 'scanning':
                 return (
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30">
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        Running
+                        {scanStatusLabel(status)}
                         {scanProgress && (
                             <span className="ml-1 text-blue-300">
+                                ({scanProgress.filesDone}/{scanProgress.totalFiles})
+                            </span>
+                        )}
+                    </span>
+                );
+            case 'paused':
+                return (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                        <Pause className="w-3.5 h-3.5" />
+                        Paused
+                        {scanProgress && (
+                            <span className="ml-1 text-amber-300">
                                 ({scanProgress.filesDone}/{scanProgress.totalFiles})
                             </span>
                         )}
@@ -227,19 +264,42 @@ const ScanDetails = () => {
                 </div>
                 {/* Action Buttons */}
                 <div className="flex items-center gap-2">
-                    {scanDetails.status === 'running' ? (
-                        <button
-                            onClick={handleCancel}
-                            disabled={isActionLoading}
-                            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/20 hover:border-red-500/30 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            {isActionLoading ? (
-                                <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                                <X className="w-4 h-4" />
+                    {isRunning ? (
+                        <>
+                            {(scanDetails.status === 'scanning' || isPaused) && (
+                                <button
+                                    onClick={handlePauseResume}
+                                    disabled={isActionLoading}
+                                    className={clsx(
+                                        "flex items-center gap-2 px-4 py-2 rounded-lg border transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
+                                        isPaused
+                                            ? "bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 hover:text-blue-300 border-blue-500/20 hover:border-blue-500/30"
+                                            : "bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300 border-amber-500/20 hover:border-amber-500/30"
+                                    )}
+                                >
+                                    {isActionLoading ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : isPaused ? (
+                                        <Play className="w-4 h-4" />
+                                    ) : (
+                                        <Pause className="w-4 h-4" />
+                                    )}
+                                    <span className="font-medium">{isPaused ? 'Resume' : 'Pause'}</span>
+                                </button>
                             )}
-                            <span className="font-medium">Cancel</span>
-                        </button>
+                            <button
+                                onClick={handleCancel}
+                                disabled={isActionLoading}
+                                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/20 hover:border-red-500/30 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {isActionLoading ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                    <X className="w-4 h-4" />
+                                )}
+                                <span className="font-medium">Cancel</span>
+                            </button>
+                        </>
                     ) : (
                         <button
                             onClick={handleRescan}

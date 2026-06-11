@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getScans, cancelScan, rescanPath } from '../lib/api';
+import { scanStatusIsActive, scanStatusLabel, scanStatusBadgeClass } from '../lib/scanStatus';
 import DataGrid from '../components/ui/DataGrid';
 import clsx from 'clsx';
 import { useState } from 'react';
@@ -120,11 +121,9 @@ const Scans = () => {
                         accessorKey: (row) => (
                             <span className={clsx(
                                 "px-2 py-1 rounded-full text-xs font-medium border",
-                                row.status === 'completed' ? "bg-green-500/10 text-green-400 border-green-500/20" :
-                                    row.status === 'failed' ? "bg-red-500/10 text-red-400 border-red-500/20" :
-                                        "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                                scanStatusBadgeClass(row.status)
                             )}>
-                                {row.status}
+                                {scanStatusLabel(row.status)}
                             </span>
                         ),
                         mobileLabel: 'Status',
@@ -154,7 +153,9 @@ const Scans = () => {
                         header: 'Actions',
                         accessorKey: (row) => (
                             <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                {row.status === 'running' ? (
+                                {/* Active means any of running/enumerating/scanning/paused -
+                                    checking only 'running' offered Rescan on a live scan. */}
+                                {scanStatusIsActive(row.status) ? (
                                     <button
                                         onClick={(e) => handleCancel(e, String(row.id))}
                                         disabled={loadingAction === row.id}

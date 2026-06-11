@@ -2502,18 +2502,20 @@ func (s *ScannerService) CancelScan(scanID string) error {
 // PauseScan pauses an ongoing scan
 func (s *ScannerService) PauseScan(scanID string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	scan, exists := s.findActiveScanLocked(scanID)
 	if !exists {
+		s.mu.Unlock()
 		return fmt.Errorf("scan not found: %s", scanID)
 	}
 
 	if scan.isPaused {
+		s.mu.Unlock()
 		return nil // Already paused
 	}
 
 	if scan.Status != "scanning" {
+		s.mu.Unlock()
 		return fmt.Errorf("scan is not in scanning state: %s", scan.Status)
 	}
 
@@ -2525,20 +2527,43 @@ func (s *ScannerService) PauseScan(scanID string) error {
 	scan.resumeChan = make(chan struct{})
 	scan.isPaused = true
 	scan.Status = "paused"
+	dbID := scan.ScanDBID
+	s.mu.Unlock()
+
+	// Persist the pause so DB readers (scan details page, /scans list,
+	// startup reconcile) agree with the live scanner. Without this the row
+	// stayed 'scanning' and the UI could not tell a paused scan from a
+	// running one after a reload.
+	s.persistScanStatus(dbID, string(ScanStatusPaused))
 	return nil
+}
+
+// persistScanStatus mirrors an in-memory pause/resume transition to the
+// scans row. Failure is logged, not returned: the in-memory state already
+// changed and the startup reconcile repairs any divergence.
+func (s *ScannerService) persistScanStatus(dbID int64, status string) {
+	if dbID <= 0 || s.scanRepo() == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.scanRepo().SetStatus(ctx, dbID, status); err != nil {
+		logger.Errorf("Failed to persist scan %d status %s: %v", dbID, status, err)
+	}
 }
 
 // ResumeScan resumes a paused scan
 func (s *ScannerService) ResumeScan(scanID string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	scan, exists := s.findActiveScanLocked(scanID)
 	if !exists {
+		s.mu.Unlock()
 		return fmt.Errorf("scan not found: %s", scanID)
 	}
 
 	if !scan.isPaused {
+		s.mu.Unlock()
 		return nil // Not paused
 	}
 
@@ -2552,7 +2577,10 @@ func (s *ScannerService) ResumeScan(scanID string) error {
 	scan.isPaused = false
 	scan.Status = ScanStatusScanning
 	close(scan.resumeChan)
+	dbID := scan.ScanDBID
+	s.mu.Unlock()
 
+	s.persistScanStatus(dbID, string(ScanStatusScanning))
 	return nil
 }
 
