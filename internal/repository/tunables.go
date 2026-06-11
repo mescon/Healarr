@@ -96,14 +96,13 @@ var Catalog = []TunableMeta{
 		MaxInt:      100,
 	},
 	{
-		Key:             SettingKeyScannerWorkers,
-		EnvVar:          "HEALARR_SCANNER_WORKERS",
-		Kind:            KindInt,
-		Default:         "auto",
-		Description:     "Number of concurrent detection workers. \"auto\" (0) tunes to container memory.",
-		RequiresRestart: true,
-		MinInt:          0,
-		MaxInt:          32,
+		Key:         SettingKeyScannerWorkers,
+		EnvVar:      "HEALARR_SCANNER_WORKERS",
+		Kind:        KindInt,
+		Default:     "auto",
+		Description: "Max concurrent file checks, shared across scans, webhook checks, rescans and verification. \"auto\" (0) = min(4, CPU cores, memory budget). Each thorough 4K check is a full ffmpeg decode (GPU VRAM or heavy CPU) - raise only if your hardware has headroom. Applies to new scans immediately; lowering also throttles scans already running.",
+		MinInt:      0,
+		MaxInt:      32,
 	},
 	{
 		Key:             SettingKeyShutdownTimeout,
@@ -258,6 +257,45 @@ func (t *Tunables) ThoroughTimeout(ctx context.Context) ResolvedDuration {
 // HwAccel selects ffmpeg hardware acceleration: "auto" / "off" / accel name.
 func (t *Tunables) HwAccel(ctx context.Context) ResolvedString {
 	return t.resolveString(ctx, "HEALARR_HEALTH_CHECK_HWACCEL", SettingKeyHwAccel, "auto", true)
+}
+
+// ScannerWorkers is the configured max concurrent file checks. 0 means
+// "auto" (the consumer derives a prudent default). This getter existed only
+// as a catalog row for a long time: the UI showed and stored scan.workers,
+// but no code ever read the DB value, so the knob was a silent no-op unless
+// set via env (the audit's settings-drift bug class).
+func (t *Tunables) ScannerWorkers(ctx context.Context) ResolvedInt {
+	return t.resolveInt(ctx, "HEALARR_SCANNER_WORKERS", SettingKeyScannerWorkers, 0)
+}
+
+// resolveInt reads env > db > default. "auto" (any case) parses as 0, the
+// catalog's auto sentinel. Parse errors at any layer fall through to the
+// next rather than crashing.
+func (t *Tunables) resolveInt(ctx context.Context, envKey, dbKey string, def int) ResolvedInt {
+	parse := func(s string) (int, bool) {
+		s = strings.TrimSpace(s)
+		if strings.EqualFold(s, "auto") {
+			return 0, true
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 {
+			return 0, false
+		}
+		return n, true
+	}
+	if v, ok := os.LookupEnv(envKey); ok && v != "" {
+		if n, ok := parse(v); ok {
+			return ResolvedInt{Value: n, Source: SourceEnv}
+		}
+	}
+	if t.repo != nil {
+		if v, err := t.repo.Get(ctx, dbKey); err == nil && v != "" {
+			if n, ok := parse(v); ok {
+				return ResolvedInt{Value: n, Source: SourceDB}
+			}
+		}
+	}
+	return ResolvedInt{Value: def, Source: SourceDefault}
 }
 
 // resolveString reads env > db > default. If lower is true the value is
