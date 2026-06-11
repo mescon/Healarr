@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.13] - 2026-06-11
+
+A single fix, observed live right after the v1.3.12 deploy.
+
+### Fixed
+- **4K files no longer have their content analysis silently skipped on busy storage** ([#339](https://github.com/mescon/Healarr/pull/339)). The content-analysis probe had a hardcoded 30-second ffprobe timeout, while the analysis it gates gets the configurable thorough timeout (default 10 minutes). On a NAS being saturated by a parallel scan, probing a large 4K remux can take longer than 30s, and a timed-out probe skips that file's content analysis entirely, every scan, leaving only a `Content analysis skipped (probe failed)` warning in the log. The probe timeout is now size-aware: files of 4 GiB or more get a 2-minute budget (resolution isn't known until the probe has run, so size stands in for "4K-class"), while smaller files keep the short timeout so a hung probe can't stall a scan worker.
+
 ## [1.3.12] - 2026-06-11
 
 A full safety audit of the remediation pipeline (15 verified findings, fixed across seven PRs), two fixes for a live user issue, and a scan-control UX overhaul. The common thread: Healarr must never delete the wrong file, and the UI must show what the scanner is actually doing.
