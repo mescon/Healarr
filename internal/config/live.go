@@ -2,6 +2,8 @@ package config
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -54,6 +56,23 @@ func LiveHealthCheckThoroughTimeout() time.Duration {
 		return cfg.HealthCheckThoroughTimeout
 	}
 	return 10 * time.Minute
+}
+
+// LiveScannerWorkers returns the configured max concurrent file checks.
+// 0 means "auto"; callers derive their own prudent default. Same
+// precedence rules as the other accessors (env > DB > default), with a
+// direct env read as the no-tunables fallback so the limit still works
+// in the boot window and in tests without a database.
+func LiveScannerWorkers() int {
+	if tn := liveTunables.Load(); tn != nil {
+		return tn.ScannerWorkers(context.Background()).Value
+	}
+	if v := os.Getenv("HEALARR_SCANNER_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 // LiveHealthCheckHwAccel returns the resolved hardware acceleration

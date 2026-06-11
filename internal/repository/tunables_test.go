@@ -57,6 +57,60 @@ func TestTunables_Precedence_EnvBeatsDBBeatsDefault(t *testing.T) {
 	}
 }
 
+// TestTunables_ScannerWorkers pins the wiring that was missing for a long
+// time: the scan.workers catalog row existed and the UI stored values, but
+// no code read them - the knob was a silent no-op unless set via env.
+func TestTunables_ScannerWorkers(t *testing.T) {
+	ctx := context.Background()
+	repo := newTestSettingsRepo(t)
+	tn := NewTunables(repo)
+
+	// Default: auto (0).
+	t.Setenv("HEALARR_SCANNER_WORKERS", "")
+	got := tn.ScannerWorkers(ctx)
+	if got.Value != 0 || got.Source != SourceDefault {
+		t.Errorf("default: got %d / %s, want 0 / default", got.Value, got.Source)
+	}
+
+	// DB value (what the UI stores) -> db wins.
+	if err := repo.Set(ctx, SettingKeyScannerWorkers, "6"); err != nil {
+		t.Fatalf("seed db: %v", err)
+	}
+	got = tn.ScannerWorkers(ctx)
+	if got.Value != 6 || got.Source != SourceDB {
+		t.Errorf("db-only: got %d / %s, want 6 / db", got.Value, got.Source)
+	}
+
+	// "auto" stored in DB parses as 0 (auto sentinel).
+	if err := repo.Set(ctx, SettingKeyScannerWorkers, "auto"); err != nil {
+		t.Fatalf("seed db auto: %v", err)
+	}
+	got = tn.ScannerWorkers(ctx)
+	if got.Value != 0 || got.Source != SourceDB {
+		t.Errorf("db auto: got %d / %s, want 0 / db", got.Value, got.Source)
+	}
+
+	// Env wins over DB.
+	if err := repo.Set(ctx, SettingKeyScannerWorkers, "6"); err != nil {
+		t.Fatalf("re-seed db: %v", err)
+	}
+	t.Setenv("HEALARR_SCANNER_WORKERS", "12")
+	got = tn.ScannerWorkers(ctx)
+	if got.Value != 12 || got.Source != SourceEnv {
+		t.Errorf("env+db: got %d / %s, want 12 / env", got.Value, got.Source)
+	}
+
+	// Corrupt DB value falls through to the default.
+	t.Setenv("HEALARR_SCANNER_WORKERS", "")
+	if err := repo.Set(ctx, SettingKeyScannerWorkers, "lots"); err != nil {
+		t.Fatalf("seed corrupt: %v", err)
+	}
+	got = tn.ScannerWorkers(ctx)
+	if got.Value != 0 || got.Source != SourceDefault {
+		t.Errorf("corrupt db: got %d / %s, want 0 / default", got.Value, got.Source)
+	}
+}
+
 func TestTunables_HwAccel_DefaultLowercase(t *testing.T) {
 	ctx := context.Background()
 	repo := newTestSettingsRepo(t)

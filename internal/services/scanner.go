@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -389,112 +388,23 @@ type ScannerService struct {
 	// directly and leave it at the 0 zero-value — don't pay 500ms per file.
 	sizeStabilityDelay time.Duration
 
-	// scanWorkers is the number of files whose detection (ffprobe / stat
-	// stability check) runs concurrently within a scan. Set by
-	// NewScannerService from HEALARR_SCANNER_WORKERS. The 0 zero-value left by
-	// &ScannerService{}-direct test fixtures means "sequential", so those tests
-	// keep the original single-file-at-a-time path.
+	// scanWorkers is a fixed per-scan worker-pool size for test fixtures
+	// that construct &ScannerService{} directly. The 0 zero-value means
+	// "sequential", keeping those tests on the original
+	// single-file-at-a-time path. Production instances set
+	// liveScanWorkers instead.
 	scanWorkers int
+
+	// liveScanWorkers, set by NewScannerService, makes scanFiles resolve
+	// the pool size from integration.EffectiveScanWorkers (env > scan.workers
+	// UI setting > auto) at every scan start, so a UI change applies to the
+	// next scan without a restart.
+	liveScanWorkers bool
 }
 
 // defaultSizeStabilityDelay is the production re-stat interval for
 // detecting files whose size is still changing (active download/copy).
 const defaultSizeStabilityDelay = 500 * time.Millisecond
-
-// fallbackScanWorkers is used only when available memory can't be determined.
-const fallbackScanWorkers = 4
-
-// maxScanWorkers caps operator-configured concurrency to avoid thrashing
-// storage or spawning an unreasonable number of ffprobe processes.
-const maxScanWorkers = 32
-
-// perWorkerMemoryBudget is the RAM we assume each concurrent detection worker may
-// need. ffprobe (quick mode) is light, but a thorough-mode ffmpeg decode of a
-// large file can use a few hundred MB. Budgeting generously means a small
-// container won't be pushed into an OOM kill by the default concurrency — each
-// extra worker is an extra subprocess counted against the container's cgroup limit.
-const perWorkerMemoryBudget = 512 * 1024 * 1024 // 512 MB
-
-// scannerWorkers returns the detection concurrency. HEALARR_SCANNER_WORKERS wins
-// if set (clamped to [1, maxScanWorkers]); otherwise the default is tuned to the
-// memory available to the process so a memory-constrained container doesn't OOM
-// from running several ffmpeg/ffprobe subprocesses at once.
-func scannerWorkers() int {
-	if v := os.Getenv("HEALARR_SCANNER_WORKERS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
-			if n > maxScanWorkers {
-				return maxScanWorkers
-			}
-			return n
-		}
-		logger.Warnf("Invalid HEALARR_SCANNER_WORKERS %q; using a memory-aware default", v)
-	}
-	return workersForMemory(availableMemoryBytes(), runtime.NumCPU())
-}
-
-// workersForMemory derives the worker count from a memory budget and CPU count.
-// Roughly memBytes/perWorkerMemoryBudget, capped by CPU count and maxScanWorkers,
-// floored at 1. If memBytes is 0 (unknown) it returns fallbackScanWorkers. Pure
-// function for testability.
-func workersForMemory(memBytes uint64, cpus int) int {
-	if cpus < 1 {
-		cpus = 1
-	}
-	if memBytes == 0 {
-		n := fallbackScanWorkers
-		if n > cpus {
-			n = cpus
-		}
-		return n
-	}
-	n := int(memBytes / perWorkerMemoryBudget)
-	if n > cpus {
-		n = cpus
-	}
-	if n > maxScanWorkers {
-		n = maxScanWorkers
-	}
-	if n < 1 {
-		n = 1
-	}
-	return n
-}
-
-// availableMemoryBytes best-effort reports the memory ceiling the process runs
-// under: the container's cgroup memory limit when present, else total system
-// memory. Returns 0 when it can't be determined (e.g. non-Linux), so callers
-// fall back to a fixed default. Linux-specific paths simply don't exist
-// elsewhere, so this stays portable without build tags.
-func availableMemoryBytes() uint64 {
-	// cgroup v2: a single limit file, "max" means unlimited.
-	if b, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
-		if s := strings.TrimSpace(string(b)); s != "max" {
-			if v, err := strconv.ParseUint(s, 10, 64); err == nil && v > 0 {
-				return v
-			}
-		}
-	}
-	// cgroup v1: "unlimited" is a near-max sentinel, so ignore implausibly large values.
-	if b, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
-		if v, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64); err == nil && v > 0 && v < (1<<62) {
-			return v
-		}
-	}
-	// Fallback: total system memory from /proc/meminfo (kB).
-	if b, err := os.ReadFile("/proc/meminfo"); err == nil {
-		for _, line := range strings.Split(string(b), "\n") {
-			if kb, ok := strings.CutPrefix(line, "MemTotal:"); ok {
-				fields := strings.Fields(kb)
-				if len(fields) >= 1 {
-					if v, err := strconv.ParseUint(fields[0], 10, 64); err == nil {
-						return v * 1024
-					}
-				}
-			}
-		}
-	}
-	return 0
-}
 
 // NewScannerService creates a new ScannerService with the given dependencies.
 func NewScannerService(db *sql.DB, eb *eventbus.EventBus, detector integration.HealthChecker, pm integration.PathMapper) *ScannerService {
@@ -507,7 +417,7 @@ func NewScannerService(db *sql.DB, eb *eventbus.EventBus, detector integration.H
 		filesInProgress:    make(map[string]bool),
 		shutdownCh:         make(chan struct{}),
 		sizeStabilityDelay: defaultSizeStabilityDelay,
-		scanWorkers:        scannerWorkers(),
+		liveScanWorkers:    true,
 	}
 	s.initRepositories()
 	return s
@@ -1764,12 +1674,20 @@ func (s *ScannerService) scanFiles(ctx context.Context, progress *ScanProgress, 
 
 	// With a worker pool configured, run detection concurrently. The 0/1 case
 	// (default for &ScannerService{}-direct test fixtures) keeps the original
-	// single-file-at-a-time path untouched.
-	if s.scanWorkers > 1 {
+	// single-file-at-a-time path untouched. Production instances resolve the
+	// pool size live at every scan start (env > scan.workers UI setting >
+	// auto), so tuning applies without a restart; the shared subprocess
+	// limiter in integration additionally enforces lowered limits on scans
+	// already in flight.
+	workers := s.scanWorkers
+	if s.liveScanWorkers {
+		workers = integration.EffectiveScanWorkers()
+	}
+	if workers > 1 {
 		// Parallel mode: the watermark goroutine owns ALL progress
 		// persistence; workers must not write their own out-of-order index.
 		cfg.persistProgressInline = false
-		s.scanFilesParallel(ctx, progress, cfg, activeCorruptions)
+		s.scanFilesParallel(ctx, progress, cfg, activeCorruptions, workers)
 		return
 	}
 
@@ -1825,6 +1743,7 @@ func (s *ScannerService) scanFilesParallel(
 	progress *ScanProgress,
 	cfg scanFilesConfig,
 	activeCorruptions map[string]bool,
+	workers int,
 ) {
 	files := cfg.Files
 	pathID := progress.PathID
@@ -1840,7 +1759,7 @@ func (s *ScannerService) scanFilesParallel(
 	// breaks on the next iteration.
 	var stopped atomic.Bool
 
-	sem := make(chan struct{}, s.scanWorkers)
+	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 
 	// Mark this scan watermark-managed: shutdown/pause persistence must use

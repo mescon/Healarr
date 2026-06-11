@@ -287,7 +287,16 @@ func buildMediaInfoArgs(mode string, customArgs []string, path string) ([]string
 }
 
 // runCommandWithTimeout executes a command with a timeout, returning stdout or an error.
+//
+// Every detection subprocess passes through here, which makes it the one
+// choke point where global scan concurrency can actually be enforced: the
+// scan pool, webhook-triggered checks, deferred rescans and verification all
+// end up in this function. The slot is acquired BEFORE the timeout clock
+// starts, so queueing behind the limiter never eats a tool's time budget.
 func runCommandWithTimeout(cmd *exec.Cmd, timeout time.Duration, toolName string) ([]byte, error) {
+	toolLimiter.acquire(EffectiveScanWorkers)
+	defer toolLimiter.release()
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
