@@ -1030,13 +1030,37 @@ type mediaProbeInfo struct {
 	HasAudio bool
 }
 
+// Probe timeouts for getMediaProbeInfo. A header probe normally finishes in
+// well under a second; when it doesn't, it is because the file is a large 4K
+// remux on a NAS that the parallel scan is saturating. A timed-out probe
+// skips content analysis for that file entirely, so large files get a
+// bigger budget rather than being silently under-analyzed every scan.
+// Resolution isn't known until the probe has run, so file size is the proxy
+// for "4K-class": at 4 GiB, 1080p web releases stay below, UHD episodes and
+// remuxes land above.
+const (
+	probeTimeoutDefault         = 30 * time.Second
+	probeTimeoutLargeFile       = 2 * time.Minute
+	probeLargeFileBytes   int64 = 4 << 30 // 4 GiB
+)
+
+// probeTimeoutFor picks the ffprobe timeout based on file size. Stat
+// failures fall back to the default: the probe itself will surface the real
+// error.
+func probeTimeoutFor(path string) time.Duration {
+	if info, err := os.Stat(path); err == nil && info.Size() >= probeLargeFileBytes {
+		return probeTimeoutLargeFile
+	}
+	return probeTimeoutDefault
+}
+
 // getMediaProbeInfo uses ffprobe to get file duration and stream types in a single call.
 func (hc *CmdHealthChecker) getMediaProbeInfo(path string) (*mediaProbeInfo, error) {
 	cmd := exec.Command(hc.FFprobePath, "-v", "error",
 		"-show_entries", "format=duration:stream=codec_type",
 		"-of", "json", path)
 
-	output, err := runCommandWithTimeout(cmd, 30*time.Second, "ffprobe")
+	output, err := runCommandWithTimeout(cmd, probeTimeoutFor(path), "ffprobe")
 	if err != nil {
 		return nil, err
 	}
