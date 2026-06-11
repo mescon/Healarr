@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.12] - 2026-06-11
 
-The big one: a full safety audit of the remediation pipeline (15 verified findings, fixed across seven PRs), two fixes for a live user issue, and a scan-control UX overhaul. The common thread: Healarr must never delete the wrong file, and the UI must show what the scanner is actually doing.
+A full safety audit of the remediation pipeline (15 verified findings, fixed across seven PRs), two fixes for a live user issue, and a scan-control UX overhaul. The common thread: Healarr must never delete the wrong file, and the UI must show what the scanner is actually doing.
 
 ### Fixed
 - **Remediation consent can no longer be invented** ([#329](https://github.com/mescon/Healarr/pull/329)). Auto-remediate and dry-run now always resolve from the scan path's *current* configuration (matched against the file's path), never from values embedded in old events. A remediation retried after a config change follows today's config, and when no scan path matches the file anymore, Healarr refuses to delete (treats it as dry-run). The stuck-remediation monitor also respects a user's "ignore" veto instead of resurrecting the remediation.
