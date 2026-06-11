@@ -169,10 +169,13 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
                 // Invalidate queries based on event type
                 const eventType = message.type;
 
-                // Scan events - refresh scan list and stats
+                // Scan events - refresh scan list and stats. 'health' feeds
+                // the sidebar's Active Scans count, which otherwise lags up
+                // to its 30s poll behind a scan starting or finishing.
                 if (eventType === 'ScanStarted' || eventType === 'ScanCompleted' || eventType === 'ScanFailed') {
                     queryClient.invalidateQueries({ queryKey: ['scans'] });
                     queryClient.invalidateQueries({ queryKey: ['dashboardStats'] });
+                    queryClient.invalidateQueries({ queryKey: ['health'] });
                 }
 
                 // Health events - refresh dashboard stats

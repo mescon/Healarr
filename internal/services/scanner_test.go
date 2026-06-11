@@ -811,6 +811,51 @@ func TestScannerService_PauseScan(t *testing.T) {
 		delete(scanner.activeScans, "scan-3")
 		scanner.mu.Unlock()
 	})
+
+	t.Run("pause and resume persist the DB status", func(t *testing.T) {
+		// DB readers (scan details page, /scans, startup reconcile) must
+		// agree with the live scanner: an in-memory-only pause left the row
+		// 'scanning' and the UI could not tell a paused scan from a running
+		// one after a reload.
+		res, err := db.Exec(`INSERT INTO scans (path, status, started_at) VALUES ('/media', 'scanning', datetime('now'))`)
+		if err != nil {
+			t.Fatalf("seed scan row: %v", err)
+		}
+		dbID, _ := res.LastInsertId()
+
+		scanner.mu.Lock()
+		scanner.activeScans["scan-4"] = &ScanProgress{
+			ID:       "scan-4",
+			Status:   "scanning",
+			ScanDBID: dbID,
+		}
+		scanner.mu.Unlock()
+
+		if err := scanner.PauseScan("scan-4"); err != nil {
+			t.Fatalf("PauseScan: %v", err)
+		}
+		var status string
+		if err := db.QueryRow(`SELECT status FROM scans WHERE id = ?`, dbID).Scan(&status); err != nil {
+			t.Fatalf("read scan status: %v", err)
+		}
+		if status != "paused" {
+			t.Errorf("DB status after pause = %q, want paused", status)
+		}
+
+		if err := scanner.ResumeScan("scan-4"); err != nil {
+			t.Fatalf("ResumeScan: %v", err)
+		}
+		if err := db.QueryRow(`SELECT status FROM scans WHERE id = ?`, dbID).Scan(&status); err != nil {
+			t.Fatalf("read scan status: %v", err)
+		}
+		if status != "scanning" {
+			t.Errorf("DB status after resume = %q, want scanning", status)
+		}
+
+		scanner.mu.Lock()
+		delete(scanner.activeScans, "scan-4")
+		scanner.mu.Unlock()
+	})
 }
 
 func TestScannerService_ResumeScan(t *testing.T) {

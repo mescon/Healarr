@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, createElement } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ShieldCheck, AlertOctagon, Loader2, X, Clock, AlertTriangle, EyeOff, CheckCircle2, FileSearch, TrendingUp, HandMetal, Play, ChevronDown, ScanSearch, PlayCircle, AlertCircle, ArrowRight } from 'lucide-react';
+import { ShieldCheck, AlertOctagon, Loader2, X, Clock, AlertTriangle, EyeOff, CheckCircle2, FileSearch, TrendingUp, HandMetal, Play, Pause, ChevronDown, ScanSearch, PlayCircle, AlertCircle, ArrowRight } from 'lucide-react';
 import clsx from 'clsx';
 import { useQuery } from '@tanstack/react-query';
-import { getDashboardStats, getActiveScans, cancelScan, getScanPaths, triggerScan, triggerScanAll, getPathHealth, type ScanProgress, type ScanPath } from '../lib/api';
+import { getDashboardStats, getActiveScans, cancelScan, pauseScan, resumeScan, pauseAllScans, resumeAllScans, cancelAllScans, getScanPaths, triggerScan, triggerScanAll, getPathHealth, type ScanProgress, type ScanPath } from '../lib/api';
+import { scanStatusLabel } from '../lib/scanStatus';
 import type { PathHealth } from '../types/api';
 import { FolderOpen, FolderCheck, FolderX, FolderSearch, FolderMinus } from 'lucide-react';
 import ActivityChart from '../components/charts/ActivityChart';
@@ -173,7 +174,20 @@ const ActiveScansTable = () => {
 
     const activeScansList = Object.values(scans);
 
+    // Re-snapshot active scans after a bulk action; paused scans emit no
+    // progress events, so the websocket alone won't reflect the new status.
+    const refreshScans = () => {
+        getActiveScans().then(active => {
+            const scanMap: Record<string, ScanProgress> = {};
+            active.forEach(s => scanMap[s.id] = s);
+            setScans(scanMap);
+        });
+    };
+
     if (activeScansList.length === 0) return null;
+
+    const anyPaused = activeScansList.some(s => s.status === 'paused');
+    const anyPausable = activeScansList.some(s => s.status === 'scanning' || s.status === 'enumerating');
 
     return (
         <motion.div
@@ -183,9 +197,53 @@ const ActiveScansTable = () => {
         >
             <div className="flex items-center gap-3 mb-6">
                 <div className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                    <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
+                    <Loader2 className={clsx("w-5 h-5 text-blue-400", anyPausable && "animate-spin")} />
                 </div>
                 <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Active Scans</h2>
+                {/* Bulk controls live next to the scans they act on; before,
+                    they only existed on the Config page. */}
+                <div className="ml-auto flex items-center gap-2">
+                    {anyPausable && (
+                        <button
+                            onClick={() => {
+                                pauseAllScans().then(({ paused }) => {
+                                    toast.success(`Paused ${paused} scan${paused !== 1 ? 's' : ''}`);
+                                    refreshScans();
+                                }).catch(() => toast.error('Failed to pause scans'));
+                            }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 dark:text-amber-400 border border-amber-500/20 hover:border-amber-500/30 transition-colors cursor-pointer"
+                        >
+                            <Pause className="w-3.5 h-3.5" />
+                            Pause all
+                        </button>
+                    )}
+                    {anyPaused && (
+                        <button
+                            onClick={() => {
+                                resumeAllScans().then(({ resumed }) => {
+                                    toast.success(`Resumed ${resumed} scan${resumed !== 1 ? 's' : ''}`);
+                                    refreshScans();
+                                }).catch(() => toast.error('Failed to resume scans'));
+                            }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-500/10 hover:bg-blue-500/20 text-blue-500 dark:text-blue-400 border border-blue-500/20 hover:border-blue-500/30 transition-colors cursor-pointer"
+                        >
+                            <Play className="w-3.5 h-3.5" />
+                            Resume all
+                        </button>
+                    )}
+                    <button
+                        onClick={() => {
+                            cancelAllScans().then(({ cancelled }) => {
+                                toast.success(`Cancelled ${cancelled} scan${cancelled !== 1 ? 's' : ''}`);
+                                refreshScans();
+                            }).catch(() => toast.error('Failed to cancel scans'));
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 hover:bg-red-500/20 text-red-500 dark:text-red-400 border border-red-500/20 hover:border-red-500/30 transition-colors cursor-pointer"
+                    >
+                        <X className="w-3.5 h-3.5" />
+                        Cancel all
+                    </button>
+                </div>
             </div>
 
             <div className="overflow-x-auto">
@@ -196,7 +254,7 @@ const ActiveScansTable = () => {
                             <th className="px-4 py-3 text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Path / File</th>
                             <th className="px-4 py-3 text-xs font-medium text-slate-600 dark:text-slate-400 uppercase">Status</th>
                             <th className="px-4 py-3 text-xs font-medium text-slate-600 dark:text-slate-400 uppercase w-1/3">Progress</th>
-                            <th className="px-4 py-3 text-xs font-medium text-slate-600 dark:text-slate-400 uppercase w-24">Actions</th>
+                            <th className="px-4 py-3 text-xs font-medium text-slate-600 dark:text-slate-400 uppercase w-28">Actions</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200 dark:divide-slate-800/50">
@@ -243,7 +301,14 @@ const ActiveScansTable = () => {
                                     </div>
                                 </td>
                                 <td className="px-4 py-4">
-                                    <span className="text-sm text-slate-600 dark:text-slate-300 capitalize">{scan.status}</span>
+                                    <span className={clsx(
+                                        "text-sm",
+                                        scan.status === 'paused'
+                                            ? "text-amber-500 dark:text-amber-400 font-medium"
+                                            : "text-slate-600 dark:text-slate-300"
+                                    )}>
+                                        {scanStatusLabel(scan.status)}
+                                    </span>
                                 </td>
                                 <td className="px-4 py-4">
                                     <div className="space-y-2">
@@ -262,6 +327,37 @@ const ActiveScansTable = () => {
                                     </div>
                                 </td>
                                 <td className="px-4 py-4">
+                                    <div className="flex items-center gap-2">
+                                    {scan.status === 'scanning' && (
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                pauseScan(scan.id).then(() => {
+                                                    setScans(prev => prev[scan.id] ? { ...prev, [scan.id]: { ...prev[scan.id], status: 'paused' } } : prev);
+                                                    toast.success('Scan paused');
+                                                }).catch(() => toast.error('Failed to pause scan'));
+                                            }}
+                                            className="p-1.5 rounded-md bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 dark:text-amber-400 border border-amber-500/20 hover:border-amber-500/30 transition-colors cursor-pointer"
+                                            title="Pause Scan"
+                                        >
+                                            <Pause className="w-4 h-4" />
+                                        </button>
+                                    )}
+                                    {scan.status === 'paused' && (
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                resumeScan(scan.id).then(() => {
+                                                    setScans(prev => prev[scan.id] ? { ...prev, [scan.id]: { ...prev[scan.id], status: 'scanning' } } : prev);
+                                                    toast.success('Scan resumed');
+                                                }).catch(() => toast.error('Failed to resume scan'));
+                                            }}
+                                            className="p-1.5 rounded-md bg-blue-500/10 hover:bg-blue-500/20 text-blue-500 dark:text-blue-400 border border-blue-500/20 hover:border-blue-500/30 transition-colors cursor-pointer"
+                                            title="Resume Scan"
+                                        >
+                                            <Play className="w-4 h-4" />
+                                        </button>
+                                    )}
                                     <button
                                         onClick={(e) => {
                                             e.stopPropagation(); // Prevent row click when clicking cancel
@@ -283,6 +379,7 @@ const ActiveScansTable = () => {
                                     >
                                         <X className="w-4 h-4" />
                                     </button>
+                                    </div>
                                 </td>
                             </tr>
                         ))}

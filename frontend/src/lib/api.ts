@@ -177,6 +177,16 @@ export const cancelScan = async (scanId: string) => {
     return response.data;
 };
 
+export const pauseScan = async (scanId: string) => {
+    const response = await api.post(`/scans/${scanId}/pause`);
+    return response.data;
+};
+
+export const resumeScan = async (scanId: string) => {
+    const response = await api.post(`/scans/${scanId}/resume`);
+    return response.data;
+};
+
 export const pauseAllScans = async (): Promise<{ message: string; paused: number }> => {
     const { data } = await api.post<{ message: string; paused: number }>('/scans/pause-all');
     return data;
