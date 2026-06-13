@@ -374,6 +374,41 @@ func (r *CorruptionRepository) CountUnresolved(ctx context.Context) (int, error)
 	return n, nil
 }
 
+// LatestIDsByFilePaths returns the corruption aggregate id per file path
+// (the most recently updated aggregate when a file has had several), so the
+// scan-details UI can link a corrupt scan row to its remediation journey.
+func (r *CorruptionRepository) LatestIDsByFilePaths(ctx context.Context, paths []string) (map[string]string, error) {
+	out := make(map[string]string, len(paths))
+	if len(paths) == 0 {
+		return out, nil
+	}
+	placeholders := strings.Repeat("?,", len(paths)-1) + "?"
+	args := make([]interface{}, len(paths))
+	for i, p := range paths {
+		args[i] = p
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT file_path, corruption_id FROM corruption_status
+		WHERE file_path IN (`+placeholders+`)
+		ORDER BY last_updated_at ASC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query corruption ids by file paths: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var filePath, corruptionID string
+		if err := rows.Scan(&filePath, &corruptionID); err != nil {
+			return nil, fmt.Errorf("scan corruption-id row: %w", err)
+		}
+		// Ascending order: later (more recently updated) rows overwrite.
+		out[filePath] = corruptionID
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate corruption ids: %w", err)
+	}
+	return out, nil
+}
+
 // CountDetectedToday returns the number of CorruptionDetected events created
 // today, excluding aggregates the user has ignored.
 func (r *CorruptionRepository) CountDetectedToday(ctx context.Context) (int, error) {

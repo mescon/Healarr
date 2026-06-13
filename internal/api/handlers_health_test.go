@@ -159,8 +159,8 @@ func (m *mockHealthChecker) CheckWithConfig(_ string, _ integration.DetectionCon
 	return m.healthy, m.err
 }
 
-func (m *mockHealthChecker) AnalyzeContent(_ string, _ *integration.ScanOverrides) (bool, *integration.HealthCheckError) {
-	return m.healthy, m.err
+func (m *mockHealthChecker) AnalyzeContent(_ string, _ *integration.ScanOverrides) (bool, *integration.HealthCheckError, string) {
+	return m.healthy, m.err, "passed"
 }
 
 // mockPathMapper implements integration.PathMapper for testing

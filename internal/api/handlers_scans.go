@@ -344,9 +344,27 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 		return
 	}
 
+	// Link corrupt rows to their remediation journey: one batched lookup of
+	// the latest corruption aggregate per file path on this page.
+	var corruptPaths []string
+	for _, row := range rows {
+		if row.Status == "corrupt" {
+			corruptPaths = append(corruptPaths, row.FilePath)
+		}
+	}
+	corruptionIDs := map[string]string{}
+	if len(corruptPaths) > 0 {
+		ids, err := s.corruptions.LatestIDsByFilePaths(c.Request.Context(), corruptPaths)
+		if err != nil {
+			logger.Debugf("Failed to resolve corruption ids for scan files: %v", err)
+		} else {
+			corruptionIDs = ids
+		}
+	}
+
 	files := make([]map[string]interface{}, 0, len(rows))
 	for _, row := range rows {
-		files = append(files, map[string]interface{}{
+		entry := map[string]interface{}{
 			"id":              row.ID,
 			"file_path":       row.FilePath,
 			"status":          row.Status,
@@ -354,7 +372,12 @@ func (s *RESTServer) getScanFiles(c *gin.Context) {
 			"error_details":   row.ErrorDetails.String,
 			"file_size":       row.FileSize.Int64,
 			"scanned_at":      row.ScannedAt,
-		})
+			"check_details":   row.CheckDetails.String,
+		}
+		if id, ok := corruptionIDs[row.FilePath]; ok {
+			entry["corruption_id"] = id
+		}
+		files = append(files, entry)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

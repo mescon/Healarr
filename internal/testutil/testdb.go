@@ -120,6 +120,7 @@ func initializeSchema(db *sql.DB) error {
 			corruption_type TEXT,
 			error_details TEXT,
 			file_size INTEGER,
+			check_details TEXT,
 			scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE UNIQUE INDEX idx_scan_files_scan_id_file_path_unique

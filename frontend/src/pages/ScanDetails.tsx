@@ -10,6 +10,8 @@ import { useDateFormat } from '../lib/useDateFormat';
 import { useToast } from '../contexts/ToastContext';
 import { useWebSocketEvent } from '../contexts/WebSocketProvider';
 import { formatBytes } from '../lib/formatters';
+import ScanFileDetail from '../components/ScanFileDetail';
+import RemediationJourney from '../components/RemediationJourney';
 
 const ScanDetails = () => {
     const { id } = useParams();
@@ -19,6 +21,10 @@ const ScanDetails = () => {
     const [isActionLoading, setIsActionLoading] = useState(false);
     const [currentFile, setCurrentFile] = useState<string | null>(null);
     const [scanProgress, setScanProgress] = useState<{ filesDone: number; totalFiles: number } | null>(null);
+    // Selected file row -> check-details modal; selected corruption -> its
+    // remediation journey (opened from the file modal for corrupt files).
+    const [selectedFile, setSelectedFile] = useState<ScanFile | null>(null);
+    const [journeyCorruptionId, setJourneyCorruptionId] = useState<string | null>(null);
     const limit = 50;
     const { formatCompact, formatTime } = useDateFormat();
     const toast = useToast();
@@ -497,7 +503,10 @@ const ScanDetails = () => {
             {/* Files Table */}
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 overflow-hidden">
                 <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-                    <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Scanned Files</h2>
+                    <div>
+                        <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Scanned Files</h2>
+                        <p className="text-xs text-slate-500 mt-0.5">Click a file to see what was checked.</p>
+                    </div>
                     {hasScanFileData && (
                         <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-lg">
                             <Filter className="w-4 h-4 text-slate-600 dark:text-slate-400 ml-2" />
@@ -543,6 +552,7 @@ const ScanDetails = () => {
                             isLoading={isLoadingFiles}
                             data={filesData?.data || []}
                             mobileCardTitle={(row: ScanFile) => row.file_path.split('/').pop() || row.file_path}
+                            onRowClick={(row: ScanFile) => setSelectedFile(row)}
                             columns={[
                                 {
                                     header: 'Status',
@@ -628,6 +638,26 @@ const ScanDetails = () => {
                     </>
                 )}
             </div>
+
+            {/* Per-file check details. For a corrupt file with an aggregate,
+                the modal offers a jump to its remediation journey. */}
+            {selectedFile && (
+                <ScanFileDetail
+                    file={selectedFile}
+                    onClose={() => setSelectedFile(null)}
+                    onViewJourney={(corruptionId) => {
+                        setSelectedFile(null);
+                        setJourneyCorruptionId(corruptionId);
+                    }}
+                />
+            )}
+
+            {journeyCorruptionId && (
+                <RemediationJourney
+                    corruptionId={journeyCorruptionId}
+                    onClose={() => setJourneyCorruptionId(null)}
+                />
+            )}
         </div>
     );
 };

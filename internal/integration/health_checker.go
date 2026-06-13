@@ -1106,28 +1106,36 @@ func (hc *CmdHealthChecker) getMediaProbeInfo(path string) (*mediaProbeInfo, err
 // ov bundles the per-scan-path overrides for the global scan tunables
 // (thorough duration / timeout / hwaccel). Pass nil to inherit every
 // value from the live globals.
-func (hc *CmdHealthChecker) AnalyzeContent(path string, ov *ScanOverrides) (bool, *HealthCheckError) {
+//
+// The third return is a human-readable note of what the pass actually did:
+// "passed", or "skipped: <reason>" for the fail-safe paths that return
+// healthy without analyzing. The note feeds the per-file check details in
+// the scan UI — before it existed, a file whose analysis was skipped every
+// scan (e.g. probe timeouts on large 4K files) was indistinguishable from
+// one that was fully analyzed, except by grepping logs. When the result is
+// unhealthy the note is empty: the HealthCheckError carries the details.
+func (hc *CmdHealthChecker) AnalyzeContent(path string, ov *ScanOverrides) (bool, *HealthCheckError, string) {
 	if err := validateMediaPath(path); err != nil {
 		return false, &HealthCheckError{
 			Type:    ErrorTypeInvalidConfig,
 			Message: fmt.Sprintf("invalid media path: %v", err),
-		}
+		}, ""
 	}
 
 	// Probe file for duration and stream types
 	info, err := hc.getMediaProbeInfo(path)
 	if err != nil {
 		logger.Warnf("Content analysis skipped (probe failed): %s: %v", path, err)
-		return true, nil
+		return true, nil, fmt.Sprintf("skipped: probe failed: %v", err)
 	}
 
 	if info.Duration <= 0 {
 		logger.Warnf("Content analysis skipped (invalid duration %.2f): %s", info.Duration, path)
-		return true, nil
+		return true, nil, fmt.Sprintf("skipped: probe reported invalid duration %.2f", info.Duration)
 	}
 
 	if !info.HasVideo && !info.HasAudio {
-		return true, nil
+		return true, nil, "skipped: no audio/video streams"
 	}
 
 	// Build ffmpeg command with appropriate filters. Hardware-accel args go
@@ -1153,7 +1161,14 @@ func (hc *CmdHealthChecker) AnalyzeContent(path string, ov *ScanOverrides) (bool
 
 	ffmpegArgs = append(ffmpegArgs, "-f", "null", "-")
 
-	// Run ffmpeg with detection filters
+	// Run ffmpeg with detection filters. This is the single heaviest
+	// detection subprocess (a full or prefix decode), and it does not go
+	// through runCommandWithTimeout, so it must take its own slot from the
+	// global limiter — otherwise lowering scan.workers would not throttle
+	// the decode that matters most.
+	toolLimiter.acquire(EffectiveScanWorkers)
+	defer toolLimiter.release()
+
 	cmd := exec.Command(hc.FFmpegPath, ffmpegArgs...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -1173,17 +1188,17 @@ func (hc *CmdHealthChecker) AnalyzeContent(path string, ov *ScanOverrides) (bool
 			<-done
 		}
 		logger.Warnf("Content analysis timed out after %v: %s", timeout, path)
-		return true, nil
+		return true, nil, fmt.Sprintf("skipped: timed out after %v", timeout)
 	case err := <-done:
 		if err != nil {
 			logger.Warnf("Content analysis ffmpeg error (treating as healthy): %s: %v", path, err)
-			return true, nil
+			return true, nil, fmt.Sprintf("skipped: ffmpeg error: %v", err)
 		}
 	}
 
 	// Parse results and evaluate against threshold
 	output := stderr.String()
-	return evaluateContentAnalysis(contentAnalysisResult{
+	healthy, healthErr := evaluateContentAnalysis(contentAnalysisResult{
 		BlackDuration:   parseDurations(blackDurationRe, output),
 		FreezeDuration:  parseDurations(freezeDurationRe, output),
 		SilenceDuration: parseDurations(silenceDurationRe, output),
@@ -1191,4 +1206,8 @@ func (hc *CmdHealthChecker) AnalyzeContent(path string, ov *ScanOverrides) (bool
 		HasVideo:        info.HasVideo,
 		HasAudio:        info.HasAudio,
 	})
+	if healthy {
+		return true, nil, "passed"
+	}
+	return false, healthErr, ""
 }

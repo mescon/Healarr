@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -4258,11 +4259,11 @@ func TestScannerService_ContentAnalysis_ThoroughMode(t *testing.T) {
 			return true, nil
 		},
 		// Content analysis detects black video
-		AnalyzeContentFunc: func(path string, ov *integration.ScanOverrides) (bool, *integration.HealthCheckError) {
+		AnalyzeContentFunc: func(path string, ov *integration.ScanOverrides) (bool, *integration.HealthCheckError, string) {
 			return false, &integration.HealthCheckError{
 				Type:    integration.ErrorTypeBlackVideo,
 				Message: "video is 100% black",
-			}
+			}, ""
 		},
 	}
 
@@ -4325,9 +4326,9 @@ func TestScannerService_ContentAnalysis_QuickMode_Skipped(t *testing.T) {
 		CheckWithConfigFunc: func(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError) {
 			return true, nil
 		},
-		AnalyzeContentFunc: func(path string, ov *integration.ScanOverrides) (bool, *integration.HealthCheckError) {
+		AnalyzeContentFunc: func(path string, ov *integration.ScanOverrides) (bool, *integration.HealthCheckError, string) {
 			t.Error("AnalyzeContent should NOT be called in quick mode")
-			return true, nil
+			return true, nil, "passed"
 		},
 	}
 
@@ -4351,6 +4352,80 @@ func TestScannerService_ContentAnalysis_QuickMode_Skipped(t *testing.T) {
 	// AnalyzeContent should not have been called
 	if mockHC.CallCount("AnalyzeContent") != 0 {
 		t.Error("AnalyzeContent should not be called in quick mode")
+	}
+}
+
+// TestScannerService_RecordsCheckDetails_HealthyFile verifies the
+// scan-file-inspection feature: a HEALTHY file (which has no corruption
+// aggregate and so no event journey) still gets a check_details JSON record
+// describing what ran, so the user can click it on the scan-details page.
+func TestScannerService_RecordsCheckDetails_HealthyFile(t *testing.T) {
+	db, err := testutil.NewTestDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	eb := eventbus.NewEventBus(db)
+	defer eb.Shutdown()
+
+	mockHC := &testutil.MockHealthChecker{
+		CheckWithConfigFunc: func(path string, config integration.DetectionConfig) (bool, *integration.HealthCheckError) {
+			return true, nil
+		},
+		AnalyzeContentFunc: func(path string, ov *integration.ScanOverrides) (bool, *integration.HealthCheckError, string) {
+			return true, nil, "passed"
+		},
+	}
+
+	scanner := NewScannerService(db, eb, mockHC, &testutil.MockPathMapper{})
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "healthy.mkv")
+	if err := os.WriteFile(testFile, []byte("fake media content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-10 * time.Minute)
+	os.Chtimes(testFile, oldTime, oldTime)
+
+	_, err = db.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, enabled, auto_remediate, dry_run, detection_method, detection_mode)
+		VALUES (502, ?, ?, 1, 1, 0, 0, 'ffprobe', 'thorough')`, tmpDir, tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := scanner.ScanPath(502, tmpDir); err != nil {
+		t.Fatalf("ScanPath failed: %v", err)
+	}
+
+	var status string
+	var checkDetails sql.NullString
+	if err := db.QueryRow(`SELECT status, check_details FROM scan_files WHERE file_path = ?`, testFile).
+		Scan(&status, &checkDetails); err != nil {
+		t.Fatalf("read scan_files row: %v", err)
+	}
+	if status != "healthy" {
+		t.Fatalf("status = %q, want healthy", status)
+	}
+	if !checkDetails.Valid || checkDetails.String == "" {
+		t.Fatal("healthy file recorded no check_details (the inspection feature needs them)")
+	}
+
+	var d fileCheckDetails
+	if err := json.Unmarshal([]byte(checkDetails.String), &d); err != nil {
+		t.Fatalf("check_details is not valid JSON: %v (%q)", err, checkDetails.String)
+	}
+	if d.Method != "ffprobe" {
+		t.Errorf("method = %q, want ffprobe", d.Method)
+	}
+	if d.Mode != "thorough" {
+		t.Errorf("mode = %q, want thorough", d.Mode)
+	}
+	if d.Structural != "passed" {
+		t.Errorf("structural = %q, want passed", d.Structural)
+	}
+	if d.ContentAnalysis != "passed" {
+		t.Errorf("content_analysis = %q, want passed", d.ContentAnalysis)
 	}
 }
 

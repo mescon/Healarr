@@ -75,6 +75,7 @@ func setupScansTestDB(t *testing.T) (*sql.DB, func()) {
 			corruption_type TEXT,
 			error_details TEXT,
 			file_size INTEGER,
+			check_details TEXT,
 			scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 		-- Mirrors migration 010_scan_files_unique_index.sql.
