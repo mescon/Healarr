@@ -448,6 +448,22 @@ func (hc *CmdHealthChecker) detectVideoCodec(path string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// hwAccelStatusLogged guards the process-stable hardware-acceleration status
+// lines so each is logged at most once. resolveHwAccelArgs runs per scanned
+// file (the hwaccel setting is a live tunable, and per-path overrides bypass
+// the args cache in hwAccelArgsResolved), but whether the GPU is present,
+// absent, or misconfigured does not change during a run - logging it per file
+// floods the scan log with one identical line per file.
+var hwAccelStatusLogged sync.Map
+
+// logHwAccelStatusOnce reports whether key has not been logged before,
+// recording it so the next call returns false. Safe for the concurrent scan
+// workers that all resolve hwaccel args.
+func logHwAccelStatusOnce(key string) bool {
+	_, already := hwAccelStatusLogged.LoadOrStore(key, struct{}{})
+	return !already
+}
+
 // resolveHwAccelArgs translates HEALARR_HEALTH_CHECK_HWACCEL into the actual
 // ffmpeg args to use. Split out so it can be tested without a real ffmpeg.
 //   - "off"    -> []
@@ -460,13 +476,19 @@ func resolveHwAccelArgs(ffmpegPath, setting string) []string {
 		return nil
 	case "auto":
 		if probeHwAccelAvailable(ffmpegPath) {
-			logger.Infof("Health check: ffmpeg hardware acceleration detected, enabling -hwaccel auto")
+			if logHwAccelStatusOnce("auto-enabled") {
+				logger.Infof("Health check: ffmpeg hardware acceleration detected, enabling -hwaccel auto")
+			}
 			return []string{"-hwaccel", "auto"}
 		}
-		logger.Debugf("Health check: no ffmpeg hardware acceleration available, scans will use software decode")
+		if logHwAccelStatusOnce("auto-software") {
+			logger.Debugf("Health check: no ffmpeg hardware acceleration available, scans will use software decode")
+		}
 		return nil
 	default:
-		logger.Infof("Health check: ffmpeg hardware acceleration forced via config: -hwaccel %s", setting)
+		if logHwAccelStatusOnce("forced-" + setting) {
+			logger.Infof("Health check: ffmpeg hardware acceleration forced via config: -hwaccel %s", setting)
+		}
 		return []string{"-hwaccel", setting}
 	}
 }
@@ -504,10 +526,15 @@ func probeHwAccelAvailable(ffmpegPath string) bool {
 		return false
 	}
 	if !hwAccelDeviceAvailable() {
-		logger.Warnf("Health check: ffmpeg lists hardware accelerators in its build but no usable GPU device is exposed to the container. " +
-			"Decodes will silently fall back to software. To enable hardware acceleration, map /dev/nvidia* " +
-			"(for NVIDIA NVDEC/CUVID) or /dev/dri (for VAAPI/QSV) into the container via the compose 'devices:' entry " +
-			"and re-launch. See HEALARR_HEALTH_CHECK_HWACCEL.")
+		// Once, not per file: like the status lines above, this is a
+		// process-stable condition the per-file resolution would otherwise
+		// repeat for every scanned file.
+		if logHwAccelStatusOnce("device-missing") {
+			logger.Warnf("Health check: ffmpeg lists hardware accelerators in its build but no usable GPU device is exposed to the container. " +
+				"Decodes will silently fall back to software. To enable hardware acceleration, map /dev/nvidia* " +
+				"(for NVIDIA NVDEC/CUVID) or /dev/dri (for VAAPI/QSV) into the container via the compose 'devices:' entry " +
+				"and re-launch. See HEALARR_HEALTH_CHECK_HWACCEL.")
+		}
 		return false
 	}
 	return true
