@@ -1077,24 +1077,29 @@ func (s *ScannerService) handlePathInaccessible(scanID, localPath string, access
 
 // finalizeScan handles the cleanup when a scan completes
 func (s *ScannerService) finalizeScan(scanID string, progress *ScanProgress, scanDBID int64) {
-	if progress.Status != ScanStatusInterrupted {
+	switch progress.Status {
+	case ScanStatusInterrupted:
+		// Resumable: Shutdown already persisted 'interrupted' with the saved
+		// resume index. Leave the row untouched.
+	case ScanStatusScanning, ScanStatusEnumerating:
+		// Defense in depth: a still-ACTIVE status here means a stop path
+		// reached finalize without recording a terminal status. Recording
+		// "completed" would falsely mark a partial scan done and drop the
+		// rest of the library, so persist a resumable 'interrupted' (or
+		// 'cancelled' if this is not a shutdown) instead.
+		s.finalizeActiveStatusScan(scanID, progress, scanDBID)
+	default:
+		// Terminal: completed, or cancelled/aborted preserved as-is.
 		finalStatus := ScanStatusCompleted
-		switch progress.Status {
-		case ScanStatusCancelled:
-			finalStatus = ScanStatusCancelled
-		case ScanStatusAborted:
-			// A mount-failure abort must stay ABORTED: finalizing it as
-			// completed made a failed scan masquerade as a successful one in
-			// "Last Scan" and the dashboard.
-			finalStatus = ScanStatusAborted
+		if progress.Status == ScanStatusCancelled || progress.Status == ScanStatusAborted {
+			finalStatus = progress.Status
 		}
 		if scanDBID > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
-			err := s.scanRepo().Finalize(ctx, scanDBID, finalStatus, progress.FilesDone)
-			cancel()
-			if err != nil {
+			if err := s.scanRepo().Finalize(ctx, scanDBID, finalStatus, progress.FilesDone); err != nil {
 				logger.Errorf("Failed to update scan record: %v", err)
 			}
+			cancel()
 		}
 	}
 
@@ -1112,6 +1117,43 @@ func (s *ScannerService) finalizeScan(scanID string, progress *ScanProgress, sca
 		},
 	}); err != nil {
 		logger.Errorf("Failed to publish ScanCompleted event for path scan %s: %v", scanID, err)
+	}
+}
+
+// finalizeActiveStatusScan is the backstop for a scan that reached
+// finalizeScan still flagged active (scanning/enumerating) - a stop path that
+// failed to record a terminal status. It records a resumable 'interrupted'
+// (graceful shutdown) or terminal 'cancelled' (anything else) using the
+// watermark resume index, never a false 'completed'.
+func (s *ScannerService) finalizeActiveStatusScan(scanID string, progress *ScanProgress, scanDBID int64) {
+	shuttingDown := false
+	select {
+	case <-s.shutdownCh:
+		shuttingDown = true
+	default:
+	}
+	logger.Warnf("Scan %s reached finalize with active status %q; recording %s instead of completed to avoid a false completion",
+		scanID, progress.Status, map[bool]string{true: "interrupted", false: "cancelled"}[shuttingDown])
+
+	if scanDBID <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), scannerQueryTimeout)
+	defer cancel()
+	if shuttingDown {
+		progress.mu.Lock()
+		resumeAt := progress.FilesDone
+		if progress.usesWatermark {
+			resumeAt = progress.resumeIndex
+		}
+		progress.mu.Unlock()
+		if err := s.scanRepo().MarkInterrupted(ctx, scanDBID, resumeAt); err != nil {
+			logger.Errorf("Failed to mark scan %s interrupted at finalize: %v", scanID, err)
+		}
+		return
+	}
+	if _, err := s.scanRepo().MarkCancelled(ctx, scanDBID, "scan stopped without a recorded terminal status"); err != nil {
+		logger.Errorf("Failed to mark scan %s cancelled at finalize: %v", scanID, err)
 	}
 }
 
@@ -1953,9 +1995,42 @@ func (s *ScannerService) scanFilesParallel(
 	close(workersDone)
 	<-watermarkDone
 
-	if !stopped.Load() {
-		progress.Status = "completed"
+	if stopped.Load() {
+		// A stop can be triggered from several break points: the top-of-loop
+		// checkScanCancellation, the semaphore-acquire select's ctx.Done
+		// case, the `if stopped` guard after a worker flipped it, or a worker
+		// observing ctx.Done mid-detection (jobStopped). Only
+		// checkScanCancellation records WHY it stopped; the others set
+		// `stopped` without touching progress.Status, leaving it "scanning".
+		// finalizeScan would then treat that as a normal completion and write
+		// "completed", clobbering the "interrupted" row Shutdown persisted and
+		// silently dropping the unscanned remainder. Normalize from the real
+		// stop cause so every stop path agrees.
+		s.normalizeStoppedStatus(progress)
+		return
 	}
+	progress.Status = "completed"
+}
+
+// normalizeStoppedStatus sets a terminal status on a scan that broke out of
+// its dispatch loop, when the break path did not record one itself. It never
+// overwrites a status a stop path already set precisely (interrupted /
+// cancelled / aborted); it only resolves a still-active status (the file pool
+// stopped without a recorded reason). Shutdown closes shutdownCh BEFORE
+// canceling the scan context, so a closed shutdownCh here means "graceful
+// shutdown -> interrupted (resumable)"; otherwise it was a user cancel.
+func (s *ScannerService) normalizeStoppedStatus(progress *ScanProgress) {
+	switch progress.Status {
+	case ScanStatusInterrupted, ScanStatusCancelled, ScanStatusAborted:
+		return
+	}
+	select {
+	case <-s.shutdownCh:
+		progress.Status = ScanStatusInterrupted
+	default:
+		progress.Status = ScanStatusCancelled
+	}
+	s.emitProgress(progress)
 }
 
 // markFileProcessedNoSync bumps the in-memory FilesDone counter without

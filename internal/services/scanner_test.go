@@ -5267,6 +5267,127 @@ func TestScannerService_FinalizeScan_AbortedStaysAborted(t *testing.T) {
 	}
 }
 
+// finalizeScan must NEVER record "completed" for a scan that is still in an
+// active status (scanning/enumerating). That state means a stop path failed to
+// record a terminal status; recording completed would falsely mark a partial
+// scan done and silently drop the rest of the library. During shutdown it must
+// become a resumable 'interrupted' with the saved resume index; otherwise
+// 'cancelled'. This reproduces the parallel-scanner shutdown bug where the
+// dispatch loop, blocked on the worker semaphore, broke via ctx.Done without
+// setting the status, and the scan was finalized as completed at ~11%.
+func TestScannerService_FinalizeScan_ActiveStatusNeverCompletes(t *testing.T) {
+	t.Run("shutdown -> interrupted with resume index", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		res, err := db.Exec(`INSERT INTO scans (path, path_id, status, total_files, current_file_index) VALUES ('/p', 1, 'running', 31118, 0)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scanDBID, _ := res.LastInsertId()
+
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+		scanner := &ScannerService{db: db, eventBus: eb, activeScans: make(map[string]*ScanProgress), shutdownCh: make(chan struct{})}
+		scanner.initRepositories()
+		close(scanner.shutdownCh) // graceful shutdown in progress
+
+		// Mid-scan parallel state: watermark resume index well below total.
+		progress := &ScanProgress{ID: "s", Status: ScanStatusScanning, FilesDone: 3514, usesWatermark: true, resumeIndex: 3509}
+		scanner.activeScans["s"] = progress
+		scanner.finalizeScan("s", progress, scanDBID)
+
+		var status string
+		var idx int
+		_ = db.QueryRow(`SELECT status, current_file_index FROM scans WHERE id = ?`, scanDBID).Scan(&status, &idx)
+		if status != "interrupted" {
+			t.Errorf("status = %q, want interrupted (a partial scan must never be recorded completed)", status)
+		}
+		if idx != 3509 {
+			t.Errorf("current_file_index = %d, want 3509 (watermark resume point)", idx)
+		}
+	})
+
+	t.Run("no shutdown -> cancelled, not completed", func(t *testing.T) {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		res, err := db.Exec(`INSERT INTO scans (path, path_id, status, total_files) VALUES ('/p', 1, 'running', 100)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scanDBID, _ := res.LastInsertId()
+
+		eb := eventbus.NewEventBus(db)
+		defer eb.Shutdown()
+		scanner := &ScannerService{db: db, eventBus: eb, activeScans: make(map[string]*ScanProgress), shutdownCh: make(chan struct{})}
+		scanner.initRepositories()
+		// shutdownCh open: not a shutdown.
+
+		progress := &ScanProgress{ID: "s", Status: ScanStatusScanning, FilesDone: 10}
+		scanner.activeScans["s"] = progress
+		scanner.finalizeScan("s", progress, scanDBID)
+
+		var status string
+		_ = db.QueryRow(`SELECT status FROM scans WHERE id = ?`, scanDBID).Scan(&status)
+		if status != "cancelled" {
+			t.Errorf("status = %q, want cancelled", status)
+		}
+	})
+}
+
+// normalizeStoppedStatus resolves a still-active status from the real stop
+// cause and never overwrites a precise terminal status a stop path already set.
+func TestScannerService_NormalizeStoppedStatus(t *testing.T) {
+	// emitProgress publishes to the event bus, so the status-changing cases
+	// need a real one.
+	newScanner := func(t *testing.T, shutdown bool) *ScannerService {
+		db, err := testutil.NewTestDB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Close() })
+		eb := eventbus.NewEventBus(db)
+		t.Cleanup(eb.Shutdown)
+		s := &ScannerService{db: db, eventBus: eb, shutdownCh: make(chan struct{})}
+		if shutdown {
+			close(s.shutdownCh)
+		}
+		return s
+	}
+
+	t.Run("active + shutdown -> interrupted", func(t *testing.T) {
+		s := newScanner(t, true)
+		p := &ScanProgress{ID: "s", Status: ScanStatusScanning}
+		s.normalizeStoppedStatus(p)
+		if p.Status != ScanStatusInterrupted {
+			t.Errorf("got %q, want interrupted", p.Status)
+		}
+	})
+	t.Run("active + no shutdown -> cancelled", func(t *testing.T) {
+		s := newScanner(t, false)
+		p := &ScanProgress{ID: "s", Status: ScanStatusScanning}
+		s.normalizeStoppedStatus(p)
+		if p.Status != ScanStatusCancelled {
+			t.Errorf("got %q, want cancelled", p.Status)
+		}
+	})
+	t.Run("preserves an already-set aborted status", func(t *testing.T) {
+		// Returns before emitProgress, so no event bus is needed.
+		s := &ScannerService{shutdownCh: make(chan struct{})}
+		close(s.shutdownCh)
+		p := &ScanProgress{Status: ScanStatusAborted}
+		s.normalizeStoppedStatus(p)
+		if p.Status != ScanStatusAborted {
+			t.Errorf("got %q, want aborted (precise status must not be overwritten)", p.Status)
+		}
+	})
+}
+
 // =============================================================================
 // Webhook stability gates + live dedup (audit findings 5+10)
 // =============================================================================
