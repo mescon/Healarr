@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.14] - 2026-06-14
+
+A scan-load fix found in production and a long-requested visibility feature: see exactly what a scan checked on any file, healthy ones included.
+
+### Fixed
+- **Scans no longer overload the host; the worker-count setting finally works** ([#340](https://github.com/mescon/Healarr/pull/340)). On a 32-core machine the automatic concurrency resolved to 32, so a thorough scan of a 4K library ran 32 full ffmpeg decodes at once - more than fit in GPU memory, so the rest fell back to CPU software decoding and the server's load average passed 120. Three things changed. The auto default is now a prudent `min(4, CPU cores, memory budget)` instead of one-per-512MB-up-to-32; operators with strong hardware raise it. The **Scan Workers** setting in Config now actually takes effect - it was stored but never read, so only the environment variable worked. And the limit is now enforced globally across every file check (full-library scans, webhook checks, rescans, and post-remediation verification all shared no budget before and could stack on top of each other), re-evaluated continuously so lowering it throttles a scan that is already running, with no restart needed.
+
+### Added
+- **Inspect what was checked on any scanned file** ([#341](https://github.com/mescon/Healarr/pull/341)). On a scan's detail page, click any file to see a breakdown of what ran: detection method and mode, hardware acceleration, the structural check result and how long it took, and the content-analysis outcome. This works for **healthy** files too - previously only corrupt files had an inspectable history (their remediation journey), so there was no way to confirm what a healthy verdict was actually based on. The content-analysis step now also records when it was skipped and why (for example a probe timing out on a very large 4K file), which used to be visible only by reading the logs. Corrupt files get a one-click jump from this view straight to their remediation journey. Files scanned before this release show an explanatory note rather than blank details.
+
 ## [1.3.13] - 2026-06-11
 
 A single fix, observed live right after the v1.3.12 deploy.
