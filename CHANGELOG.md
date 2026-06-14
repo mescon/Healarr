@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.15] - 2026-06-14
+
+A log-noise fix.
+
+### Fixed
+- **The hardware-acceleration log line no longer repeats once per scanned file** ([#342](https://github.com/mescon/Healarr/pull/342)). `Health check: ffmpeg hardware acceleration detected, enabling -hwaccel auto` was written every time the scanner resolved its ffmpeg arguments, which happens for every file, so a scan of a large library buried the log under thousands of identical lines. The acceleration status doesn't change during a run, so it is now logged once. Only the logging changed; every file still decodes on the GPU exactly as before.
+
 ## [1.3.14] - 2026-06-14
 
 A scan-load fix found in production and a long-requested visibility feature: see exactly what a scan checked on any file, healthy ones included.
