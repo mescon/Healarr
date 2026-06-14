@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.16] - 2026-06-14
+
+A data-integrity fix for scans interrupted by a restart.
+
+### Fixed
+- **A scan interrupted by a restart is no longer recorded as "completed"** ([#343](https://github.com/mescon/Healarr/pull/343)). When the app was restarted while a parallel scan was running, the scan could be marked `completed` at partial progress instead of `interrupted` - so it never resumed on the next start, and the rest of the library was silently left unscanned (observed: a 31,118-file scan recorded complete at file 3,514). The cause was a gap in the parallel scanner: the dispatch loop spends most of its time waiting for a free worker, and a shutdown that arrived during that wait stopped the scan without recording why, after which finalization defaulted it to "completed" - overwriting the resumable state the shutdown had already saved. The scanner now records the correct reason from every stop path, and finalization will never mark a still-running scan complete: an interrupted scan stays interrupted (and resumes), a cancelled one stays cancelled. Only the parallel scan path was affected; serial scans already recorded the correct status.
+
 ## [1.3.15] - 2026-06-14
 
 A log-noise fix.
