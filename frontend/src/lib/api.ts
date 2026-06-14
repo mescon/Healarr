@@ -135,6 +135,23 @@ export interface ScanFile {
     error_details: string;
     file_size: number;
     scanned_at: string;
+    // JSON string of what was checked (method, mode, hwaccel, durations,
+    // content-analysis outcome). "" for rows scanned before this existed.
+    check_details: string;
+    // Present only on corrupt rows that have a corruption aggregate, linking
+    // the file to its remediation journey.
+    corruption_id?: string;
+}
+
+// CheckDetails is the parsed shape of ScanFile.check_details.
+export interface CheckDetails {
+    method: string;
+    mode: string;
+    hwaccel?: string;
+    structural: string;
+    structural_ms: number;
+    content_analysis?: string;
+    content_analysis_ms?: number;
 }
 
 export const getScanFiles = async (

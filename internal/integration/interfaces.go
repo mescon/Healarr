@@ -173,7 +173,10 @@ func itoa(n int) string {
 type HealthChecker interface {
 	Check(path, mode string) (bool, *HealthCheckError)
 	CheckWithConfig(path string, config DetectionConfig) (bool, *HealthCheckError)
-	AnalyzeContent(path string, ov *ScanOverrides) (bool, *HealthCheckError)
+	// AnalyzeContent returns (healthy, error, note). The note says what the
+	// pass actually did ("passed" / "skipped: <reason>"), for the per-file
+	// check details; it is empty when the result is unhealthy.
+	AnalyzeContent(path string, ov *ScanOverrides) (bool, *HealthCheckError, string)
 }
 
 // PathMapper defines the interface for translating paths

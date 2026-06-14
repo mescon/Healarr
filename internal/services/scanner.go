@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/domain"
 	"github.com/mescon/Healarr/internal/eventbus"
 	"github.com/mescon/Healarr/internal/integration"
@@ -1322,6 +1323,13 @@ type scanFileContext struct {
 	dryRun            bool
 	detectionConfig   integration.DetectionConfig
 	activeCorruptions map[string]bool // Preloaded map of file paths with active corruptions
+
+	// checkDetails is the JSON document detectFile builds describing WHAT
+	// was checked and how it went (method, mode, hwaccel, durations,
+	// content-analysis outcome). Recorded into scan_files.check_details so
+	// the scan UI can show a per-file check journey - including for healthy
+	// files, which have no corruption aggregate and hence no event journey.
+	checkDetails string
 }
 
 // scanLoopAction indicates what the scan loop should do after checking state.
@@ -1459,6 +1467,7 @@ func (s *ScannerService) recordSkipped(sfc *scanFileContext, corruptionType, det
 		CorruptionType: corruptionType,
 		ErrorDetails:   details,
 		FileSize:       sfc.fileSize,
+		CheckDetails:   sfc.checkDetails,
 	}); err != nil {
 		logger.Errorf("Failed to record skipped file (%s): %v", corruptionType, err)
 	}
@@ -1468,9 +1477,10 @@ func (s *ScannerService) recordSkipped(sfc *scanFileContext, corruptionType, det
 func (s *ScannerService) recordHealthyFile(sfc *scanFileContext) {
 	if sfc.scanDBID > 0 {
 		err := s.scanFileRepo().Record(context.Background(), sfc.scanDBID, repository.ScanFileRecord{
-			FilePath: sfc.filePath,
-			Status:   "healthy",
-			FileSize: sfc.fileSize,
+			FilePath:     sfc.filePath,
+			Status:       "healthy",
+			FileSize:     sfc.fileSize,
+			CheckDetails: sfc.checkDetails,
 		})
 		if err != nil {
 			// scan_files rows drive the UI scan-detail screen; losing writes
@@ -1494,6 +1504,7 @@ func (s *ScannerService) handleRecoverableError(progress *ScanProgress, sfc *sca
 			CorruptionType: healthErr.Type,
 			ErrorDetails:   healthErr.Message,
 			FileSize:       sfc.fileSize,
+			CheckDetails:   sfc.checkDetails,
 		})
 		if err != nil {
 			logger.Errorf("Failed to record inaccessible file: %v", err)
@@ -1561,6 +1572,7 @@ func (s *ScannerService) handleTrueCorruption(ctx context.Context, progress *Sca
 				CorruptionType: "AlreadyProcessing",
 				ErrorDetails:   "File already has active corruption record",
 				FileSize:       sfc.fileSize,
+				CheckDetails:   sfc.checkDetails,
 			}); err != nil {
 				logger.Debugf("Failed to record skipped file (already processing): %v", err)
 			}
@@ -1576,6 +1588,7 @@ func (s *ScannerService) handleTrueCorruption(ctx context.Context, progress *Sca
 			CorruptionType: healthErr.Type,
 			ErrorDetails:   healthErr.Message,
 			FileSize:       sfc.fileSize,
+			CheckDetails:   sfc.checkDetails,
 		})
 		if err != nil {
 			logger.Debugf("Failed to record corrupt file: %v", err)
@@ -2117,15 +2130,82 @@ func (s *ScannerService) detectFile(sfc *scanFileContext, cfg scanFilesConfig) d
 		return detectionResult{outcome: outcomeSkippedSizeChanging}
 	}
 
-	healthy, healthErr := s.detector.CheckWithConfig(sfc.filePath, cfg.DetectionConfig)
-	if healthy && cfg.DetectionConfig.Mode == integration.ModeThorough {
-		// Thorough mode: structurally-healthy files get a content-analysis pass.
-		healthy, healthErr = s.detector.AnalyzeContent(sfc.filePath, cfg.DetectionConfig.Overrides)
+	details := fileCheckDetails{
+		Method:  string(cfg.DetectionConfig.Method),
+		Mode:    cfg.DetectionConfig.Mode,
+		HwAccel: effectiveHwAccelSetting(cfg.DetectionConfig.Overrides),
 	}
+
+	start := time.Now()
+	healthy, healthErr := s.detector.CheckWithConfig(sfc.filePath, cfg.DetectionConfig)
+	details.StructuralMs = time.Since(start).Milliseconds()
+	if healthy {
+		details.Structural = "passed"
+	} else if healthErr != nil {
+		details.Structural = "failed: " + healthErr.Type
+	} else {
+		details.Structural = "failed"
+	}
+
+	switch {
+	case healthy && cfg.DetectionConfig.Mode == integration.ModeThorough:
+		// Thorough mode: structurally-healthy files get a content-analysis pass.
+		var note string
+		cstart := time.Now()
+		healthy, healthErr, note = s.detector.AnalyzeContent(sfc.filePath, cfg.DetectionConfig.Overrides)
+		details.ContentAnalysisMs = time.Since(cstart).Milliseconds()
+		switch {
+		case note != "":
+			details.ContentAnalysis = note
+		case healthErr != nil:
+			details.ContentAnalysis = "flagged: " + healthErr.Type
+		default:
+			details.ContentAnalysis = "flagged"
+		}
+	case cfg.DetectionConfig.Mode == integration.ModeThorough:
+		details.ContentAnalysis = "not run (structural check failed)"
+	default:
+		details.ContentAnalysis = "not run (quick mode)"
+	}
+
+	sfc.checkDetails = details.marshal()
+
 	if healthy {
 		return detectionResult{outcome: outcomeHealthy}
 	}
 	return detectionResult{outcome: outcomeUnhealthy, healthErr: healthErr}
+}
+
+// fileCheckDetails is the per-file "what was checked" record persisted to
+// scan_files.check_details as JSON. It exists so a user can click any
+// scanned file - healthy ones included - and see which method/mode ran, how
+// long it took, and what the content-analysis pass actually did (the
+// fail-safe skip paths used to be visible only as log warnings).
+type fileCheckDetails struct {
+	Method            string `json:"method"`
+	Mode              string `json:"mode"`
+	HwAccel           string `json:"hwaccel,omitempty"`
+	Structural        string `json:"structural"`
+	StructuralMs      int64  `json:"structural_ms"`
+	ContentAnalysis   string `json:"content_analysis,omitempty"`
+	ContentAnalysisMs int64  `json:"content_analysis_ms,omitempty"`
+}
+
+func (d fileCheckDetails) marshal() string {
+	b, err := json.Marshal(d)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// effectiveHwAccelSetting reports the hwaccel setting this check runs under:
+// the per-path override when set, else the live global.
+func effectiveHwAccelSetting(ov *integration.ScanOverrides) string {
+	if ov != nil && ov.Hwaccel != nil {
+		return *ov.Hwaccel
+	}
+	return config.LiveHealthCheckHwAccel()
 }
 
 // checkAndHandleFile runs detection for a file and applies the outcome: it

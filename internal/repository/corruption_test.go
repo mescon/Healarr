@@ -242,6 +242,48 @@ func TestCorruptionRepository_StateCounts(t *testing.T) {
 	}
 }
 
+func TestCorruptionRepository_LatestIDsByFilePaths(t *testing.T) {
+	t.Parallel()
+	db := newCorruptionTestDB(t)
+	repo := NewCorruptionRepository(db)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	// Two aggregates for the same file (a re-corruption): the more recently
+	// updated one must win so the scan row links to the live journey.
+	seedCorruption(t, db, "old", "/movies/Film.mkv", "VerificationSuccess", base)
+	seedCorruption(t, db, "new", "/movies/Film.mkv", "CorruptionDetected", base.Add(time.Hour))
+	seedCorruption(t, db, "other", "/tv/Show.mkv", "DeletionFailed", base)
+
+	ids, err := repo.LatestIDsByFilePaths(context.Background(),
+		[]string{"/movies/Film.mkv", "/tv/Show.mkv", "/missing.mkv"})
+	if err != nil {
+		t.Fatalf("LatestIDsByFilePaths: %v", err)
+	}
+	if ids["/movies/Film.mkv"] != "new" {
+		t.Errorf("Film.mkv = %q, want the most recently updated aggregate %q", ids["/movies/Film.mkv"], "new")
+	}
+	if ids["/tv/Show.mkv"] != "other" {
+		t.Errorf("Show.mkv = %q, want %q", ids["/tv/Show.mkv"], "other")
+	}
+	if _, ok := ids["/missing.mkv"]; ok {
+		t.Errorf("a path with no corruption must be absent from the map, got %q", ids["/missing.mkv"])
+	}
+}
+
+// Empty input must not produce a malformed IN () query.
+func TestCorruptionRepository_LatestIDsByFilePaths_Empty(t *testing.T) {
+	t.Parallel()
+	db := newCorruptionTestDB(t)
+	repo := NewCorruptionRepository(db)
+	ids, err := repo.LatestIDsByFilePaths(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("LatestIDsByFilePaths(nil): %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected empty map, got %v", ids)
+	}
+}
+
 func TestCorruptionRepository_CountDetectedToday(t *testing.T) {
 	t.Parallel()
 	db := newCorruptionTestDB(t)
