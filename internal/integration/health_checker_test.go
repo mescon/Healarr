@@ -1659,6 +1659,36 @@ func TestResolveHwAccelArgs(t *testing.T) {
 	}
 }
 
+// TestLogHwAccelStatusOnce verifies the dedup guard that stops the
+// hardware-acceleration status line from being logged once per scanned file.
+func TestLogHwAccelStatusOnce(t *testing.T) {
+	key := "test-key-" + t.Name()
+	if !logHwAccelStatusOnce(key) {
+		t.Fatal("first call must report not-yet-logged (true)")
+	}
+	for i := 0; i < 5; i++ {
+		if logHwAccelStatusOnce(key) {
+			t.Errorf("call %d must report already-logged (false)", i+2)
+		}
+	}
+	// A different key is independent.
+	if !logHwAccelStatusOnce(key + "-other") {
+		t.Error("a distinct key must log on its own first call")
+	}
+}
+
+// TestResolveHwAccelArgs_RepeatStillReturnsArgs confirms the log-once guard
+// only suppresses logging, never the returned args: every scanned file must
+// still get its -hwaccel flags even though only the first logs.
+func TestResolveHwAccelArgs_RepeatStillReturnsArgs(t *testing.T) {
+	for i := 0; i < 3; i++ {
+		got := resolveHwAccelArgs("/nonexistent/ffmpeg", "vdpau")
+		if !hwAccelSlicesEqual(got, []string{"-hwaccel", "vdpau"}) {
+			t.Fatalf("call %d: got %v, want [-hwaccel vdpau]", i+1, got)
+		}
+	}
+}
+
 func hwAccelSlicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
