@@ -1029,6 +1029,55 @@ func TestHTTPArrClient_DeleteFile_Radarr(t *testing.T) {
 	}
 }
 
+// Recycle-bin race (issue #350): the file is tracked in the *arr (so a fileID
+// resolves), but the DELETE returns 404 because the *arr already moved it to
+// its recycling bin while our request timed out and retried. That 404 means
+// the file is gone - the deletion goal - so DeleteFile must succeed and return
+// metadata so the remediator proceeds to search for a replacement, NOT fail.
+func TestHTTPArrClient_DeleteFile_404OnDeleteIsSuccess(t *testing.T) {
+	client, db := setupTestClient(t)
+	defer db.Close()
+
+	deleteEndpointCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v3/episodefile" && r.Method == "GET":
+			// File IS still tracked when we list (the recycle-bin move
+			// hasn't been reflected in the file list yet).
+			json.NewEncoder(w).Encode([]struct {
+				ID   int64  `json:"id"`
+				Path string `json:"path"`
+			}{
+				{ID: 174475, Path: "/tv/Show/Season 02/ep07.mkv"},
+			})
+		case r.URL.Path == "/api/v3/episodefile/174475" && r.Method == "DELETE":
+			// ...but by the time the delete lands, the *arr already removed it.
+			deleteEndpointCalled = true
+			w.WriteHeader(http.StatusNotFound)
+		case strings.HasPrefix(r.URL.Path, "/api/v3/episode"):
+			json.NewEncoder(w).Encode([]struct{}{})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	encryptedKey, _ := crypto.Encrypt("key")
+	db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key, enabled) VALUES (1, 'Sonarr', 'sonarr', ?, ?, 1)`, server.URL, encryptedKey)
+	db.DB.Exec(`INSERT INTO scan_paths (id, local_path, arr_path, arr_instance_id, auto_remediate, is_4k) VALUES (1, '/local/tv', '/tv', 1, 0, 0)`)
+
+	metadata, err := client.DeleteFile(693, "/tv/Show/Season 02/ep07.mkv")
+	if err != nil {
+		t.Fatalf("DeleteFile must treat a 404-on-delete as success (file is gone): %v", err)
+	}
+	if !deleteEndpointCalled {
+		t.Error("delete endpoint was not called")
+	}
+	if metadata == nil {
+		t.Error("metadata must be returned so the remediator can trigger a search")
+	}
+}
+
 func TestHTTPArrClient_DeleteFile_NotFoundInArr(t *testing.T) {
 	client, db := setupTestClient(t)
 	defer db.Close()
