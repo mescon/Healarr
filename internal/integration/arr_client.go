@@ -793,6 +793,22 @@ func (c *HTTPArrClient) deleteFileByID(instance *ArrInstance, fileID int64) erro
 	}
 	defer resp.Body.Close()
 
+	// 404 means the file ID we asked to delete no longer exists on the *arr,
+	// which is exactly the deletion goal - treat it as success, not failure.
+	// This is the recycle-bin race (issue #350): with a *arr recycling bin
+	// enabled, the DELETE can take ~1 minute while the *arr moves the file,
+	// so the request times out client-side; the *arr finishes the move
+	// server-side, and our retry then hits 404. Reporting that as a delete
+	// failure stalled remediation - the file WAS gone, but no replacement
+	// search was ever triggered. We only reach this function after resolving
+	// a concrete fileID from the *arr's own file list, so a 404 here is
+	// unambiguous (unlike a file that was never tracked, which is handled
+	// separately and deliberately refused).
+	if resp.StatusCode == http.StatusNotFound {
+		logger.Infof("File ID %d already absent from %s (404 on delete) - treating as deleted", fileID, instance.Type)
+		return nil
+	}
+
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("failed to delete file: %s", resp.Status)
 	}
