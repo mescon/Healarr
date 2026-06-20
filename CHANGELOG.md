@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.17] - 2026-06-21
+
+A remediation fix for users running a Sonarr/Radarr recycling bin, plus dependency bumps.
+
+### Fixed
+- **Remediation no longer stalls when the Sonarr/Radarr recycling bin is enabled** ([#351](https://github.com/mescon/Healarr/pull/351)). With a recycling bin on, the *arr takes about a minute to move a deleted file to the bin, so Healarr's delete request times out and retries; by the retry the *arr has finished, so the delete returns `404 Not Found`. Healarr was treating that 404 as a failure, which left the corrupt file deleted from the *arr but with no replacement search ever triggered - so nothing was re-downloaded. A 404 on the delete means the file is already gone, which is exactly the goal, so it is now treated as a successful deletion and remediation proceeds to the replacement search. The existing retry window comfortably covers the recycle-bin delay, so there is no need to disable the bin. Reported by j0ckinjz in [#350](https://github.com/mescon/Healarr/issues/350).
+
+### Dependencies
+- Bumped `golang.org/x/crypto` 0.52→0.53 (with its required net/sys/text bumps), `@tanstack/react-query` 5.90→5.101, `zod` 4.3→4.4, `typescript-eslint` 8.60→8.61, `eslint-plugin-react-refresh` 0.5.0→0.5.3, and `@tailwindcss/postcss` 4.3.0→4.3.1 ([#352](https://github.com/mescon/Healarr/pull/352)).
+
 ## [1.3.16] - 2026-06-14
 
 A data-integrity fix for scans interrupted by a restart.
