@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -408,24 +409,7 @@ func (n *Notifier) Start() error {
 	for _, event := range events {
 		eventType := domain.EventType(event) // Capture for closure
 		n.eb.Subscribe(eventType, func(ev domain.Event) {
-			// Ensure aggregate_id and aggregate_type are included in data for
-			// proper event correlation. aggregate_type is critical: the
-			// NotificationSent/Failed event published downstream inherits it, and
-			// the corruption_summary trigger keys off it. Hardcoding "corruption"
-			// here previously caused notifications fired for non-corruption
-			// aggregates (e.g. health events like SystemHealthDegraded) to leak
-			// into corruption_summary as stray, file_path-less rows.
-			data := ev.EventData
-			if data == nil {
-				data = make(map[string]interface{})
-			}
-			if ev.AggregateID != "" {
-				data["aggregate_id"] = ev.AggregateID
-			}
-			if ev.AggregateType != "" {
-				data["aggregate_type"] = ev.AggregateType
-			}
-			n.handleEvent(string(eventType), data)
+			n.handleEvent(string(eventType), n.notificationData(ev))
 		})
 	}
 
@@ -438,6 +422,34 @@ func (n *Notifier) Start() error {
 
 	logger.Infof("Notifier started with %d configurations", len(n.configs))
 	return nil
+}
+
+// notificationData builds the payload handed to notification providers for ev:
+// a copy of ev.EventData with aggregate_id and aggregate_type added.
+//
+// aggregate_id and aggregate_type are included for proper event correlation.
+// aggregate_type is critical: the NotificationSent/Failed event published
+// downstream inherits it, and the corruption_summary trigger keys off it.
+// Hardcoding "corruption" here previously caused notifications fired for
+// non-corruption aggregates (e.g. health events like SystemHealthDegraded) to
+// leak into corruption_summary as stray, file_path-less rows.
+//
+// The payload must be a copy. The event bus fans one Event value out to every
+// subscriber and EventData is a map, so ev.EventData is the very map the
+// remediator and metrics handlers read concurrently in their own goroutines.
+// Writing into it here was an unsynchronized map write, which the Go runtime
+// reports as "fatal error: concurrent map read and map write" and which
+// safego's recover cannot contain - the whole process exited (#374).
+func (n *Notifier) notificationData(ev domain.Event) map[string]interface{} {
+	data := make(map[string]interface{}, len(ev.EventData)+2)
+	maps.Copy(data, ev.EventData)
+	if ev.AggregateID != "" {
+		data["aggregate_id"] = ev.AggregateID
+	}
+	if ev.AggregateType != "" {
+		data["aggregate_type"] = ev.AggregateType
+	}
+	return data
 }
 
 // Stop stops the notifier and waits for background goroutines to exit

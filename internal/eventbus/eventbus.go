@@ -82,6 +82,9 @@ func (eb *EventBus) Publish(event domain.Event) error {
 // non-blocking send. If a subscriber's buffer is full the delivery is dropped
 // (callers that persist first treat this as recoverable; volatile callers treat
 // a dropped ephemeral event as benign). Does not touch the database.
+//
+// Every subscriber receives the same Event value and therefore the same
+// EventData map. Handlers must not write to it; copy it first.
 func (eb *EventBus) dispatch(event domain.Event) {
 	eb.mu.RLock()
 	defer eb.mu.RUnlock()

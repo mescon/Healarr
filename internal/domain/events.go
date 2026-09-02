@@ -50,6 +50,10 @@ const (
 
 // Event represents a domain event in the event-sourced architecture.
 // Events are immutable records of state changes, stored in the events table.
+//
+// EventData reaches every subscriber by reference: the event bus fans one Event
+// value out per subscriber, and a map is a reference type. Handlers must treat
+// it as read-only and copy it before adding or changing keys.
 type Event struct {
 	ID            int64                  `json:"id"`
 	AggregateType string                 `json:"aggregate_type"`
