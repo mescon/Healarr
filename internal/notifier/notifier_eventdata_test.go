@@ -8,16 +8,16 @@ import (
 	"github.com/mescon/Healarr/internal/eventbus"
 )
 
-// The event bus fans a single Event value out to every subscriber, and
-// EventData is a map, so all subscribers share one underlying map. The
-// notifier must therefore never write into ev.EventData: the remediator and
-// metrics subscribers read the same map concurrently in their own goroutines,
-// and the Go runtime aborts the whole process with
+// TestNotifier_notificationData_DoesNotMutateEvent guards the shared-map
+// contract behind #374. The event bus fans a single Event value out to every
+// subscriber, and EventData is a map, so all subscribers share one underlying
+// map. The notifier must therefore never write into ev.EventData: the
+// remediator and metrics subscribers read the same map concurrently in their
+// own goroutines, and the Go runtime aborts the whole process with
 // "fatal error: concurrent map read and map write" (safego cannot recover a
 // runtime fatal error). This surfaced in production at startup, when the event
 // replay service re-dispatched two unprocessed CorruptionDetected events back
 // to back.
-
 func TestNotifier_notificationData_DoesNotMutateEvent(t *testing.T) {
 	tdb := newTestDB(t)
 	defer tdb.Close()
@@ -85,10 +85,11 @@ func TestNotifier_notificationData_DoesNotMutateEvent(t *testing.T) {
 	}
 }
 
-// Meaningful under `go test -race` (as CI runs it): another subscriber reads
-// ev.EventData while the notifier builds its payload from the same event. The
-// pre-fix implementation wrote aggregate_id/aggregate_type into ev.EventData,
-// which the race detector reports as a data race.
+// TestNotifier_notificationData_NoRaceWithConcurrentReader is meaningful under
+// `go test -race` (as CI runs it): another subscriber reads ev.EventData while
+// the notifier builds its payload from the same event. The pre-fix
+// implementation wrote aggregate_id/aggregate_type into ev.EventData, which the
+// race detector reports as a data race.
 func TestNotifier_notificationData_NoRaceWithConcurrentReader(t *testing.T) {
 	tdb := newTestDB(t)
 	defer tdb.Close()
