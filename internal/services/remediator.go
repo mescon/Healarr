@@ -366,18 +366,21 @@ func (r *RemediatorService) corruptReplacementPaths(corruptionID string) []strin
 
 // latestGrabbedRelease returns the *arr history record ID and source title of
 // the most recent grabbed release for a media item - the release that produced
-// the file currently on disk. GetRecentHistoryForMediaByPath already filters to
-// "grabbed" events; we pick the newest by date. Returns (0, "") if it cannot be
-// resolved, which callers treat as "cannot blocklist, fall back to a search".
+// the file currently on disk. We filter to "grabbed" events and pick the newest
+// by date. Returns (0, "") if it cannot be resolved, which callers treat as
+// "cannot blocklist, fall back to a search".
 func (r *RemediatorService) latestGrabbedRelease(arrPath string, mediaID int64) (int64, string) {
 	items, err := r.arrClient.GetRecentHistoryForMediaByPath(arrPath, mediaID, 10)
 	if err != nil || len(items) == 0 {
 		return 0, ""
 	}
-	newest := items[0]
-	newestTime, _ := time.Parse(time.RFC3339, newest.Date)
-	for _, item := range items[1:] {
-		if t, perr := time.Parse(time.RFC3339, item.Date); perr == nil && t.After(newestTime) {
+	var newest integration.HistoryItemInfo
+	var newestTime time.Time
+	for _, item := range items {
+		if item.EventType != "grabbed" {
+			continue
+		}
+		if t, _ := time.Parse(time.RFC3339, item.Date); newest.ID == 0 || t.After(newestTime) {
 			newest, newestTime = item, t
 		}
 	}

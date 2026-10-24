@@ -1313,9 +1313,9 @@ func (c *HTTPArrClient) GetHistory(instance *ArrInstance, page, pageSize int, ev
 func (c *HTTPArrClient) GetRecentHistoryForMedia(instance *ArrInstance, mediaID int64, limit int) ([]HistoryItem, error) {
 	var endpoint string
 	if instance.Type == ArrTypeRadarr || instance.Type == ArrTypeWhisparrV3 {
-		endpoint = fmt.Sprintf("/api/v3/history/movie?movieId=%d&eventType=grabbed", mediaID)
+		endpoint = fmt.Sprintf("/api/v3/history/movie?movieId=%d", mediaID)
 	} else {
-		endpoint = fmt.Sprintf("/api/v3/history/series?seriesId=%d&eventType=grabbed", mediaID)
+		endpoint = fmt.Sprintf("/api/v3/history/series?seriesId=%d", mediaID)
 	}
 
 	resp, err := c.doRequest(instance, "GET", endpoint, nil)

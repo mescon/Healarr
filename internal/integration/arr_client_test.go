@@ -5022,36 +5022,55 @@ func TestHTTPArrClient_GetAllFilePaths_SonarrMultiple(t *testing.T) {
 	}
 }
 
-// Test GetRecentHistoryForMedia success
-func TestHTTPArrClient_GetRecentHistoryForMedia_Radarr(t *testing.T) {
-	client, db := setupTestClient(t)
-	defer db.Close()
+func TestHTTPArrClient_GetRecentHistoryForMedia_IncludesImports(t *testing.T) {
+	for _, tt := range []struct {
+		arrType ArrType
+		path    string
+		idParam string
+	}{
+		{ArrTypeRadarr, "/api/v3/history/movie", "movieId"},
+		{ArrTypeWhisparrV3, "/api/v3/history/movie", "movieId"},
+		{ArrTypeSonarr, "/api/v3/history/series", "seriesId"},
+		{ArrTypeWhisparrV2, "/api/v3/history/series", "seriesId"},
+	} {
+		t.Run(string(tt.arrType), func(t *testing.T) {
+			client, db := setupTestClient(t)
+			defer db.Close()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/history/movie") {
-			json.NewEncoder(w).Encode([]struct {
-				ID        int64  `json:"id"`
-				EventType string `json:"eventType"`
-			}{
-				{ID: 1, EventType: "grabbed"},
-			})
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tt.path || r.URL.Query().Get(tt.idParam) != "42" {
+					t.Errorf("unexpected history URL: %s", r.URL)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				items := []HistoryItem{
+					{ID: 2, EventType: "downloadFolderImported"},
+					{ID: 1, EventType: "grabbed"},
+				}
+				if eventType := r.URL.Query().Get("eventType"); eventType != "" {
+					filtered := make([]HistoryItem, 0, len(items))
+					for _, item := range items {
+						if item.EventType == eventType {
+							filtered = append(filtered, item)
+						}
+					}
+					items = filtered
+				}
+				if err := json.NewEncoder(w).Encode(items); err != nil {
+					t.Errorf("encode history: %v", err)
+				}
+			}))
+			defer server.Close()
 
-	encryptedKey, _ := crypto.Encrypt("key")
-	instance := &ArrInstance{ID: 1, Name: "Radarr", Type: "radarr", URL: server.URL, APIKey: "key"}
-	db.DB.Exec(`INSERT INTO arr_instances (id, name, type, url, api_key, enabled) VALUES (1, 'Radarr', 'radarr', ?, ?, 1)`, server.URL, encryptedKey)
-
-	items, err := client.GetRecentHistoryForMedia(instance, 42, 10)
-	if err != nil {
-		t.Fatalf("GetRecentHistoryForMedia failed: %v", err)
-	}
-
-	if len(items) != 1 {
-		t.Errorf("Expected 1 item, got %d", len(items))
+			instance := &ArrInstance{ID: 1, Type: tt.arrType, URL: server.URL, APIKey: "key"}
+			items, err := client.GetRecentHistoryForMedia(instance, 42, 10)
+			if err != nil {
+				t.Fatalf("GetRecentHistoryForMedia failed: %v", err)
+			}
+			if len(items) != 2 || items[0].EventType != "downloadFolderImported" || items[1].EventType != "grabbed" {
+				t.Errorf("expected import and grab events, got %+v", items)
+			}
+		})
 	}
 }
 

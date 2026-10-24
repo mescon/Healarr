@@ -80,6 +80,9 @@ func (hc *CmdHealthChecker) runDetectorAttempt(path string, customArgs []string,
 		}
 	}
 
+	toolLimiter.acquire(EffectiveScanWorkers)
+	defer toolLimiter.release()
+
 	cmd := exec.Command(cmdPath, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -288,11 +291,8 @@ func buildMediaInfoArgs(mode string, customArgs []string, path string) ([]string
 
 // runCommandWithTimeout executes a command with a timeout, returning stdout or an error.
 //
-// Every detection subprocess passes through here, which makes it the one
-// choke point where global scan concurrency can actually be enforced: the
-// scan pool, webhook-triggered checks, deferred rescans and verification all
-// end up in this function. The slot is acquired BEFORE the timeout clock
-// starts, so queueing behind the limiter never eats a tool's time budget.
+// The shared tool slot is acquired before the timeout starts, so queueing
+// behind other detector runs never eats a tool's time budget.
 func runCommandWithTimeout(cmd *exec.Cmd, timeout time.Duration, toolName string) ([]byte, error) {
 	toolLimiter.acquire(EffectiveScanWorkers)
 	defer toolLimiter.release()

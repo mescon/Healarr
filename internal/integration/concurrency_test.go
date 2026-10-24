@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"database/sql"
+	"os/exec"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,46 @@ import (
 	"github.com/mescon/Healarr/internal/config"
 	"github.com/mescon/Healarr/internal/repository"
 )
+
+func TestRunDetectorAttempt_RespectsWorkerLimit(t *testing.T) {
+	binary, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("true executable is unavailable")
+	}
+	t.Setenv("HEALARR_SCANNER_WORKERS", "1")
+	hc := &CmdHealthChecker{FFprobePath: binary, FFmpegPath: binary}
+	hwaccel := "off"
+	for _, mode := range []string{ModeQuick, ModeThorough} {
+		t.Run(mode, func(t *testing.T) {
+			toolLimiter.acquire(EffectiveScanWorkers)
+			held := true
+			defer func() {
+				if held {
+					toolLimiter.release()
+				}
+			}()
+			done := make(chan error, 1)
+			go func() {
+				done <- hc.runDetectorAttempt("test.mkv", nil, mode, &ScanOverrides{Hwaccel: &hwaccel})
+			}()
+			select {
+			case err := <-done:
+				t.Fatalf("detector ran while the worker slot was occupied: %v", err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			toolLimiter.release()
+			held = false
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("detector failed after slot was released: %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("detector did not proceed after slot was released")
+			}
+		})
+	}
+}
 
 // TestAutoScanWorkers pins the prudent "auto" sizing: min(4, cpus, memory
 // budget), floored at 1. The previous auto (min(mem/512MB, cores, 32))

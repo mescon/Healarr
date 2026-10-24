@@ -2086,6 +2086,7 @@ func TestRemediator_LatestGrabbedRelease_PicksNewest(t *testing.T) {
 	arr := &testutil.MockArrClient{
 		GetRecentHistoryForMediaByPathFunc: func(string, int64, int) ([]integration.HistoryItemInfo, error) {
 			return []integration.HistoryItemInfo{
+				{ID: 4, EventType: "downloadFolderImported", Date: "2026-05-28T10:00:00Z", SourceTitle: "Imported-GRP"},
 				{ID: 1, EventType: "grabbed", Date: "2026-05-20T10:00:00Z", SourceTitle: "Old-GRP"},
 				{ID: 2, EventType: "grabbed", Date: "2026-05-27T10:00:00Z", SourceTitle: "New-GRP"},
 				{ID: 3, EventType: "grabbed", Date: "2026-05-25T10:00:00Z", SourceTitle: "Mid-GRP"},
@@ -2097,6 +2098,13 @@ func TestRemediator_LatestGrabbedRelease_PicksNewest(t *testing.T) {
 	id, title := r.latestGrabbedRelease("/data/tv/x.mkv", 123)
 	if id != 2 || title != "New-GRP" {
 		t.Errorf("got (%d, %q), want (2, New-GRP)", id, title)
+	}
+	arr.GetRecentHistoryForMediaByPathFunc = func(string, int64, int) ([]integration.HistoryItemInfo, error) {
+		return []integration.HistoryItemInfo{{ID: 4, EventType: "downloadFolderImported"}}, nil
+	}
+	id, title = r.latestGrabbedRelease("/data/tv/x.mkv", 123)
+	if id != 0 || title != "" {
+		t.Errorf("expected no grabbed release, got (%d, %q)", id, title)
 	}
 }
 
